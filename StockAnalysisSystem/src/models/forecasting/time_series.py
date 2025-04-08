@@ -13,8 +13,9 @@ import matplotlib.pyplot as plt
 
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from utils.data_loader import DataLoader
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
 
 # Setup logging
 logging.basicConfig(

@@ -4,20 +4,22 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Any
 
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils.data_loader import DataLoader
-from valuation.base_valuation import BaseValuation
+# Add the project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 
 # Import sector-specific valuation models
-from valuation.sector_specific.financial_sector import FinancialValuation
-from valuation.sector_specific.tech_sector import TechValuation
-from valuation.sector_specific.energy_sector import EnergyValuation
-from valuation.sector_specific.retail_sector import RetailValuation
-from valuation.sector_specific.manufacturing import ManufacturingValuation
-from valuation.sector_specific.real_estate import RealEstateValuation
-from valuation.sector_specific.healthcare import HealthcareValuation
-from valuation.sector_specific.communication_sector import CommunicationValuation
+from StockAnalysisSystem.src.valuation.sector_specific.financial_sector import FinancialValuation
+from StockAnalysisSystem.src.valuation.sector_specific.tech_sector import TechValuation
+from StockAnalysisSystem.src.valuation.sector_specific.energy_sector import EnergyValuation
+from StockAnalysisSystem.src.valuation.sector_specific.retail_sector import RetailValuation
+from StockAnalysisSystem.src.valuation.sector_specific.manufacturing import ManufacturingValuation
+from StockAnalysisSystem.src.valuation.sector_specific.real_estate import RealEstateValuation
+from StockAnalysisSystem.src.valuation.sector_specific.healthcare import HealthcareValuation
+from StockAnalysisSystem.src.valuation.sector_specific.communication_sector import CommunicationValuation
 
 # Setup logging
 logging.basicConfig(

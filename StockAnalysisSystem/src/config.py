@@ -15,8 +15,8 @@ for dir_path in [DATA_DIR, CACHE_DIR, SECTOR_DATA_DIR]:
 
 # API keys (should use .env file in production)
 API_KEYS = {
-    "alpha_vantage": os.environ.get("0VJE73FSCQIPH601", ""),
-    "financial_modeling_prep": os.environ.get("9Yf6Hq8E74E7W4cbyzImXtH3H54TdS8Q", "")
+    "alpha_vantage": os.environ.get("ALPHA_VANTAGE_API_KEY", "0VJE73FSCQIPH601"),
+    "financial_modeling_prep": os.environ.get("FINANCIAL_MODELING_PREP_API_KEY", "9Yf6Hq8E74E7W4cbyzImXtH3H54TdS8Q")
 }
 
 # Cache settings

@@ -7,10 +7,11 @@ from pathlib import Path
 
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import SECTOR_DATA_DIR
-from industry.benchmarks import IndustryBenchmarks
-from industry.sector_mapping import SectorMapper
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+from StockAnalysisSystem.src.config import SECTOR_DATA_DIR
+from StockAnalysisSystem.src.industry.benchmarks import IndustryBenchmarks
+from StockAnalysisSystem.src.industry.sector_mapping import SectorMapper
 
 # Setup logging
 logging.basicConfig(

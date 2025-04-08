@@ -7,13 +7,13 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from datetime import datetime
 
 # Add parent directories to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
 
-from config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
-from utils.data_loader import DataLoader
-from valuation.base_valuation import BaseValuation
-from valuation.dcf_models import AdvancedDCFValuation
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
+from StockAnalysisSystem.src.valuation.dcf_models import AdvancedDCFValuation
 
 # Setup logging
 logging.basicConfig(

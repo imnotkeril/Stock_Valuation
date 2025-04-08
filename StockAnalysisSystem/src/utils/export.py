@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import pandas as pd
 import json
@@ -29,10 +30,14 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
-import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import COLORS
+# Add the project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# Import project modules
+from StockAnalysisSystem.src.config import CACHE_DIR, CACHE_EXPIRY_DAYS, API_KEYS
+from StockAnalysisSystem.src.config import UI_SETTINGS, COLORS, VIZ_SETTINGS
 
 # Setup logging
 logging.basicConfig(

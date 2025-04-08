@@ -7,11 +7,13 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from datetime import datetime
 
 # Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
-from utils.data_loader import DataLoader
-from valuation.base_valuation import BaseValuation
-from valuation.dcf_models import AdvancedDCFValuation, SectorSpecificDCF
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
+from StockAnalysisSystem.src.valuation.dcf_models import AdvancedDCFValuation, SectorSpecificDCF
 
 # Setup logging
 logging.basicConfig(
@@ -1411,12 +1413,12 @@ class FinancialSectorValuation(SectorSpecificDCF):
             }
 
         except Exception as e:
-        logger.error(f"Error in insurance appraisal valuation for {ticker}: {e}")
-        return {
-            'method': 'insurance_appraisal',
-            'value_per_share': None,
-            'error': str(e)
-        }
+            logger.error(f"Error in insurance appraisal valuation for {ticker}: {e}")
+            return {
+                'method': 'insurance_appraisal',
+                'value_per_share': None,
+                'error': str(e)
+            }
 
     def _aum_based_valuation(self, ticker: str, financial_data: Dict[str, Any],
                              am_metrics: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import logging
 import pickle
@@ -11,10 +12,11 @@ import numpy as np
 import requests
 from typing import Dict, List, Tuple, Optional, Union, Any
 
-import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import CACHE_DIR, CACHE_EXPIRY_DAYS, API_KEYS
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+from StockAnalysisSystem.src.config import CACHE_DIR, CACHE_EXPIRY_DAYS, API_KEYS
 
 # Setup logging
 logging.basicConfig(

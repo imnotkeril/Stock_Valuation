@@ -8,8 +8,9 @@ from datetime import datetime
 
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import SECTOR_SPECIFIC_RATIOS, RATIO_CATEGORIES, SECTOR_MAPPING
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+from StockAnalysisSystem.src.config import SECTOR_SPECIFIC_RATIOS, RATIO_CATEGORIES, SECTOR_MAPPING
 
 # Setup logging
 logging.basicConfig(

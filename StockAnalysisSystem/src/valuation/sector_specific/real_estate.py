@@ -7,9 +7,11 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from datetime import datetime
 
 # Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from valuation.base_valuation import BaseValuation
-from config import SECTOR_DCF_PARAMETERS
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
+from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS
 
 # Setup logging
 logging.basicConfig(

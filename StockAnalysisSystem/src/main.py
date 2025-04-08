@@ -5,19 +5,20 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
+import traceback
 from typing import Dict, List, Tuple, Optional, Union, Any
 
 # Add the project root to Python path
-root_dir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-sys.path.insert(0, root_dir)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
 
 # Import project modules
-from src.config import UI_SETTINGS, COLORS
-from src.utils.data_loader import DataLoader
-from src.models.ratio_analysis import FinancialRatioAnalyzer
-from src.models.financial_statements import FinancialStatementAnalyzer
-from src.models.bankruptcy_models import BankruptcyAnalyzer
-from src.utils.visualization import FinancialVisualizer
+from StockAnalysisSystem.src.config import CACHE_DIR, CACHE_EXPIRY_DAYS, API_KEYS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
+from StockAnalysisSystem.src.models.financial_statements import FinancialStatementAnalyzer
+from StockAnalysisSystem.src.models.bankruptcy_models import BankruptcyAnalyzer
+from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
 
 # Setup logging
 logging.basicConfig(
@@ -40,6 +41,7 @@ def apply_custom_css():
     """Apply custom CSS styling to the app"""
     st.markdown("""
         <style>
+        /* Основной фон и цвета */
         .main {
             background-color: #121212;
             color: #e0e0e0;
@@ -47,67 +49,89 @@ def apply_custom_css():
         .stSidebar {
             background-color: #1f1f1f;
         }
+
+        /* Кнопки */
         .stButton button {
-            background-color: #74f174;
+            background-color: #74f174;  /* Салатовый */
             color: #121212;
+            border: none;
+            transition: all 0.3s ease;
         }
+        .stButton button:hover {
+            background-color: #90bff9;  /* Небесно-голубой при наведении */
+            transform: scale(1.05);
+        }
+
+        /* Таблицы */
+        .stDataFrame {
+            width: 100%;
+            max-width: 100%;
+        }
+        .stDataFrame th {
+            background-color: #1f1f1f !important;
+            color: #74f174 !important;
+            text-align: center !important;
+        }
+        .stDataFrame td {
+            text-align: center !important;
+            vertical-align: middle !important;
+        }
+
+        /* Tabs */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 1px;
+            gap: 5px;
+            background-color: #1f1f1f;
+            border-radius: 10px;
+            padding: 5px;
         }
         .stTabs [data-baseweb="tab"] {
             height: 50px;
-            white-space: pre-wrap;
             background-color: #1f1f1f;
-            border-radius: 4px 4px 0 0;
-            gap: 1px;
-            padding-top: 10px;
-            padding-bottom: 10px;
+            color: #e0e0e0;
+            border-radius: 8px;
+            transition: all 0.3s ease;
         }
         .stTabs [aria-selected="true"] {
             background-color: #74f174;
             color: #121212;
         }
-        /* Improve radio button styling */
-        .stRadio label {
-            color: #e0e0e0;
+        .stTabs [data-baseweb="tab"]:hover {
+            background-color: #90bff9;
+            color: #121212;
         }
-        .stExpander {
-            background-color: #1f1f1f;
-            border-radius: 4px;
+
+        /* Графики */
+        .stPlotlyChart {
+            width: 100%;
+            max-width: 100%;
         }
-        /* Custom metric styling */
+
+        /* Метрики */
         .metric-card {
             background-color: #1f1f1f;
-            border-radius: 5px;
+            border-radius: 10px;
             padding: 15px;
-            margin: 5px 0;
             text-align: center;
+            transition: all 0.3s ease;
+        }
+        .metric-card:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 15px rgba(116, 241, 116, 0.3);
         }
         .metric-value {
+            color: #74f174;
             font-size: 24px;
             font-weight: bold;
         }
         .metric-label {
+            color: #90bff9;
             font-size: 14px;
-            color: #a0a0a0;
         }
-        /* Bar headers */
-        .section-header {
-            background-color: #1f1f1f;
-            padding: 5px 15px;
-            border-radius: 5px;
-            margin: 10px 0;
-        }
-        /* Color indicators */
-        .indicator-positive {
-            color: #74f174;
-        }
-        .indicator-neutral {
-            color: #fff59d;
-        }
-        .indicator-negative {
-            color: #faa1a4;
-        }
+
+        /* Цвета индикаторов */
+        .indicator-positive { color: #74f174; }
+        .indicator-neutral { color: #fff59d; }
+        .indicator-negative { color: #faa1a4; }
         </style>
     """, unsafe_allow_html=True)
 

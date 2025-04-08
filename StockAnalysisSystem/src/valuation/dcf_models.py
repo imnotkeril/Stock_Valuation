@@ -9,11 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from scipy import stats
 
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
-from utils.data_loader import DataLoader
-from valuation.base_valuation import BaseValuation
+# Add the project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# Import project modules
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 
 # Setup logging
 logging.basicConfig(
@@ -22,9 +25,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('dcf_models')
 
-from config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
-from utils.data_loader import DataLoader
-from valuation.base_valuation import BaseValuation
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 
 # Setup logging
 logging.basicConfig(

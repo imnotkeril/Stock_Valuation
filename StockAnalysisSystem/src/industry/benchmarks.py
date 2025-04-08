@@ -6,8 +6,9 @@ from typing import Dict, List, Optional, Union, Any
 from pathlib import Path
 
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import SECTOR_DATA_DIR, SECTOR_MAPPING
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+from StockAnalysisSystem.src.config import SECTOR_DATA_DIR, SECTOR_MAPPING
 
 # Setup logging
 logging.basicConfig(
