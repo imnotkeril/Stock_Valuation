@@ -1510,6 +1510,1089 @@ def main():
                     valuation_factory = ValuationFactory(get_data_loader())
                     dcf_model = AdvancedDCFValuation(get_data_loader())
 
+                    # Prepare financial data for valuation
+                    financial_data = {
+                        'income_statement': income_statement,
+                        'balance_sheet': balance_sheet,
+                        'cash_flow': cash_flow,
+                        'market_data': {
+                            'share_price': price_data['Close'].iloc[-1] if not price_data.empty else None,
+                            'market_cap': company_info.get('market_cap'),
+                            'shares_outstanding': company_info.get('market_cap') / price_data['Close'].iloc[-1]
+                            if company_info.get('market_cap') and not price_data.empty else None,
+                            'beta': company_info.get('beta')
+                        }
+                    }
+
+                    # Based on sector, show appropriate valuation interface
+                    # Energy sector specific valuation tab
+                    if sector == "Energy":
+                        st.subheader("Energy Sector Valuation Analysis")
+
+                        # Determine energy subsector and business model
+                        try:
+                            energy_subsector, business_model = st.columns(2)
+
+                            with energy_subsector:
+                                subsector = st.selectbox(
+                                    "Energy subsector",
+                                    ["oil_gas", "utilities", "renewables", "coal"],
+                                    format_func=lambda x: {
+                                        "oil_gas": "Oil & Gas",
+                                        "utilities": "Utilities",
+                                        "renewables": "Renewable Energy",
+                                        "coal": "Coal"
+                                    }.get(x, x.replace('_', ' ').title())
+                                )
+
+                            with business_model:
+                                if subsector == "oil_gas":
+                                    model = st.selectbox(
+                                        "Business model",
+                                        ["upstream", "integrated", "midstream", "downstream"],
+                                        format_func=lambda x: x.title()
+                                    )
+                                elif subsector == "utilities":
+                                    model = st.selectbox(
+                                        "Utility type",
+                                        ["regulated", "merchant", "integrated"],
+                                        format_func=lambda x: x.title()
+                                    )
+                                elif subsector == "renewables":
+                                    model = st.selectbox(
+                                        "Renewable focus",
+                                        ["solar", "wind", "hydro", "diversified"],
+                                        format_func=lambda x: x.title()
+                                    )
+                                else:
+                                    model = "mining"
+
+                            # Initialize energy valuation model
+                            st.info("Configuring energy sector-specific valuation parameters...")
+
+                            # Parameters section
+                            st.subheader("Key Valuation Parameters")
+
+                            params_col1, params_col2 = st.columns(2)
+                            with params_col1:
+                                # Common parameters across all energy types
+                                discount_rate = st.slider(
+                                    "Discount Rate (%)",
+                                    min_value=5.0,
+                                    max_value=15.0,
+                                    value=10.0,
+                                    step=0.1,
+                                    help="Higher for more volatile subsectors like upstream oil & gas, lower for utilities"
+                                ) / 100
+
+                                forecast_years = st.slider(
+                                    "Forecast Years",
+                                    min_value=5,
+                                    max_value=20,
+                                    value=10,
+                                    step=1,
+                                    help="Longer forecasts typical for utilities and midstream with long-term contracts"
+                                )
+
+                            with params_col2:
+                                # Subsector-specific parameters
+                                if subsector == "oil_gas":
+                                    if model in ["upstream", "integrated"]:
+                                        terminal_price = st.slider(
+                                            "Long-term Oil Price ($/bbl)",
+                                            min_value=40,
+                                            max_value=100,
+                                            value=65,
+                                            step=5
+                                        )
+
+                                        reserve_life = st.slider(
+                                            "Reserve Life (years)",
+                                            min_value=5,
+                                            max_value=20,
+                                            value=12,
+                                            step=1,
+                                            help="Average number of years of production at current rates"
+                                        )
+                                    elif model == "midstream":
+                                        contract_coverage = st.slider(
+                                            "Contract Coverage (%)",
+                                            min_value=50,
+                                            max_value=100,
+                                            value=80,
+                                            step=5,
+                                            help="Percentage of capacity under long-term contracts"
+                                        ) / 100
+
+                                        contract_duration = st.slider(
+                                            "Average Contract Duration (years)",
+                                            min_value=2,
+                                            max_value=15,
+                                            value=8,
+                                            step=1
+                                        )
+                                elif subsector == "utilities":
+                                    allowed_roe = st.slider(
+                                        "Allowed Return on Equity (%)",
+                                        min_value=7.0,
+                                        max_value=12.0,
+                                        value=9.5,
+                                        step=0.1,
+                                        help="Regulated return rate approved by utility commissions"
+                                    ) / 100
+
+                                    rate_base_growth = st.slider(
+                                        "Rate Base Growth (%)",
+                                        min_value=1.0,
+                                        max_value=8.0,
+                                        value=4.0,
+                                        step=0.5,
+                                        help="Annual growth rate of regulated asset base"
+                                    ) / 100
+                                elif subsector == "renewables":
+                                    capacity_factor = st.slider(
+                                        "Capacity Factor (%)",
+                                        min_value=20,
+                                        max_value=60,
+                                        value=35,
+                                        step=1,
+                                        help="Percentage of theoretical maximum output actually produced annually"
+                                    ) / 100
+
+                                    ppa_coverage = st.slider(
+                                        "PPA Coverage (%)",
+                                        min_value=0,
+                                        max_value=100,
+                                        value=80,
+                                        step=5,
+                                        help="Percentage of production sold under Power Purchase Agreements"
+                                    ) / 100
+
+                            # Valuation methods selection
+                            st.subheader("Valuation Methods")
+
+                            valuation_methods = []
+
+                            if subsector == "oil_gas":
+                                if model == "upstream":
+                                    valuation_methods = st.multiselect(
+                                        "Select valuation methods",
+                                        ["DCF", "NAV (Reserve-Based)", "Multiples"],
+                                        default=["DCF", "NAV (Reserve-Based)"]
+                                    )
+                                elif model == "integrated":
+                                    valuation_methods = st.multiselect(
+                                        "Select valuation methods",
+                                        ["DCF", "Sum-of-the-Parts", "Multiples"],
+                                        default=["DCF", "Sum-of-the-Parts"]
+                                    )
+                                elif model == "midstream":
+                                    valuation_methods = st.multiselect(
+                                        "Select valuation methods",
+                                        ["DCF", "Dividend Discount Model", "Multiples"],
+                                        default=["DCF", "Dividend Discount Model"]
+                                    )
+                            elif subsector == "utilities":
+                                valuation_methods = st.multiselect(
+                                    "Select valuation methods",
+                                    ["DCF", "Dividend Discount Model", "Regulated Asset Base"],
+                                    default=["DCF", "Regulated Asset Base"]
+                                )
+                            elif subsector == "renewables":
+                                valuation_methods = st.multiselect(
+                                    "Select valuation methods",
+                                    ["Project-Based DCF", "Multiples", "Real Options"],
+                                    default=["Project-Based DCF", "Multiples"]
+                                )
+                            else:
+                                valuation_methods = st.multiselect(
+                                    "Select valuation methods",
+                                    ["DCF", "Multiples"],
+                                    default=["DCF"]
+                                )
+
+                            # Only run valuation if user selects methods
+                            if not valuation_methods:
+                                st.warning("Please select at least one valuation method to proceed.")
+                            else:
+                                with st.spinner("Running energy sector valuation..."):
+                                    try:
+                                        # Initialize energy sector valuation model
+                                        from StockAnalysisSystem.src.valuation.sector_specific.energy_sector import \
+                                            EnergySectorValuation
+                                        energy_valuation = EnergySectorValuation(get_data_loader())
+
+                                        # Set up the parameters based on user inputs
+                                        energy_params = {
+                                            'energy_type': subsector,
+                                            'business_model': model
+                                        }
+
+                                        # Add custom parameters from user input
+                                        if subsector == "oil_gas":
+                                            if model in ["upstream", "integrated"]:
+                                                energy_params['terminal_price'] = terminal_price
+                                                energy_params['reserve_life'] = reserve_life
+                                            elif model == "midstream":
+                                                energy_params['contract_coverage'] = contract_coverage
+                                                energy_params['contract_duration'] = contract_duration
+                                        elif subsector == "utilities":
+                                            energy_params['allowed_roe'] = allowed_roe
+                                            energy_params['rate_base_growth'] = rate_base_growth
+                                        elif subsector == "renewables":
+                                            energy_params['capacity_factor'] = capacity_factor
+                                            energy_params['ppa_coverage'] = ppa_coverage
+
+                                        # Modify financial data with custom parameters
+                                        financial_data_with_params = financial_data.copy() if financial_data else {}
+                                        financial_data_with_params['custom_params'] = {
+                                            'discount_rate': discount_rate,
+                                            'forecast_years': forecast_years
+                                        }
+
+                                        # Special handling for various subsectors and models
+                                        if subsector == "oil_gas" and model == "upstream":
+                                            if "NAV (Reserve-Based)" in valuation_methods:
+                                                # Get upstream metrics and calculate NAV
+                                                upstream_metrics = energy_valuation._calculate_upstream_metrics(
+                                                    financial_data_with_params)
+                                                nav_result = energy_valuation._reserve_based_nav(ticker,
+                                                                                                 financial_data_with_params,
+                                                                                                 upstream_metrics)
+
+                                            if "DCF" in valuation_methods:
+                                                # Run upstream-specific DCF
+                                                upstream_metrics = energy_valuation._calculate_upstream_metrics(
+                                                    financial_data_with_params)
+                                                dcf_result = energy_valuation._cyclical_upstream_dcf(ticker,
+                                                                                                     financial_data_with_params,
+                                                                                                     upstream_metrics)
+
+                                            if "Multiples" in valuation_methods:
+                                                # Run upstream-specific multiples valuation
+                                                upstream_metrics = energy_valuation._calculate_upstream_metrics(
+                                                    financial_data_with_params)
+                                                multiples_result = energy_valuation._upstream_multiples_valuation(
+                                                    ticker, financial_data_with_params, upstream_metrics)
+
+                                            # Combine results
+                                            valuation_result = energy_valuation.value_upstream_company(ticker,
+                                                                                                       financial_data_with_params)
+
+                                        elif subsector == "oil_gas" and model == "integrated":
+                                            if "Sum-of-the-Parts" in valuation_methods:
+                                                # Get integrated metrics and calculate SOTP
+                                                integrated_metrics = energy_valuation._calculate_integrated_metrics(
+                                                    financial_data_with_params)
+                                                sotp_result = energy_valuation._sum_of_the_parts_valuation(ticker,
+                                                                                                           financial_data_with_params,
+                                                                                                           integrated_metrics)
+
+                                            if "DCF" in valuation_methods:
+                                                # Run integrated-specific DCF
+                                                integrated_metrics = energy_valuation._calculate_integrated_metrics(
+                                                    financial_data_with_params)
+                                                dcf_result = energy_valuation._cyclical_integrated_dcf(ticker,
+                                                                                                       financial_data_with_params,
+                                                                                                       integrated_metrics)
+
+                                            if "Multiples" in valuation_methods:
+                                                # Run integrated-specific multiples valuation
+                                                integrated_metrics = energy_valuation._calculate_integrated_metrics(
+                                                    financial_data_with_params)
+                                                multiples_result = energy_valuation._integrated_multiples_valuation(
+                                                    ticker, financial_data_with_params, integrated_metrics)
+
+                                            # Combine results
+                                            valuation_result = energy_valuation.value_integrated_oil_gas(ticker,
+                                                                                                         financial_data_with_params)
+
+                                        elif subsector == "oil_gas" and model == "midstream":
+                                            if "Dividend Discount Model" in valuation_methods:
+                                                # Get midstream metrics and calculate DDM
+                                                midstream_metrics = energy_valuation._calculate_midstream_metrics(
+                                                    financial_data_with_params)
+                                                ddm_result = energy_valuation._midstream_ddm(ticker,
+                                                                                             financial_data_with_params,
+                                                                                             midstream_metrics)
+
+                                            if "DCF" in valuation_methods:
+                                                # Run midstream-specific DCF
+                                                midstream_metrics = energy_valuation._calculate_midstream_metrics(
+                                                    financial_data_with_params)
+                                                dcf_result = energy_valuation._midstream_dcf(ticker,
+                                                                                             financial_data_with_params,
+                                                                                             midstream_metrics)
+
+                                            if "Multiples" in valuation_methods:
+                                                # Run midstream-specific multiples valuation
+                                                midstream_metrics = energy_valuation._calculate_midstream_metrics(
+                                                    financial_data_with_params)
+                                                multiples_result = energy_valuation._midstream_multiples_valuation(
+                                                    ticker, financial_data_with_params, midstream_metrics)
+
+                                            # Combine results
+                                            valuation_result = energy_valuation.value_midstream_company(ticker,
+                                                                                                        financial_data_with_params)
+
+                                        elif subsector == "utilities":
+                                            if "Dividend Discount Model" in valuation_methods:
+                                                # Get utility metrics and calculate DDM
+                                                utility_metrics = energy_valuation._calculate_utility_metrics(
+                                                    financial_data_with_params)
+                                                ddm_result = energy_valuation._utility_ddm(ticker,
+                                                                                           financial_data_with_params,
+                                                                                           utility_metrics)
+
+                                            if "Regulated Asset Base" in valuation_methods:
+                                                # Run RAB valuation
+                                                utility_metrics = energy_valuation._calculate_utility_metrics(
+                                                    financial_data_with_params)
+                                                rab_result = energy_valuation._regulated_asset_base_valuation(ticker,
+                                                                                                              financial_data_with_params,
+                                                                                                              utility_metrics)
+
+                                            if "DCF" in valuation_methods:
+                                                # Run utility-specific DCF
+                                                utility_metrics = energy_valuation._calculate_utility_metrics(
+                                                    financial_data_with_params)
+                                                dcf_result = energy_valuation._utility_dcf(ticker,
+                                                                                           financial_data_with_params,
+                                                                                           utility_metrics)
+
+                                            # Combine results
+                                            valuation_result = energy_valuation.value_utility_company(ticker,
+                                                                                                      financial_data_with_params)
+
+                                        elif subsector == "renewables":
+                                            if "Project-Based DCF" in valuation_methods:
+                                                # Get renewable metrics and calculate project DCF
+                                                renewable_metrics = energy_valuation._calculate_renewable_metrics(
+                                                    financial_data_with_params)
+                                                dcf_result = energy_valuation._renewable_project_dcf(ticker,
+                                                                                                     financial_data_with_params,
+                                                                                                     renewable_metrics)
+
+                                            if "Multiples" in valuation_methods:
+                                                # Run renewable-specific multiples valuation
+                                                renewable_metrics = energy_valuation._calculate_renewable_metrics(
+                                                    financial_data_with_params)
+                                                multiples_result = energy_valuation._renewable_multiples_valuation(
+                                                    ticker, financial_data_with_params, renewable_metrics)
+
+                                            if "Real Options" in valuation_methods:
+                                                # Run real options valuation
+                                                renewable_metrics = energy_valuation._calculate_renewable_metrics(
+                                                    financial_data_with_params)
+                                                options_result = energy_valuation._renewable_options_valuation(ticker,
+                                                                                                               financial_data_with_params,
+                                                                                                               renewable_metrics)
+
+                                            # Combine results
+                                            valuation_result = energy_valuation.value_renewable_company(ticker,
+                                                                                                        financial_data_with_params)
+
+                                        else:
+                                            # Fall back to standard energy DCF
+                                            valuation_result = energy_valuation.energy_sector_dcf(ticker,
+                                                                                                  financial_data_with_params)
+
+                                        # Display valuation results
+                                        st.subheader("Valuation Results")
+
+                                        # Get current market price for comparison
+                                        current_price = price_data['Close'].iloc[-1] if not price_data.empty else None
+
+                                        # Display blended value per share
+                                        if valuation_result.get('blended_value_per_share') is not None:
+                                            value_per_share = valuation_result.get('blended_value_per_share')
+                                        else:
+                                            value_per_share = valuation_result.get('value_per_share')
+
+                                        conservative_value = valuation_result.get('conservative_value')
+
+                                        # Create metrics display
+                                        col1, col2, col3 = st.columns(3)
+
+                                        with col1:
+                                            if value_per_share and current_price:
+                                                upside = ((value_per_share / current_price) - 1) * 100
+                                                upside_text = f"{upside:.1f}% {'Upside' if upside > 0 else 'Downside'}"
+
+                                                st.metric(
+                                                    "Estimated Value",
+                                                    f"${value_per_share:.2f}",
+                                                    upside_text,
+                                                    delta_color="normal" if upside > 0 else "inverse"
+                                                )
+                                            else:
+                                                st.metric("Estimated Value",
+                                                          f"${value_per_share:.2f}" if value_per_share else "N/A")
+
+                                        with col2:
+                                            if conservative_value and current_price:
+                                                cons_upside = ((conservative_value / current_price) - 1) * 100
+                                                cons_text = f"{cons_upside:.1f}% {'Upside' if cons_upside > 0 else 'Downside'}"
+
+                                                st.metric(
+                                                    "Conservative Value",
+                                                    f"${conservative_value:.2f}",
+                                                    cons_text,
+                                                    delta_color="normal" if cons_upside > 0 else "inverse"
+                                                )
+                                            else:
+                                                st.metric("Conservative Value",
+                                                          f"${conservative_value:.2f}" if conservative_value else "N/A")
+
+                                        with col3:
+                                            enterprise_value = valuation_result.get('enterprise_value')
+                                            equity_value = valuation_result.get('equity_value')
+
+                                            if enterprise_value:
+                                                st.metric("Enterprise Value", f"${enterprise_value / 1e9:.2f}B")
+                                            else:
+                                                st.metric("Enterprise Value", "N/A")
+
+                                        # Create tabs for different valuation methods
+                                        method_tabs = st.tabs([method for method in valuation_methods])
+
+                                        # Display detailed results for each method
+                                        for i, method in enumerate(valuation_methods):
+                                            with method_tabs[i]:
+                                                if method == "DCF" or method == "Project-Based DCF":
+                                                    # DCF details
+                                                    st.subheader("DCF Valuation Details")
+
+                                                    dcf_params = {
+                                                        "Discount Rate": f"{valuation_result.get('discount_rate', discount_rate) * 100:.1f}%",
+                                                        "Initial Growth Rate": f"{valuation_result.get('initial_growth_rate', 'N/A') if isinstance(valuation_result.get('initial_growth_rate'), (int, float)) else 'N/A'}",
+                                                        "Terminal Growth": f"{valuation_result.get('terminal_growth', 'N/A') if isinstance(valuation_result.get('terminal_growth'), (int, float)) else 'N/A'}"
+                                                    }
+
+                                                    st.json(dcf_params)
+
+                                                    # Display cash flow forecast chart
+                                                    if 'forecasted_cash_flows' in valuation_result or 'forecast_fcf' in valuation_result:
+                                                        fcf_data = valuation_result.get('forecasted_cash_flows',
+                                                                                        valuation_result.get(
+                                                                                            'forecast_fcf', []))
+
+                                                        if fcf_data and len(fcf_data) > 0:
+                                                            st.subheader("Forecasted Cash Flows")
+
+                                                            import plotly.graph_objects as go
+
+                                                            fig = go.Figure()
+                                                            fig.add_trace(
+                                                                go.Bar(
+                                                                    x=[f"Year {i + 1}" for i in range(len(fcf_data))],
+                                                                    y=fcf_data,
+                                                                    marker_color=COLORS['primary']
+                                                                )
+                                                            )
+
+                                                            # Add terminal value
+                                                            if 'terminal_value' in valuation_result:
+                                                                # Calculate relative size for visualization
+                                                                tv_display_value = max(fcf_data) * 2
+
+                                                                fig.add_trace(
+                                                                    go.Bar(
+                                                                        x=["Terminal<br>Value"],
+                                                                        y=[tv_display_value],
+                                                                        marker_color=COLORS['secondary'],
+                                                                        text=[
+                                                                            f"${valuation_result['terminal_value'] / 1e9:.2f}B"],
+                                                                        textposition="outside"
+                                                                    )
+                                                                )
+
+                                                                fig.add_annotation(
+                                                                    x=len(fcf_data),
+                                                                    y=tv_display_value / 2,
+                                                                    text=f"Full Terminal Value: ${valuation_result['terminal_value'] / 1e9:.2f}B<br>(Not to scale)",
+                                                                    showarrow=True,
+                                                                    arrowhead=1
+                                                                )
+
+                                                            fig.update_layout(
+                                                                title="Forecasted Free Cash Flows",
+                                                                xaxis_title="Forecast Period",
+                                                                yaxis_title="Free Cash Flow ($)",
+                                                                plot_bgcolor=VIZ_SETTINGS['background'],
+                                                                paper_bgcolor=VIZ_SETTINGS['background'],
+                                                                font=dict(color=VIZ_SETTINGS['text_color']),
+                                                                height=400
+                                                            )
+
+                                                            st.plotly_chart(fig, use_container_width=True)
+
+                                                elif method == "NAV (Reserve-Based)":
+                                                    # NAV details for upstream
+                                                    st.subheader("Reserve-Based NAV Details")
+
+                                                    if 'reserves_value' in valuation_result:
+                                                        reserves = valuation_result['reserves_value']
+
+                                                        col1, col2 = st.columns(2)
+
+                                                        with col1:
+                                                            st.metric("Oil Value",
+                                                                      f"${reserves.get('oil_value', 0) / 1e9:.2f}B")
+                                                            st.metric("Oil Reserves",
+                                                                      f"{reserves.get('oil_reserves_mmbbl', 0):.1f} MMbbl")
+                                                            st.metric("Oil Price Used",
+                                                                      f"${reserves.get('oil_price', 0):.2f}/bbl")
+
+                                                        with col2:
+                                                            st.metric("Gas Value",
+                                                                      f"${reserves.get('gas_value', 0) / 1e9:.2f}B")
+                                                            st.metric("Gas Reserves",
+                                                                      f"{reserves.get('gas_reserves_bcf', 0):.1f} Bcf")
+                                                            st.metric("Gas Price Used",
+                                                                      f"${reserves.get('gas_price', 0):.2f}/Mcf")
+
+                                                        # Display NAV bridge chart
+                                                        st.subheader("NAV Value Bridge")
+
+                                                        import plotly.graph_objects as go
+
+                                                        # Create NAV bridge chart
+                                                        nav_components = [
+                                                            ('Oil Reserves', reserves.get('oil_value', 0) / 1e9),
+                                                            ('Gas Reserves', reserves.get('gas_value', 0) / 1e9),
+                                                            ('Undeveloped Acreage',
+                                                             valuation_result.get('undeveloped_acreage_value',
+                                                                                  0) / 1e9),
+                                                            ('Other Assets',
+                                                             valuation_result.get('other_assets_value', 0) / 1e9),
+                                                            ('Total Liabilities',
+                                                             -valuation_result.get('total_liabilities', 0) / 1e9),
+                                                            ('Net Asset Value',
+                                                             valuation_result.get('net_asset_value', 0) / 1e9)
+                                                        ]
+
+                                                        # Filter out zero values except NAV
+                                                        nav_components = [c for c in nav_components if
+                                                                          c[1] != 0 or c[0] == 'Net Asset Value']
+
+                                                        fig = go.Figure()
+
+                                                        fig.add_trace(
+                                                            go.Waterfall(
+                                                                name="NAV Bridge",
+                                                                orientation="v",
+                                                                measure=["relative"] * (len(nav_components) - 1) + [
+                                                                    "total"],
+                                                                x=[c[0] for c in nav_components],
+                                                                y=[c[1] for c in nav_components],
+                                                                connector={"line": {"color": "rgb(63, 63, 63)"}},
+                                                                increasing={"marker": {"color": COLORS['success']}},
+                                                                decreasing={"marker": {"color": COLORS['danger']}},
+                                                                totals={"marker": {"color": COLORS['secondary']}}
+                                                            )
+                                                        )
+
+                                                        fig.update_layout(
+                                                            title="Net Asset Value Components ($ Billions)",
+                                                            plot_bgcolor=VIZ_SETTINGS['background'],
+                                                            paper_bgcolor=VIZ_SETTINGS['background'],
+                                                            font=dict(color=VIZ_SETTINGS['text_color']),
+                                                            height=400
+                                                        )
+
+                                                        st.plotly_chart(fig, use_container_width=True)
+
+                                                elif method == "Sum-of-the-Parts":
+                                                    # SOTP details for integrated
+                                                    st.subheader("Sum-of-the-Parts Valuation")
+
+                                                    if 'segment_values' in valuation_result:
+                                                        segment_values = valuation_result['segment_values']
+
+                                                        # Display segment values as a table
+                                                        segment_data = []
+                                                        for segment, data in segment_values.items():
+                                                            segment_data.append({
+                                                                "Segment": segment,
+                                                                "EBITDA ($M)": data.get('EBITDA', 0) / 1e6,
+                                                                "EV/EBITDA": data.get('EV_EBITDA_Multiple', 0),
+                                                                "Value ($B)": data.get('Enterprise_Value', 0) / 1e9
+                                                            })
+
+                                                        segment_df = pd.DataFrame(segment_data)
+                                                        st.dataframe(segment_df, use_container_width=True)
+
+                                                        # Display SOTP pie chart
+                                                        st.subheader("Segment Value Breakdown")
+
+                                                        import plotly.express as px
+
+                                                        # Create pie chart of segment values
+                                                        fig = px.pie(
+                                                            segment_df,
+                                                            values="Value ($B)",
+                                                            names="Segment",
+                                                            title="Enterprise Value by Segment",
+                                                            color_discrete_sequence=list(COLORS['sectors'].values())
+                                                        )
+
+                                                        fig.update_layout(
+                                                            plot_bgcolor=VIZ_SETTINGS['background'],
+                                                            paper_bgcolor=VIZ_SETTINGS['background'],
+                                                            font=dict(color=VIZ_SETTINGS['text_color']),
+                                                            legend=dict(font=dict(color=VIZ_SETTINGS['text_color'])),
+                                                            height=400
+                                                        )
+
+                                                        st.plotly_chart(fig, use_container_width=True)
+
+                                                        # Corporate overhead and debt adjustments
+                                                        col1, col2, col3 = st.columns(3)
+
+                                                        with col1:
+                                                            st.metric(
+                                                                "Sum of Segments",
+                                                                f"${sum(data.get('Enterprise_Value', 0) for data in segment_values.values()) / 1e9:.2f}B"
+                                                            )
+
+                                                        with col2:
+                                                            st.metric(
+                                                                "Corporate Overhead",
+                                                                f"${valuation_result.get('corporate_overhead', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        with col3:
+                                                            st.metric(
+                                                                "Net Debt",
+                                                                f"${valuation_result.get('net_debt', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                elif method == "Dividend Discount Model":
+                                                    # DDM details
+                                                    st.subheader("Dividend Discount Model Details")
+
+                                                    if valuation_result.get(
+                                                            'method') == 'utility_ddm' or valuation_result.get(
+                                                            'method') == 'midstream_ddm':
+                                                        # Get method-specific result
+                                                        if valuation_result.get('method') == 'utility_ddm':
+                                                            ddm_result = valuation_result
+                                                        elif valuation_result.get('method') == 'midstream_ddm':
+                                                            ddm_result = valuation_result
+                                                        else:
+                                                            # Try to get component from blended result
+                                                            ddm_result = valuation_result.get('ddm_valuation', {})
+
+                                                        # Display DDM parameters
+                                                        col1, col2, col3 = st.columns(3)
+
+                                                        with col1:
+                                                            st.metric(
+                                                                "Current Dividend",
+                                                                f"${ddm_result.get('current_dividend', 0):.2f}"
+                                                            )
+
+                                                        with col2:
+                                                            st.metric(
+                                                                "Dividend Growth",
+                                                                f"{ddm_result.get('dividend_growth_rate', 0) * 100:.1f}%"
+                                                            )
+
+                                                        with col3:
+                                                            st.metric(
+                                                                "Discount Rate",
+                                                                f"{ddm_result.get('discount_rate', 0) * 100:.1f}%"
+                                                            )
+
+                                                        # Display dividend forecast chart if available
+                                                        if 'future_distributions' in ddm_result:
+                                                            distributions = ddm_result['future_distributions']
+
+                                                            st.subheader("Projected Dividends/Distributions")
+
+                                                            import plotly.graph_objects as go
+
+                                                            fig = go.Figure()
+                                                            fig.add_trace(
+                                                                go.Scatter(
+                                                                    x=[f"Year {i + 1}" for i in
+                                                                       range(len(distributions))],
+                                                                    y=distributions,
+                                                                    mode='lines+markers',
+                                                                    marker=dict(color=COLORS['primary'])
+                                                                )
+                                                            )
+
+                                                            fig.update_layout(
+                                                                title="Projected Dividends/Distributions",
+                                                                xaxis_title="Year",
+                                                                yaxis_title="Dividend/Distribution ($)",
+                                                                plot_bgcolor=VIZ_SETTINGS['background'],
+                                                                paper_bgcolor=VIZ_SETTINGS['background'],
+                                                                font=dict(color=VIZ_SETTINGS['text_color']),
+                                                                height=400
+                                                            )
+
+                                                            st.plotly_chart(fig, use_container_width=True)
+
+                                                elif method == "Regulated Asset Base":
+                                                    # RAB details for utilities
+                                                    st.subheader("Regulated Asset Base Valuation")
+
+                                                    # Get RAB results
+                                                    if valuation_result.get('method') == 'regulated_asset_base':
+                                                        rab_result = valuation_result
+                                                    else:
+                                                        # Try to get component from blended result
+                                                        rab_result = valuation_result.get('rab_valuation', {})
+
+                                                    if rab_result:
+                                                        col1, col2 = st.columns(2)
+
+                                                        with col1:
+                                                            st.metric(
+                                                                "Regulated Asset Base",
+                                                                f"${rab_result.get('rab', 0) / 1e9:.2f}B"
+                                                            )
+                                                            st.metric(
+                                                                "Equity in RAB",
+                                                                f"${rab_result.get('equity_value_in_rab', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        with col2:
+                                                            st.metric(
+                                                                "RAB Multiple",
+                                                                f"{rab_result.get('rab_multiple', 0):.2f}x"
+                                                            )
+                                                            st.metric(
+                                                                "Adjusted RAB Value",
+                                                                f"${rab_result.get('adjusted_rab_value', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        # Display RAB adjustment factors
+                                                        st.subheader("RAB Valuation Adjustments")
+
+                                                        adjustments = {
+                                                            "Base RAB Multiple": 1.0,
+                                                            "ROE Adjustment": rab_result.get('roe_adjustment', 0),
+                                                            "Growth Adjustment": rab_result.get('growth_adjustment', 0),
+                                                            "Final Multiple": rab_result.get('rab_multiple', 0)
+                                                        }
+
+                                                        import plotly.graph_objects as go
+
+                                                        fig = go.Figure()
+
+                                                        fig.add_trace(
+                                                            go.Waterfall(
+                                                                name="RAB Multiple",
+                                                                orientation="v",
+                                                                measure=["absolute", "relative", "relative", "total"],
+                                                                x=list(adjustments.keys()),
+                                                                y=list(adjustments.values()),
+                                                                connector={"line": {"color": "rgb(63, 63, 63)"}},
+                                                                increasing={"marker": {"color": COLORS['success']}},
+                                                                decreasing={"marker": {"color": COLORS['danger']}},
+                                                                totals={"marker": {"color": COLORS['secondary']}}
+                                                            )
+                                                        )
+
+                                                        fig.update_layout(
+                                                            title="RAB Multiple Adjustments",
+                                                            plot_bgcolor=VIZ_SETTINGS['background'],
+                                                            paper_bgcolor=VIZ_SETTINGS['background'],
+                                                            font=dict(color=VIZ_SETTINGS['text_color']),
+                                                            height=400
+                                                        )
+
+                                                        st.plotly_chart(fig, use_container_width=True)
+
+                                                elif method == "Multiples":
+                                                    # Multiples details
+                                                    st.subheader("Multiples Valuation Details")
+
+                                                    # Get multiples results based on subsector
+                                                    if subsector == "oil_gas":
+                                                        if model == "upstream":
+                                                            multiples_result = valuation_result.get(
+                                                                'multiples_valuation', {})
+                                                        elif model == "integrated":
+                                                            multiples_result = valuation_result.get(
+                                                                'multiples_valuation', {})
+                                                        elif model == "midstream":
+                                                            multiples_result = valuation_result.get(
+                                                                'multiples_valuation', {})
+                                                    elif subsector == "renewables":
+                                                        multiples_result = valuation_result.get('multiples_valuation',
+                                                                                                {})
+                                                    else:
+                                                        # Try to get component from blended result
+                                                        multiples_result = {}
+
+                                                    if multiples_result and 'valuations' in multiples_result:
+                                                        valuations = multiples_result['valuations']
+
+                                                        # Display multiples as a table
+                                                        multiples_data = []
+                                                        for metric, data in valuations.items():
+                                                            if 'enterprise_value' in data:
+                                                                multiples_data.append({
+                                                                    "Metric": metric.replace('_', ' ').replace('EV ',
+                                                                                                               'EV/'),
+                                                                    "Multiple": data.get('multiple', 0),
+                                                                    "Value ($B)": data.get('enterprise_value', 0) / 1e9
+                                                                })
+
+                                                        if multiples_data:
+                                                            multiples_df = pd.DataFrame(multiples_data)
+                                                            st.dataframe(multiples_df, use_container_width=True)
+
+                                                            # Display multiples bar chart
+                                                            st.subheader("Value by Multiple")
+
+                                                            import plotly.express as px
+
+                                                            fig = px.bar(
+                                                                multiples_df,
+                                                                x="Metric",
+                                                                y="Value ($B)",
+                                                                title="Enterprise Value by Valuation Metric",
+                                                                color="Metric",
+                                                                text="Value ($B)",
+                                                                color_discrete_sequence=list(COLORS['sectors'].values())
+                                                            )
+
+                                                            fig.update_layout(
+                                                                xaxis_title="Valuation Metric",
+                                                                yaxis_title="Enterprise Value ($B)",
+                                                                plot_bgcolor=VIZ_SETTINGS['background'],
+                                                                paper_bgcolor=VIZ_SETTINGS['background'],
+                                                                font=dict(color=VIZ_SETTINGS['text_color']),
+                                                                height=400
+                                                            )
+
+                                                            st.plotly_chart(fig, use_container_width=True)
+
+                                                        # Display multiples adjustment factors if available
+                                                        if 'base_multiples' in multiples_result and 'adjusted_multiples' in multiples_result:
+                                                            st.subheader("Multiple Adjustments")
+
+                                                            col1, col2 = st.columns(2)
+
+                                                            with col1:
+                                                                st.subheader("Base Multiples")
+                                                                base_mult_df = pd.DataFrame({
+                                                                    "Multiple": list(
+                                                                        multiples_result['base_multiples'].keys()),
+                                                                    "Value": list(
+                                                                        multiples_result['base_multiples'].values())
+                                                                })
+                                                                st.dataframe(base_mult_df)
+
+                                                            with col2:
+                                                                st.subheader("Adjusted Multiples")
+                                                                adj_mult_df = pd.DataFrame({
+                                                                    "Multiple": list(
+                                                                        multiples_result['adjusted_multiples'].keys()),
+                                                                    "Value": list(
+                                                                        multiples_result['adjusted_multiples'].values())
+                                                                })
+                                                                st.dataframe(adj_mult_df)
+
+                                                elif method == "Real Options":
+                                                    # Real options details for renewables
+                                                    st.subheader("Real Options Valuation")
+
+                                                    # Get options results
+                                                    if valuation_result.get('method') == 'renewable_options':
+                                                        options_result = valuation_result
+                                                    else:
+                                                        # Try to get component from blended result
+                                                        options_result = valuation_result.get('options_valuation', {})
+
+                                                    if options_result and 'components' in options_result:
+                                                        components = options_result['components']
+
+                                                        col1, col2, col3 = st.columns(3)
+
+                                                        with col1:
+                                                            st.metric(
+                                                                "Operating Assets",
+                                                                f"${components.get('operating_assets_value', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        with col2:
+                                                            st.metric(
+                                                                "Pipeline Value",
+                                                                f"${components.get('pipeline_value', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        with col3:
+                                                            st.metric(
+                                                                "Growth Options",
+                                                                f"${components.get('growth_options_value', 0) / 1e9:.2f}B"
+                                                            )
+
+                                                        # Display pipeline breakdown if available
+                                                        if 'pipeline_details' in options_result:
+                                                            pipeline = options_result['pipeline_details']
+
+                                                            st.subheader("Pipeline Value Breakdown")
+
+                                                            pipeline_data = []
+                                                            for stage, data in pipeline.items():
+                                                                pipeline_data.append({
+                                                                    "Stage": stage.replace('_', ' ').title(),
+                                                                    "Capacity (MW)": data.get('mw', 0),
+                                                                    "Success Probability": f"{data.get('success_prob', 0) * 100:.0f}%",
+                                                                    "Value per MW ($K)": data.get('value_per_mw',
+                                                                                                  0) / 1e3,
+                                                                    "Expected Value ($M)": data.get('expected_value',
+                                                                                                    0) / 1e6
+                                                                })
+
+                                                            pipeline_df = pd.DataFrame(pipeline_data)
+                                                            st.dataframe(pipeline_df, use_container_width=True)
+
+                                                            # Create pie chart of pipeline values
+                                                            import plotly.express as px
+
+                                                            fig = px.pie(
+                                                                pipeline_df,
+                                                                values="Expected Value ($M)",
+                                                                names="Stage",
+                                                                title="Pipeline Value by Development Stage",
+                                                                color_discrete_sequence=list(COLORS['sectors'].values())
+                                                            )
+
+                                                            fig.update_layout(
+                                                                plot_bgcolor=VIZ_SETTINGS['background'],
+                                                                paper_bgcolor=VIZ_SETTINGS['background'],
+                                                                font=dict(color=VIZ_SETTINGS['text_color']),
+                                                                legend=dict(
+                                                                    font=dict(color=VIZ_SETTINGS['text_color'])),
+                                                                height=400
+                                                            )
+
+                                                            st.plotly_chart(fig, use_container_width=True)
+
+                                        # Add investment recommendation based on valuation
+                                        st.subheader("Investment Recommendation")
+
+                                        # Calculate metrics for recommendation
+                                        if value_per_share and current_price:
+                                            upside_pct = ((value_per_share / current_price) - 1) * 100
+
+                                            # Set thresholds for recommendations
+                                            if upside_pct > 25:
+                                                recommendation = "Strong Buy"
+                                                recommendation_color = "#74f174"  # Green
+                                                rationale = "Significant undervaluation suggests strong upside potential."
+                                            elif upside_pct > 10:
+                                                recommendation = "Buy"
+                                                recommendation_color = "#a5d6a7"  # Light green
+                                                rationale = "Material undervaluation suggests attractive entry point."
+                                            elif upside_pct > -10:
+                                                recommendation = "Hold"
+                                                recommendation_color = "#fff59d"  # Yellow
+                                                rationale = "Current valuation appears reasonable relative to intrinsic value."
+                                            elif upside_pct > -25:
+                                                recommendation = "Reduce"
+                                                recommendation_color = "#ffab91"  # Light red
+                                                rationale = "Overvaluation suggests reducing position size."
+                                            else:
+                                                recommendation = "Sell"
+                                                recommendation_color = "#faa1a4"  # Red
+                                                rationale = "Significant overvaluation indicates potential for material downside."
+
+                                            # Display recommendation
+                                            st.markdown(
+                                                f"<h3 style='text-align: center; color: {recommendation_color};'>{recommendation}</h3>",
+                                                unsafe_allow_html=True)
+
+                                            # Show rationale
+                                            st.markdown(f"<p style='text-align: center;'>{rationale}</p>",
+                                                        unsafe_allow_html=True)
+
+                                            # Add sector-specific considerations
+                                            if subsector == "oil_gas":
+                                                st.markdown("""
+                                                **Sector-Specific Considerations:**
+                                                - Commodity price volatility creates both risks and opportunities
+                                                - Capital intensity requires focus on capital allocation efficiency
+                                                - Energy transition presents long-term structural challenges
+                                                """)
+                                            elif subsector == "utilities":
+                                                st.markdown("""
+                                                **Sector-Specific Considerations:**
+                                                - Regulated returns provide stability but limit upside
+                                                - Rate base growth is key driver of long-term value
+                                                - Energy transition creates both risks and opportunities
+                                                """)
+                                            elif subsector == "renewables":
+                                                st.markdown("""
+                                                **Sector-Specific Considerations:**
+                                                - Policy support provides tailwinds but creates regulatory risk
+                                                - Project development execution is critical success factor
+                                                - Technology innovation can drive both opportunities and obsolescence risk
+                                                """)
+                                        else:
+                                            st.info("Insufficient data to generate investment recommendation.")
+
+                                    except Exception as e:
+                                        st.error(f"Error in energy sector valuation: {str(e)}")
+                                        st.error(traceback.format_exc())
+
+                        except Exception as e:
+                            st.error(f"Error in energy sector valuation tab: {str(e)}")
+                            st.error(traceback.format_exc())
+
+                    elif sector == "Financials":
+                    # Financial sector specific valuation
+                    # Код для финансового сектора будет добавлен здесь
+
+                    elif sector == "Information Technology" or sector == "Technology":
+                    # Technology sector specific valuation
+                    # Код для технологического сектора будет добавлен здесь
+
+                    elif sector == "Healthcare":
+                    # Healthcare sector specific valuation
+                    # Код для сектора здравоохранения будет добавлен здесь
+
+                    elif sector == "Real Estate":
+                    # Real Estate sector specific valuation
+                    # Код для сектора недвижимости будет добавлен здесь
+
+                    elif sector == "Consumer Discretionary":
+                    # Consumer Discretionary sector specific valuation
+                    # Код для сектора потребительских товаров выборочного спроса будет добавлен здесь
+
+                    elif sector == "Consumer Staples":
+                    # Consumer Staples sector specific valuation
+                    # Код для сектора потребительских товаров первой необходимости будет добавлен здесь
+
+                    elif sector == "Industrials":
+                    # Industrials sector specific valuation
+                    # Код для промышленного сектора будет добавлен здесь
+
+                    elif sector == "Materials":
+                    # Materials sector specific valuation
+                    # Код для сектора материалов будет добавлен здесь
+
+                    elif sector == "Communication Services":
+                    # Communication Services sector specific valuation
+                    # Код для сектора коммуникационных услуг будет добавлен здесь
+
+                    elif sector == "Utilities":
+                    # Utilities sector specific valuation
+                    # Код для сектора коммунальных услуг будет добавлен здесь
+
+                    else:
+                    # Generic valuation for unknown sectors
+                    # Существующий код валюации с вкладками
+
+
                     # Create tabs for different valuation methods
                     valuation_tabs = st.tabs([
                         "Overview",
@@ -1518,6 +2601,7 @@ def main():
                         "Asset-Based Valuation",
                         "Sensitivity Analysis"
                     ])
+
 
                     # Overview tab
                     with valuation_tabs[0]:
@@ -1654,13 +2738,374 @@ def main():
                         with col2:
                             margin_of_safety = st.slider("Margin of Safety (%)", min_value=0, max_value=50,
                                                          value=25) / 100
+                            # Add sector-specific parameters if sector is known
+                            if sector != 'Unknown':
+                                st.subheader(f"Sector-Specific Parameters ({sector})")
+
+                                # Financial sector specific parameters
+                                if sector == "Financials":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        bank_type = st.selectbox(
+                                            "Bank/Financial Type",
+                                            ["Commercial Bank", "Investment Bank", "Insurance", "Asset Management",
+                                             "Diversified"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        use_dividend_model = st.checkbox("Use Dividend Discount Model", value=True,
+                                                                         help="Financial companies are often better valued using dividend models due to their capital structure")
+
+                                    # Additional industry-specific metrics
+                                    if bank_type in ["Commercial Bank", "Investment Bank"]:
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            nim = st.slider("Net Interest Margin (%)",
+                                                            min_value=1.0, max_value=5.0, value=2.5, step=0.1)
+                                        with col2:
+                                            capital_ratio = st.slider("Target Capital Ratio (%)",
+                                                                      min_value=8.0, max_value=20.0, value=12.0,
+                                                                      step=0.5)
+                                    elif bank_type == "Insurance":
+                                        combined_ratio = st.slider("Combined Ratio (%)",
+                                                                   min_value=80.0, max_value=120.0, value=95.0,
+                                                                   step=1.0,
+                                                                   help="Combined ratio under 100% indicates underwriting profitability")
+
+                                # Technology sector specific parameters
+                                elif sector == "Information Technology" or sector == "Technology":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        tech_type = st.selectbox(
+                                            "Technology Type",
+                                            ["Software", "Hardware", "Semiconductors", "IT Services", "Internet"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        rd_intensity = st.slider("R&D Intensity (%)",
+                                                                 min_value=5.0, max_value=30.0, value=15.0, step=1.0,
+                                                                 help="R&D spending as percentage of revenue")
+
+                                    # Additional industry-specific metrics
+                                    if tech_type == "Software" or tech_type == "Internet":
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            saas_metrics = st.checkbox("Consider SaaS Metrics", value=True)
+                                        with col2:
+                                            if saas_metrics:
+                                                ltv_cac = st.slider("LTV/CAC Ratio",
+                                                                    min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+                                                                    help="Lifetime Value to Customer Acquisition Cost ratio")
+
+                                # Energy sector specific parameters
+                                elif sector == "Energy":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        energy_type = st.selectbox(
+                                            "Energy Type",
+                                            ["Integrated Oil & Gas", "E&P", "Refining & Marketing", "Renewable Energy"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        commodity_scenario = st.selectbox(
+                                            "Commodity Price Scenario",
+                                            ["Base Case", "Bull Case", "Bear Case"],
+                                            index=0
+                                        )
+
+                                    if energy_type in ["Integrated Oil & Gas", "E&P"]:
+                                        reserve_life = st.slider("Reserve Life (years)",
+                                                                 min_value=5, max_value=30, value=15, step=1,
+                                                                 help="Years of production at current rates")
+
+                                # Healthcare sector specific parameters
+                                elif sector == "Healthcare":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        healthcare_type = st.selectbox(
+                                            "Healthcare Type",
+                                            ["Pharmaceuticals", "Biotechnology", "Medical Devices",
+                                             "Healthcare Services"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        if healthcare_type in ["Pharmaceuticals", "Biotechnology"]:
+                                            pipeline_value = st.slider("Pipeline Value Adjustment (%)",
+                                                                       min_value=-20, max_value=100, value=30, step=5,
+                                                                       help="Adjustment for R&D pipeline value")
+
+                                # Real Estate sector specific parameters
+                                elif sector == "Real Estate":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        property_type = st.selectbox(
+                                            "Property Type",
+                                            ["Residential", "Commercial", "Industrial", "Retail", "Office", "Mixed",
+                                             "Specialized"],
+                                            index=5
+                                        )
+                                    with col2:
+                                        reit_structure = st.checkbox("REIT Structure", value=True,
+                                                                     help="Real Estate Investment Trust tax structure")
+
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        cap_rate = st.slider("Capitalization Rate (%)",
+                                                             min_value=3.0, max_value=12.0, value=6.0, step=0.1,
+                                                             help="Net operating income divided by property value")
+                                    with col2:
+                                        occupancy_rate = st.slider("Occupancy Rate (%)",
+                                                                   min_value=70.0, max_value=100.0, value=95.0,
+                                                                   step=1.0)
+
+                                # Consumer Discretionary sector specific parameters
+                                elif sector == "Consumer Discretionary":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        retail_type = st.selectbox(
+                                            "Retail Type",
+                                            ["Specialty Retail", "Department Stores", "Online Retail", "Apparel",
+                                             "Automotive", "Restaurants"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        omnichannel = st.checkbox("Omnichannel Strategy", value=True)
+
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        sss_growth = st.slider("Same-Store Sales Growth (%)",
+                                                               min_value=-10.0, max_value=15.0, value=3.0, step=0.5,
+                                                               help="Year-over-year sales growth for existing stores")
+                                    with col2:
+                                        gm_trend = st.slider("Gross Margin Trend (bps)",
+                                                             min_value=-200, max_value=200, value=0, step=10,
+                                                             help="Annual change in gross margin in basis points")
+
+                                # Consumer Staples sector specific parameters
+                                elif sector == "Consumer Staples":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        staples_type = st.selectbox(
+                                            "Consumer Staples Type",
+                                            ["Food & Beverage", "Household Products", "Personal Care", "Food Retail",
+                                             "Staples Distribution"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        brand_strength = st.slider("Brand Strength",
+                                                                   min_value=1, max_value=5, value=3, step=1,
+                                                                   help="1=Weak branding, 5=Strong brand portfolio with pricing power")
+
+                                    pricing_power = st.slider("Pricing Power (%)",
+                                                              min_value=0.0, max_value=10.0, value=2.0, step=0.5,
+                                                              help="Ability to pass through input cost inflation")
+
+                                # Industrials sector specific parameters
+                                elif sector == "Industrials":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        industry_type = st.selectbox(
+                                            "Industrial Type",
+                                            ["Capital Goods", "Commercial Services", "Transportation",
+                                             "Aerospace & Defense", "Machinery"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        if industry_type == "Capital Goods" or industry_type == "Machinery":
+                                            capex_cycle = st.selectbox(
+                                                "Capex Cycle Position",
+                                                ["Early Cycle", "Mid Cycle", "Late Cycle", "Downturn"],
+                                                index=1
+                                            )
+                                        elif industry_type == "Transportation":
+                                            transport_mode = st.selectbox(
+                                                "Transportation Mode",
+                                                ["Air", "Rail", "Marine", "Trucking", "Logistics"],
+                                                index=0
+                                            )
+
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        operating_margin = st.slider("Normalized Operating Margin (%)",
+                                                                     min_value=5.0, max_value=25.0, value=15.0,
+                                                                     step=0.5)
+                                    with col2:
+                                        asset_turnover = st.slider("Asset Turnover Ratio",
+                                                                   min_value=0.5, max_value=2.5, value=1.2, step=0.1,
+                                                                   help="Revenue divided by assets - efficiency metric")
+
+                                # Materials sector specific parameters
+                                elif sector == "Materials":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        material_type = st.selectbox(
+                                            "Materials Type",
+                                            ["Chemicals", "Metals & Mining", "Construction Materials",
+                                             "Paper & Forest Products", "Containers & Packaging"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        if material_type == "Metals & Mining":
+                                            commodity_type = st.selectbox(
+                                                "Commodity Type",
+                                                ["Precious Metals", "Base Metals", "Iron Ore", "Coal", "Diversified"],
+                                                index=4
+                                            )
+
+                                    commodity_price_outlook = st.slider("Commodity Price Outlook",
+                                                                        min_value=-20, max_value=20, value=0, step=5,
+                                                                        help="Expected change in commodity prices (%)")
+
+                                # Communication Services sector specific parameters
+                                elif sector == "Communication Services":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        comm_type = st.selectbox(
+                                            "Communication Type",
+                                            ["Telecommunications", "Media", "Entertainment", "Interactive Media"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        if comm_type == "Telecommunications":
+                                            telecom_type = st.selectbox(
+                                                "Telecom Type",
+                                                ["Wireless", "Wireline", "Integrated", "Infrastructure"],
+                                                index=2
+                                            )
+                                        elif comm_type in ["Media", "Entertainment", "Interactive Media"]:
+                                            content_investment = st.slider("Content Investment ($B)",
+                                                                           min_value=0.1, max_value=20.0, value=2.0,
+                                                                           step=0.1,
+                                                                           help="Annual spending on content creation")
+
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        if comm_type == "Telecommunications":
+                                            arpu = st.slider("ARPU ($)",
+                                                             min_value=10, max_value=100, value=45, step=5,
+                                                             help="Average Revenue Per User")
+                                            churn = st.slider("Annual Churn Rate (%)",
+                                                              min_value=0.5, max_value=5.0, value=1.2, step=0.1,
+                                                              help="Percentage of customers who leave annually")
+                                        else:
+                                            dau_mau = st.slider("DAU/MAU Ratio (%)",
+                                                                min_value=10, max_value=70, value=30, step=5,
+                                                                help="Daily Active Users / Monthly Active Users")
+
+                                # Utilities sector specific parameters
+                                elif sector == "Utilities":
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        utility_type = st.selectbox(
+                                            "Utility Type",
+                                            ["Electric", "Gas", "Water", "Multi-Utility", "Independent Power Producer"],
+                                            index=0
+                                        )
+                                    with col2:
+                                        regulatory_model = st.selectbox(
+                                            "Regulatory Framework",
+                                            ["Cost-of-Service", "Incentive-Based", "Hybrid", "Deregulated"],
+                                            index=0
+                                        )
+
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        allowed_roe = st.slider("Allowed Return on Equity (%)",
+                                                                min_value=7.0, max_value=12.0, value=9.5, step=0.1,
+                                                                help="Regulator-approved return rate")
+                                    with col2:
+                                        rate_base_growth = st.slider("Rate Base Growth (%)",
+                                                                     min_value=1.0, max_value=8.0, value=4.0, step=0.5,
+                                                                     help="Annual growth in regulated asset base")
+
 
                         # Run DCF valuation
                         if st.button("Calculate DCF Valuation", type="primary"):
                             with st.spinner("Calculating DCF valuation..."):
                                 # Use sector-appropriate model if available
+                                # Add sector-specific parameters to the kwargs
+                                sector_kwargs = {}
+                                if sector == "Financials":
+                                    sector_kwargs["bank_type"] = bank_type
+                                    if use_dividend_model:
+                                        sector_kwargs["use_dividend_model"] = True
+                                    if bank_type in ["Commercial Bank", "Investment Bank"]:
+                                        sector_kwargs["net_interest_margin"] = nim / 100
+                                        sector_kwargs["capital_ratio"] = capital_ratio / 100
+                                    elif bank_type == "Insurance":
+                                        sector_kwargs["combined_ratio"] = combined_ratio / 100
+
+                                elif sector == "Information Technology" or sector == "Technology":
+                                    sector_kwargs["tech_type"] = tech_type
+                                    sector_kwargs["rd_intensity"] = rd_intensity / 100
+                                    if tech_type in ["Software", "Internet"] and saas_metrics:
+                                        sector_kwargs["ltv_cac"] = ltv_cac
+
+                                elif sector == "Energy":
+                                    sector_kwargs["energy_type"] = energy_type
+                                    sector_kwargs["commodity_scenario"] = commodity_scenario
+                                    if energy_type in ["Integrated Oil & Gas", "E&P"]:
+                                        sector_kwargs["reserve_life"] = reserve_life
+
+                                elif sector == "Healthcare":
+                                    sector_kwargs["subsector"] = healthcare_type
+                                    if healthcare_type in ["Pharmaceuticals", "Biotechnology"]:
+                                        sector_kwargs["pipeline_adjustment"] = pipeline_value / 100
+
+                                elif sector == "Real Estate":
+                                    sector_kwargs["property_type"] = property_type
+                                    sector_kwargs["reit_structure"] = reit_structure
+                                    sector_kwargs["cap_rate"] = cap_rate / 100
+                                    sector_kwargs["occupancy_rate"] = occupancy_rate / 100
+
+                                elif sector == "Consumer Discretionary":
+                                    sector_kwargs["retail_type"] = retail_type
+                                    sector_kwargs["omnichannel"] = omnichannel
+                                    sector_kwargs["sss_growth"] = sss_growth / 100
+                                    sector_kwargs["gm_trend"] = gm_trend / 10000  # Convert bps to decimal
+
+                                elif sector == "Consumer Staples":
+                                    sector_kwargs["staples_type"] = staples_type
+                                    sector_kwargs["brand_strength"] = brand_strength
+                                    sector_kwargs["pricing_power"] = pricing_power / 100
+
+                                elif sector == "Industrials":
+                                    sector_kwargs["industry_type"] = industry_type
+                                    sector_kwargs["operating_margin"] = operating_margin / 100
+                                    sector_kwargs["asset_turnover"] = asset_turnover
+                                    if industry_type == "Capital Goods" or industry_type == "Machinery":
+                                        sector_kwargs["capex_cycle"] = capex_cycle
+                                    elif industry_type == "Transportation":
+                                        sector_kwargs["transport_mode"] = transport_mode
+
+                                elif sector == "Materials":
+                                    sector_kwargs["material_type"] = material_type
+                                    sector_kwargs["commodity_price_outlook"] = commodity_price_outlook / 100
+                                    if material_type == "Metals & Mining":
+                                        sector_kwargs["commodity_type"] = commodity_type
+
+                                elif sector == "Communication Services":
+                                    sector_kwargs["comm_type"] = comm_type
+                                    if comm_type == "Telecommunications":
+                                        sector_kwargs["telecom_type"] = telecom_type
+                                        sector_kwargs["arpu"] = arpu
+                                        sector_kwargs["churn"] = churn / 100
+                                    else:
+                                        sector_kwargs["dau_mau"] = dau_mau / 100
+                                        if comm_type in ["Media", "Entertainment", "Interactive Media"]:
+                                            sector_kwargs[
+                                                "content_investment"] = content_investment * 1e9  # Convert to dollars
+
+                                elif sector == "Utilities":
+                                    sector_kwargs["utility_type"] = utility_type
+                                    sector_kwargs["regulatory_model"] = regulatory_model
+                                    sector_kwargs["allowed_roe"] = allowed_roe / 100
+                                    sector_kwargs["rate_base_growth"] = rate_base_growth / 100
+
+                                # Use sector-appropriate model if available
                                 if sector != 'Unknown':
-                                    dcf_result = valuation_factory.get_company_valuation(ticker, sector)
+                                    dcf_result = valuation_factory.get_company_valuation(ticker, sector,
+                                                                                         **sector_kwargs)
                                 else:
                                     # Use multi stage DCF with custom parameters
                                     # Modify financial_data to include the custom parameters
