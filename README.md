@@ -1,4 +1,4 @@
-# Stock Analysis System
+# Stock Analysis System 🔄 In Development
 
 A comprehensive financial analysis and valuation tool for publicly traded companies, with sector-specific valuation models.
 
