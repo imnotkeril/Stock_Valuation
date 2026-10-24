@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+StockAnalysisSystem/.env.txt
+
+# IDE
+.idea/
+
+# Runtime data and logs
+StockAnalysisSystem/logs/
+StockAnalysisSystem/data/cache/
+StockAnalysisSystem/src/data/cache/
