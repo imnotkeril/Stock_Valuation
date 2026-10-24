@@ -3,914 +3,1607 @@ import sys
 import logging
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any
 from datetime import datetime
 
-# Add parent directory to path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+# Add project root to path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, project_root)
 
-from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
-from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.config import SECTOR_METRICS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.valuation.sector_factor import SectorAnalyzer, SectorFactory
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('healthcare_valuation')
+logger = logging.getLogger('healthcare_sector')
 
 
-class HealthcareValuation(BaseValuation):
+class HealthcareSectorAnalyzer(SectorAnalyzer):
     """
-    Healthcare sector valuation model.
+    Specialized analyzer for Healthcare sector companies.
 
-    Specialized for pharmaceutical companies, biotechnology firms,
-    medical device manufacturers, and healthcare service providers.
-    Features specialized valuation methodologies including:
-
-    - DCF with R&D adjustment
-    - Pipeline/Drug value analysis
-    - Patent portfolio valuation
-    - Multiples analysis adapted for healthcare subsectors
+    Healthcare companies have unique characteristics that require specific analysis:
+    1. High R&D expenditures with uncertain returns and long development timelines
+    2. Patent protection creates temporary monopolies but with defined lifespans
+    3. Regulatory approvals create binary outcomes for clinical-stage companies
+    4. Different business models within healthcare (pharma, biotech, medical devices, services)
+    5. Demographic trends and public policy heavily influence growth
     """
 
-    def __init__(self, data_loader=None):
+    def __init__(self, sector_name: str = "Healthcare"):
+        """Initialize the Healthcare sector analyzer"""
+        super().__init__(sector_name)
+        self.data_loader = DataLoader()
+        logger.info("Healthcare Sector Analyzer initialized")
+
+    def analyze_company(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Initialize healthcare valuation model with sector-specific parameters.
+        Analyze a healthcare company using sector-specific metrics and methods
 
         Args:
-            data_loader: Optional data loader instance
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with analysis results
         """
-        super().__init__(data_loader)
-
-        # Sector-specific parameters
-        self.sector_params = SECTOR_DCF_PARAMETERS.get('Healthcare', {})
-
-        # Default subsector multiples for valuation
-        self.subsector_multiples = {
-            'Pharmaceuticals': {
-                'p_e': 20,
-                'ev_ebitda': 13,
-                'p_s': 4.5,
-                'ev_revenue': 5,
-                'p_b': 4.2
-            },
-            'Biotechnology': {
-                'p_e': 25,
-                'ev_ebitda': 15,
-                'p_s': 8,
-                'ev_revenue': 9,
-                'p_b': 5
-            },
-            'Medical Devices': {
-                'p_e': 22,
-                'ev_ebitda': 16,
-                'p_s': 5,
-                'ev_revenue': 6,
-                'p_b': 4
-            },
-            'Healthcare Services': {
-                'p_e': 18,
-                'ev_ebitda': 12,
-                'p_s': 2,
-                'ev_revenue': 2.5,
-                'p_b': 3.5
-            },
-            'Healthcare Technology': {
-                'p_e': 28,
-                'ev_ebitda': 18,
-                'p_s': 7,
-                'ev_revenue': 7.5,
-                'p_b': 6
-            }
+        results = {
+            'sector': self.sector_name,
+            'subsector_analysis': self._determine_healthcare_subsector(financial_data),
+            'key_metrics': self._calculate_healthcare_metrics(financial_data),
+            'risk_assessment': self._assess_healthcare_risks(financial_data),
+            'growth_analysis': self._analyze_growth_potential(financial_data),
+            'innovation_assessment': self._assess_innovation_metrics(financial_data),
+            'regulatory_exposure': self._assess_regulatory_exposure(financial_data)
         }
 
-        # Default R&D success rates by phase
-        self.rd_success_rates = {
-            'Preclinical': 0.05,  # 5% success from preclinical to approval
-            'Phase1': 0.10,  # 10% success from Phase 1 to approval
-            'Phase2': 0.30,  # 30% success from Phase 2 to approval
-            'Phase3': 0.60,  # 60% success from Phase 3 to approval
-            'Filed': 0.90  # 90% success from filing to approval
+        return results
+
+    def calculate_valuation(self, financial_data: Dict[str, Any], valuation_method: str = None) -> Dict[str, Any]:
+        """
+        Calculate company valuation using sector-specific methods
+
+        Args:
+            financial_data: Dictionary containing company financial information
+            valuation_method: Specific valuation method to use (if None, use the most appropriate)
+
+        Returns:
+            Dictionary with valuation results
+        """
+        # Get company info
+        company_info = financial_data.get('company_info', {})
+        ticker = company_info.get('symbol', 'Unknown')
+
+        # Get subsector for more tailored analysis
+        subsector = self._determine_healthcare_subsector(financial_data)['subsector']
+
+        # Determine valuation method if not specified
+        if valuation_method is None:
+            if subsector == 'Biotech' or subsector == 'Early-Stage Pharma':
+                valuation_method = 'pipeline_based_dcf'
+            elif subsector == 'Medical Devices':
+                valuation_method = 'multi_stage_dcf'
+            elif subsector == 'Healthcare Services':
+                valuation_method = 'standard_dcf'
+            else:
+                valuation_method = 'multi_stage_dcf'
+
+        # Apply appropriate valuation method
+        if valuation_method == 'pipeline_based_dcf':
+            return self._pipeline_based_valuation(financial_data)
+        elif valuation_method == 'multi_stage_dcf':
+            return self._multi_stage_dcf_valuation(financial_data)
+        elif valuation_method == 'standard_dcf':
+            return self._standard_dcf_valuation(financial_data)
+        elif valuation_method == 'ebitda_multiple':
+            return self._ebitda_multiple_valuation(financial_data)
+        else:
+            logger.warning(f"Unsupported valuation method {valuation_method} for {ticker}. Using multi-stage DCF.")
+            return self._multi_stage_dcf_valuation(financial_data)
+
+    def benchmark_company(self, company_metrics: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Compare company metrics with healthcare sector benchmarks
+
+        Args:
+            company_metrics: Dictionary with company financial metrics
+
+        Returns:
+            Dictionary with benchmarking results
+        """
+        benchmarks = self.get_sector_benchmarks()
+
+        benchmark_results = {
+            'sector': self.sector_name,
+            'metrics_comparison': {},
+            'overall_score': 0.0,
+            'strengths': [],
+            'weaknesses': []
         }
 
-        # Default R&D capitalization factor
-        # What portion of R&D is viewed as investment vs. expense
-        self.rd_capitalization_factor = 0.70  # 70% of R&D treated as investment
+        # Define key metrics to analyze
+        key_metrics = {
+            'R&D/Revenue': {'benchmark': 0.15, 'higher_is_better': True, 'importance': 'high'},
+            'Gross Margin': {'benchmark': 0.65, 'higher_is_better': True, 'importance': 'high'},
+            'Operating Margin': {'benchmark': 0.18, 'higher_is_better': True, 'importance': 'medium'},
+            'ROE': {'benchmark': 0.18, 'higher_is_better': True, 'importance': 'medium'},
+            'Revenue Growth': {'benchmark': 0.12, 'higher_is_better': True, 'importance': 'high'},
+            'Debt/Equity': {'benchmark': 0.60, 'higher_is_better': False, 'importance': 'medium'},
+            'Current Ratio': {'benchmark': 2.0, 'higher_is_better': True, 'importance': 'low'},
+        }
 
-    def rd_adjusted_dcf(self, ticker: str, financial_data: Dict, subsector: str = 'Pharmaceuticals') -> Dict:
-        """
-        Perform DCF valuation adjusted for R&D investments in healthcare companies.
+        # Compare each metric with benchmark
+        score_sum = 0
+        score_weights = 0
 
-        Healthcare companies, especially in pharma and biotech, invest heavily in R&D.
-        This method treats a portion of R&D as capital investment rather than expense,
-        which gives a more accurate picture of true economic value.
+        for metric, details in key_metrics.items():
+            if metric in company_metrics:
+                company_value = company_metrics[metric]
+                benchmark_value = details['benchmark']
 
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Healthcare subsector
-
-        Returns:
-            Dictionary with DCF valuation results
-        """
-        try:
-            # Extract financial statements
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-            cash_flow = financial_data.get('cash_flow')
-
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            if income_stmt is None or balance_sheet is None:
-                raise ValueError("Missing required financial statements for DCF calculation")
-
-            # Get historical data for analysis
-            income_hist = income_stmt.copy()
-
-            # Find R&D expenses in income statement
-            rd_expenses = None
-            rd_colname = None
-
-            for rd_name in ['Research & Development', 'R&D Expenses', 'Research and Development']:
-                if rd_name in income_hist.index:
-                    rd_expenses = income_hist.loc[rd_name]
-                    rd_colname = rd_name
-                    break
-
-            # If we couldn't find R&D, use industry average as percentage of revenue
-            if rd_expenses is None:
-                if 'Total Revenue' in income_hist.index:
-                    # Industry average R&D as % of revenue
-                    rd_ratio = {
-                        'Pharmaceuticals': 0.15,  # 15% of revenue
-                        'Biotechnology': 0.30,  # 30% of revenue
-                        'Medical Devices': 0.10,  # 10% of revenue
-                        'Healthcare Services': 0.03,  # 3% of revenue
-                        'Healthcare Technology': 0.20  # 20% of revenue
-                    }.get(subsector, 0.15)
-
-                    # Estimate R&D based on revenue
-                    rd_expenses = income_hist.loc['Total Revenue'] * rd_ratio
+                # Calculate percentage difference
+                if benchmark_value != 0:
+                    pct_diff = (company_value - benchmark_value) / benchmark_value * 100
                 else:
-                    raise ValueError("Could not determine R&D expenses or revenue")
+                    pct_diff = 0
 
-            # Normalize and capitalize R&D
-            num_years = min(5, len(income_hist.columns))
-            rd_to_capitalize = pd.Series(0, index=income_hist.columns[:num_years])
+                # Determine if the comparison is favorable
+                if details['higher_is_better']:
+                    is_favorable = company_value >= benchmark_value
+                else:
+                    is_favorable = company_value <= benchmark_value
 
-            # For the past few years, capitalize a portion of R&D
-            for i in range(num_years):
-                # Apply capitalization factor
-                rd_to_capitalize[i] = rd_expenses[i] * self.rd_capitalization_factor
-
-            # Adjust EBIT and EBITDA for R&D capitalization
-            # Get base EBIT
-            ebit = None
-
-            for ebit_name in ['EBIT', 'Operating Income']:
-                if ebit_name in income_hist.index:
-                    ebit = income_hist.loc[ebit_name].copy()
-                    break
-
-            if ebit is None:
-                # Calculate EBIT from components
-                if 'Net Income' in income_hist.index and 'Interest Expense' in income_hist.index:
-                    net_income = income_hist.loc['Net Income']
-                    interest_expense = income_hist.loc['Interest Expense']
-
-                    # Estimate taxes based on effective tax rate
-                    if 'Income Tax Expense' in income_hist.index:
-                        tax_expense = income_hist.loc['Income Tax Expense']
+                # Calculate score (0-100)
+                if details['higher_is_better']:
+                    if benchmark_value > 0:
+                        score = min(100, (company_value / benchmark_value) * 100)
                     else:
-                        # Assume 25% tax rate
-                        tax_expense = net_income * 0.25 / 0.75
-
-                    ebit = net_income + interest_expense + tax_expense
+                        score = 100 if company_value > 0 else 0
                 else:
-                    raise ValueError("Could not determine or calculate EBIT")
-
-            # Adjust EBIT for R&D capitalization
-            adjusted_ebit = ebit.copy()
-
-            for i in range(num_years):
-                adjusted_ebit[i] += rd_to_capitalize[i]
-
-            # Get most recent data
-            latest_adjusted_ebit = adjusted_ebit[0]
-
-            # Get DCF parameters
-            forecast_years = self.sector_params.get('forecast_years', 7)
-            terminal_growth = self.sector_params.get('terminal_growth_rate', 0.03)
-
-            # Calculate discount rate based on company risk profile
-            discount_rate = self._calculate_healthcare_discount_rate(ticker, financial_data, subsector)
-
-            # Estimate growth rate based on historical data and subsector
-            growth_rate = self._estimate_healthcare_growth_rate(ticker, financial_data, subsector)
-
-            # Forecast adjusted EBIT
-            forecast_ebit = []
-            current_ebit = latest_adjusted_ebit
-
-            for year in range(1, forecast_years + 1):
-                # Apply declining growth rate for later years
-                year_growth = max(growth_rate * (1 - 0.05 * (year - 1)), terminal_growth)
-                current_ebit *= (1 + year_growth)
-                forecast_ebit.append(current_ebit)
-
-            # Adjust for tax
-            tax_rate = 0.21  # Corporate tax rate
-            forecast_nopat = [ebit * (1 - tax_rate) for ebit in forecast_ebit]
-
-            # Estimate capital expenditures (including ongoing R&D)
-            # In healthcare, significant portion of capex is actually R&D
-            forecast_capex = []
-
-            # Use latest R&D as base
-            latest_rd = rd_expenses[0]
-
-            for year in range(1, forecast_years + 1):
-                # Assume R&D grows with revenue but at a slightly slower pace
-                rd_growth = max(growth_rate * 0.9, terminal_growth)
-                rd_expense = latest_rd * (1 + rd_growth) ** year
-
-                # Traditional capex is typically lower in healthcare than other sectors
-                traditional_capex_ratio = {
-                    'Pharmaceuticals': 0.07,  # 7% of revenue
-                    'Biotechnology': 0.05,  # 5% of revenue
-                    'Medical Devices': 0.08,  # 8% of revenue
-                    'Healthcare Services': 0.10,  # 10% of revenue
-                    'Healthcare Technology': 0.06  # 6% of revenue
-                }.get(subsector, 0.07)
-
-                # Estimate revenue
-                if 'Total Revenue' in income_hist.index:
-                    latest_revenue = income_hist.loc['Total Revenue'][0]
-                    forecast_revenue = latest_revenue * (1 + growth_rate) ** year
-                    traditional_capex = forecast_revenue * traditional_capex_ratio
-                else:
-                    # Estimate based on EBIT
-                    traditional_capex = forecast_ebit[year - 1] * 0.3
-
-                # Total capex is sum of capitalized R&D and traditional capex
-                total_capex = (rd_expense * self.rd_capitalization_factor) + traditional_capex
-                forecast_capex.append(total_capex)
-
-            # Estimate depreciation (including amortized R&D)
-            forecast_depreciation = []
-
-            # Get current depreciation
-            depreciation = None
-
-            for dep_name in ['Depreciation & Amortization', 'Depreciation', 'Depreciation and Amortization']:
-                if dep_name in income_hist.index:
-                    depreciation = income_hist.loc[dep_name][0]
-                    break
-
-            if depreciation is None:
-                # Estimate based on assets
-                if 'Total Assets' in balance_sheet.index:
-                    total_assets = balance_sheet.loc['Total Assets'][0]
-                    depreciation = total_assets * 0.05  # Assume 5% depreciation rate
-                else:
-                    # Rough estimate based on EBIT
-                    depreciation = latest_adjusted_ebit * 0.15
-
-            for year in range(1, forecast_years + 1):
-                # Depreciation grows with capex
-                year_depreciation = depreciation * (1 + 0.05 * year)
-                forecast_depreciation.append(year_depreciation)
-
-            # Estimate changes in working capital
-            forecast_wc_change = []
-
-            # Working capital requirement as percentage of revenue
-            wc_ratio = {
-                'Pharmaceuticals': 0.15,  # 15% of revenue
-                'Biotechnology': 0.10,  # 10% of revenue
-                'Medical Devices': 0.18,  # 18% of revenue
-                'Healthcare Services': 0.08,  # 8% of revenue
-                'Healthcare Technology': 0.12  # 12% of revenue
-            }.get(subsector, 0.15)
-
-            if 'Total Revenue' in income_hist.index:
-                latest_revenue = income_hist.loc['Total Revenue'][0]
-                prev_revenue = latest_revenue
-
-                for year in range(1, forecast_years + 1):
-                    forecast_revenue = latest_revenue * (1 + growth_rate) ** year
-                    wc_change = (forecast_revenue - prev_revenue) * wc_ratio
-                    forecast_wc_change.append(wc_change)
-                    prev_revenue = forecast_revenue
-            else:
-                # Rough estimate based on EBIT growth
-                for year in range(1, forecast_years + 1):
-                    wc_change = forecast_ebit[year - 1] * 0.1
-                    forecast_wc_change.append(wc_change)
-
-            # Calculate free cash flow
-            forecast_fcf = []
-
-            for year in range(forecast_years):
-                fcf = forecast_nopat[year] + forecast_depreciation[year] - forecast_capex[year] - forecast_wc_change[
-                    year]
-                forecast_fcf.append(fcf)
-
-            # Calculate terminal value
-            terminal_fcf = forecast_fcf[-1] * (1 + terminal_growth)
-            terminal_value = terminal_fcf / (discount_rate - terminal_growth)
-
-            # Discount cash flows
-            pv_fcf = sum(fcf / (1 + discount_rate) ** (year + 1) for year, fcf in enumerate(forecast_fcf))
-            pv_terminal = terminal_value / (1 + discount_rate) ** forecast_years
-
-            # Calculate enterprise value
-            enterprise_value = pv_fcf + pv_terminal
-
-            # Calculate equity value
-            total_debt = 0
-
-            for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                if debt_name in balance_sheet.index:
-                    total_debt += balance_sheet.loc[debt_name][0]
-
-            cash = 0
-
-            for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                if cash_name in balance_sheet.index:
-                    cash += balance_sheet.loc[cash_name][0]
-
-            equity_value = enterprise_value - total_debt + cash
-
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = equity_value / shares_outstanding
-            else:
-                value_per_share = None
-
-            return {
-                'method': 'R&D Adjusted DCF',
-                'rd_expenses': rd_expenses[0] if isinstance(rd_expenses, pd.Series) else rd_expenses,
-                'rd_capitalization_factor': self.rd_capitalization_factor,
-                'growth_rate': growth_rate,
-                'terminal_growth': terminal_growth,
-                'discount_rate': discount_rate,
-                'forecast_years': forecast_years,
-                'forecast_fcf': forecast_fcf,
-                'terminal_value': terminal_value,
-                'pv_fcf': pv_fcf,
-                'pv_terminal': pv_terminal,
-                'enterprise_value': enterprise_value,
-                'equity_value': equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating R&D adjusted DCF for {ticker}: {e}")
-            return {
-                'method': 'R&D Adjusted DCF',
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def healthcare_multiples_valuation(self, ticker: str, financial_data: Dict,
-                                       subsector: str = 'Pharmaceuticals') -> Dict:
-        """
-        Perform multiples-based valuation adapted for healthcare companies.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Healthcare subsector
-
-        Returns:
-            Dictionary with multiples valuation results
-        """
-        try:
-            # Extract financial statements
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            if income_stmt is None or balance_sheet is None:
-                raise ValueError("Missing required financial statements for multiples valuation")
-
-            # Get most recent data
-            latest_income = income_stmt.iloc[:, 0]
-            latest_balance = balance_sheet.iloc[:, 0]
-
-            # Get relevant financials
-            metrics = {}
-
-            # Earnings
-            if 'Net Income' in latest_income.index:
-                metrics['earnings'] = latest_income.loc['Net Income']
-
-            # Revenue
-            if 'Total Revenue' in latest_income.index:
-                metrics['revenue'] = latest_income.loc['Total Revenue']
-
-            # EBITDA
-            if 'EBITDA' in latest_income.index:
-                metrics['ebitda'] = latest_income.loc['EBITDA']
-            elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
-                metrics['ebitda'] = latest_income.loc['Operating Income'] + latest_income.loc[
-                    'Depreciation & Amortization']
-
-            # Book value
-            if 'Total Stockholder Equity' in latest_balance.index:
-                metrics['book_value'] = latest_balance.loc['Total Stockholder Equity']
-
-            # R&D expenses (important for healthcare companies)
-            for rd_name in ['Research & Development', 'R&D Expenses', 'Research and Development']:
-                if rd_name in latest_income.index:
-                    metrics['rd_expenses'] = latest_income.loc[rd_name]
-                    break
-
-            # Get appropriate multiples for the subsector
-            multiples = self.subsector_multiples.get(subsector, self.subsector_multiples['Pharmaceuticals'])
-
-            # Calculate valuations using different multiples
-            valuations = {}
-
-            # P/E valuation
-            if 'earnings' in metrics and metrics['earnings'] > 0:
-                valuations['pe'] = {
-                    'multiple': multiples['p_e'],
-                    'value': metrics['earnings'] * multiples['p_e'],
-                    'description': 'Price to Earnings'
-                }
-
-            # EV/EBITDA valuation
-            if 'ebitda' in metrics and metrics['ebitda'] > 0:
-                valuations['ev_ebitda'] = {
-                    'multiple': multiples['ev_ebitda'],
-                    'value': metrics['ebitda'] * multiples['ev_ebitda'],
-                    'description': 'Enterprise Value to EBITDA'
-                }
-
-                # Adjust for debt and cash to get equity value
-                total_debt = 0
-                for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                    if debt_name in latest_balance.index:
-                        total_debt += latest_balance.loc[debt_name]
-
-                cash = 0
-                for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                    if cash_name in latest_balance.index:
-                        cash += latest_balance.loc[cash_name]
-
-                valuations['ev_ebitda']['equity_value'] = valuations['ev_ebitda']['value'] - total_debt + cash
-
-            # Revenue-based valuation (important for biotech and early stage companies)
-            if 'revenue' in metrics and metrics['revenue'] > 0:
-                valuations['ps'] = {
-                    'multiple': multiples['p_s'],
-                    'value': metrics['revenue'] * multiples['p_s'],
-                    'description': 'Price to Sales'
-                }
-
-                valuations['ev_revenue'] = {
-                    'multiple': multiples['ev_revenue'],
-                    'value': metrics['revenue'] * multiples['ev_revenue'],
-                    'description': 'Enterprise Value to Revenue'
-                }
-
-                # Adjust EV/Revenue for debt and cash
-                if 'ev_revenue' in valuations:
-                    total_debt = 0
-                    for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                        if debt_name in latest_balance.index:
-                            total_debt += latest_balance.loc[debt_name]
-
-                    cash = 0
-                    for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                        if cash_name in latest_balance.index:
-                            cash += latest_balance.loc[cash_name]
-
-                    valuations['ev_revenue']['equity_value'] = valuations['ev_revenue']['value'] - total_debt + cash
-
-            # Book value-based valuation
-            if 'book_value' in metrics and metrics['book_value'] > 0:
-                valuations['pb'] = {
-                    'multiple': multiples['p_b'],
-                    'value': metrics['book_value'] * multiples['p_b'],
-                    'description': 'Price to Book'
-                }
-
-            # R&D-based valuation (for research-intensive companies)
-            if 'rd_expenses' in metrics and metrics['rd_expenses'] > 0 and 'revenue' in metrics:
-                # Higher multiple for companies with higher R&D intensity
-                rd_intensity = metrics['rd_expenses'] / metrics['revenue']
-                rd_multiple = multiples['p_s'] * (1 + rd_intensity)
-
-                valuations['rd_based'] = {
-                    'multiple': rd_multiple,
-                    'value': metrics['revenue'] * rd_multiple,
-                    'description': 'R&D Intensity Adjusted Revenue Multiple'
-                }
-
-            # Calculate final equity value
-            equity_values = []
-
-            # PE and PB already give equity value
-            if 'pe' in valuations:
-                equity_values.append(valuations['pe']['value'])
-
-            if 'pb' in valuations:
-                equity_values.append(valuations['pb']['value'])
-
-            # EV-based metrics need to be adjusted to equity value
-            if 'ev_ebitda' in valuations and 'equity_value' in valuations['ev_ebitda']:
-                equity_values.append(valuations['ev_ebitda']['equity_value'])
-
-            if 'ev_revenue' in valuations and 'equity_value' in valuations['ev_revenue']:
-                equity_values.append(valuations['ev_revenue']['equity_value'])
-
-            if 'rd_based' in valuations:
-                equity_values.append(valuations['rd_based']['value'])
-
-            # Use PS directly if not enough equity values
-            if len(equity_values) < 2 and 'ps' in valuations:
-                equity_values.append(valuations['ps']['value'])
-
-            # Calculate average equity value
-            if equity_values:
-                avg_equity_value = sum(equity_values) / len(equity_values)
-
-                # Calculate per share value
-                if shares_outstanding and shares_outstanding > 0:
-                    value_per_share = avg_equity_value / shares_outstanding
-                else:
-                    value_per_share = None
-            else:
-                avg_equity_value = None
-                value_per_share = None
-
-            return {
-                'method': 'Healthcare Multiples',
-                'subsector': subsector,
-                'metrics': metrics,
-                'valuations': valuations,
-                'equity_value': avg_equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating healthcare multiples valuation for {ticker}: {e}")
-            return {
-                'method': 'Healthcare Multiples',
-                'subsector': subsector,
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def pipeline_valuation(self, ticker: str, financial_data: Dict,
-                           pipeline_data: Dict) -> Dict:
-        """
-        Value pharmaceutical/biotech pipeline using risk-adjusted NPV approach.
-
-        This method evaluates drugs/products in development pipeline by:
-        1. Estimating peak sales for each product
-        2. Applying success probabilities based on development stage
-        3. Calculating NPV of each product's future cash flows
-        4. Summing risk-adjusted values across the pipeline
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            pipeline_data: Drug/product pipeline data dictionary
-
-        Returns:
-            Dictionary with pipeline valuation results
-        """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            # Pipeline data should be a dictionary of products/candidates
-            # Each with details on development stage, target market, estimated launch, etc.
-            if not pipeline_data or not isinstance(pipeline_data, dict):
-                raise ValueError("Valid pipeline data required for pipeline valuation")
-
-            # Calculate value for each pipeline product
-            product_values = {}
-            total_pipeline_value = 0
-
-            for product_name, product_info in pipeline_data.items():
-                # Get product details
-                stage = product_info.get('stage', 'Phase1')  # Development stage
-                indication = product_info.get('indication', '')  # Treatment/disease area
-                peak_sales = product_info.get('peak_sales')  # Estimated peak annual sales
-                launch_year = product_info.get('launch_year', datetime.now().year + 5)  # Estimated launch year
-                patent_expiry = product_info.get('patent_expiry', launch_year + 12)  # Patent expiry
-
-                # If peak sales not provided, use market size estimate
-                if not peak_sales:
-                    market_size = product_info.get('market_size', 1000)  # Market size in millions
-                    market_share = product_info.get('market_share', 0.1)  # Expected market share (10%)
-                    peak_sales = market_size * market_share
-
-                # Get success probability based on stage
-                success_probability = self.rd_success_rates.get(stage, 0.1)
-
-                # Apply therapeutic area adjustment
-                # Some areas have higher/lower success rates
-                if 'oncology' in indication.lower():
-                    success_probability *= 0.8  # Lower for oncology
-                elif 'rare' in indication.lower() or 'orphan' in indication.lower():
-                    success_probability *= 1.2  # Higher for rare diseases
-
-                # Cap probability at 95%
-                success_probability = min(success_probability, 0.95)
-
-                # Calculate cash flow projection
-                current_year = datetime.now().year
-                years_to_launch = max(0, launch_year - current_year)
-                patent_life = max(0, patent_expiry - launch_year)
-
-                # Discount rate (higher for earlier stage products)
-                base_discount_rate = 0.12  # 12% base
-                stage_adjustment = {
-                    'Preclinical': 0.08,  # +8% for preclinical
-                    'Phase1': 0.06,  # +6% for Phase 1
-                    'Phase2': 0.04,  # +4% for Phase 2
-                    'Phase3': 0.02,  # +2% for Phase 3
-                    'Filed': 0.01  # +1% for Filed
-                }.get(stage, 0.04)
-
-                discount_rate = base_discount_rate + stage_adjustment
-
-                # Ramp up period to peak sales (years)
-                ramp_up = min(4, patent_life // 3)
-
-                # Operating margin for pharmaceutical products
-                operating_margin = product_info.get('operating_margin', 0.65)  # 65% margin
-
-                # Cash flow projection (simplified model)
-                cash_flows = []
-
-                # Pre-launch: R&D investments (negative cash flow)
-                for year in range(years_to_launch):
-                    # R&D expense higher in later stages
-                    rd_expense = peak_sales * {
-                        'Preclinical': -0.02,
-                        'Phase1': -0.05,
-                        'Phase2': -0.10,
-                        'Phase3': -0.15,
-                        'Filed': -0.05
-                    }.get(stage, -0.10)
-
-                    cash_flows.append(rd_expense)
-
-                # Post-launch: Revenue and profit
-                for year in range(patent_life):
-                    if year < ramp_up:
-                        # Ramp up period
-                        sales = peak_sales * (year + 1) / ramp_up
-                    elif year < patent_life - 3:
-                        # Peak sales period
-                        sales = peak_sales
+                    if company_value > 0:
+                        score = min(100, (benchmark_value / company_value) * 100)
                     else:
-                        # Decline due to patent expiry / competition
-                        years_from_expiry = patent_life - year
-                        sales = peak_sales * years_from_expiry / 3
+                        score = 100  # Perfect score for zero debt, etc.
 
-                    # Calculate operating profit
-                    profit = sales * operating_margin
-                    cash_flows.append(profit)
+                # Assign weight based on importance
+                weight = 3 if details['importance'] == 'high' else 2 if details['importance'] == 'medium' else 1
 
-                # Calculate NPV
-                npv = 0
-                for i, cf in enumerate(cash_flows):
-                    npv += cf / ((1 + discount_rate) ** (i + 1))
+                # Add to running weighted score
+                score_sum += score * weight
+                score_weights += weight
 
-                # Apply success probability to get risk-adjusted NPV
-                risk_adjusted_npv = npv * success_probability
-
-                # Add to total pipeline value
-                total_pipeline_value += risk_adjusted_npv
-
-                # Store product valuation
-                product_values[product_name] = {
-                    'stage': stage,
-                    'indication': indication,
-                    'peak_sales': peak_sales,
-                    'success_probability': success_probability,
-                    'npv': npv,
-                    'risk_adjusted_npv': risk_adjusted_npv
+                # Add to results
+                benchmark_results['metrics_comparison'][metric] = {
+                    'company_value': company_value,
+                    'benchmark': benchmark_value,
+                    'pct_difference': pct_diff,
+                    'favorable': is_favorable,
+                    'score': score,
+                    'importance': details['importance']
                 }
 
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = total_pipeline_value / shares_outstanding
+                # Add to strengths or weaknesses
+                if is_favorable and abs(pct_diff) > 10:
+                    benchmark_results['strengths'].append(f"{metric}: {pct_diff:.1f}% better than sector average")
+                elif not is_favorable and abs(pct_diff) > 10:
+                    benchmark_results['weaknesses'].append(f"{metric}: {pct_diff:.1f}% worse than sector average")
+
+        # Calculate overall score
+        if score_weights > 0:
+            benchmark_results['overall_score'] = score_sum / score_weights
+
+        return benchmark_results
+
+    def _determine_healthcare_subsector(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Determine the specific healthcare subsector based on company characteristics
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with subsector classification and confidence
+        """
+        # Extract key financial data for classification
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+        company_info = financial_data.get('company_info', {})
+
+        # Default result
+        result = {
+            'subsector': 'General Healthcare',
+            'confidence': 0.5,
+            'characteristics': []
+        }
+
+        # Check if we have necessary data
+        if income_stmt is None or income_stmt.empty:
+            return result
+
+        # Get industry description if available
+        industry = company_info.get('industry', '').lower()
+        business_description = company_info.get('description', '').lower()
+
+        # Extract key metrics for classification
+        metrics = {}
+
+        # Try to get R&D expense
+        try:
+            if 'Research and Development' in income_stmt.index:
+                metrics['rd_expense'] = income_stmt.iloc[income_stmt.index.get_loc('Research and Development'), 0]
+
+                # Calculate R&D to Revenue ratio
+                if 'Total Revenue' in income_stmt.index:
+                    revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 0]
+                    if revenue > 0:
+                        metrics['rd_to_revenue'] = metrics['rd_expense'] / revenue
+        except:
+            pass
+
+        # Try to get Gross Margin
+        try:
+            if 'Gross Profit' in income_stmt.index and 'Total Revenue' in income_stmt.index:
+                gross_profit = income_stmt.iloc[income_stmt.index.get_loc('Gross Profit'), 0]
+                revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 0]
+                if revenue > 0:
+                    metrics['gross_margin'] = gross_profit / revenue
+        except:
+            pass
+
+        # Try to get Operating Margin
+        try:
+            if 'Operating Income' in income_stmt.index and 'Total Revenue' in income_stmt.index:
+                operating_income = income_stmt.iloc[income_stmt.index.get_loc('Operating Income'), 0]
+                revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 0]
+                if revenue > 0:
+                    metrics['operating_margin'] = operating_income / revenue
+        except:
+            pass
+
+        # Check Net Income
+        try:
+            if 'Net Income' in income_stmt.index:
+                metrics['net_income'] = income_stmt.iloc[income_stmt.index.get_loc('Net Income'), 0]
+        except:
+            pass
+
+        # Classification logic
+        subsector = 'General Healthcare'
+        confidence = 0.5
+        characteristics = []
+
+        # Check for biotech/pharma keywords
+        biotech_keywords = ['biotech', 'biologics', 'gene therapy', 'cell therapy', 'immunotherapy']
+        pharma_keywords = ['pharmaceutical', 'pharma', 'drug', 'medicine', 'therapeutics']
+        medical_device_keywords = ['medical device', 'diagnostic', 'imaging', 'equipment', 'implant']
+        healthcare_service_keywords = ['hospital', 'provider', 'service', 'clinic', 'care management']
+
+        # Check business description for keywords
+        if any(keyword in business_description for keyword in biotech_keywords):
+            biotech_score = 3
+        elif any(keyword in industry for keyword in biotech_keywords):
+            biotech_score = 2
+        else:
+            biotech_score = 0
+
+        if any(keyword in business_description for keyword in pharma_keywords):
+            pharma_score = 3
+        elif any(keyword in industry for keyword in pharma_keywords):
+            pharma_score = 2
+        else:
+            pharma_score = 0
+
+        if any(keyword in business_description for keyword in medical_device_keywords):
+            device_score = 3
+        elif any(keyword in industry for keyword in medical_device_keywords):
+            device_score = 2
+        else:
+            device_score = 0
+
+        if any(keyword in business_description for keyword in healthcare_service_keywords):
+            service_score = 3
+        elif any(keyword in industry for keyword in healthcare_service_keywords):
+            service_score = 2
+        else:
+            service_score = 0
+
+        # Add points based on financial metrics
+        if metrics.get('rd_to_revenue', 0) > 0.2:
+            biotech_score += 2
+            pharma_score += 1
+            characteristics.append('Very high R&D intensity (>20% of revenue)')
+        elif metrics.get('rd_to_revenue', 0) > 0.1:
+            pharma_score += 2
+            biotech_score += 1
+            characteristics.append('High R&D intensity (>10% of revenue)')
+
+        if metrics.get('gross_margin', 0) > 0.8:
+            biotech_score += 1
+            pharma_score += 1
+            characteristics.append('Very high gross margins (>80%)')
+        elif metrics.get('gross_margin', 0) > 0.6:
+            pharma_score += 1
+            device_score += 1
+            characteristics.append('High gross margins (>60%)')
+
+        if metrics.get('operating_margin', 0) < 0:
+            if metrics.get('rd_to_revenue', 0) > 0.2:
+                biotech_score += 2
+                characteristics.append(
+                    'Negative operating margins with high R&D spend (typical of early-stage biotech)')
+
+        if metrics.get('net_income', 0) is not None:
+            if metrics.get('net_income', 0) < 0:
+                biotech_score += 1
+                characteristics.append('Negative net income')
             else:
-                value_per_share = None
+                pharma_score += 1
+                service_score += 1
+                characteristics.append('Positive net income')
 
-            return {
-                'method': 'Pipeline Valuation',
-                'total_pipeline_value': total_pipeline_value,
-                'product_values': product_values,
-                'value_per_share': value_per_share
-            }
+        # Determine the highest scoring subsector
+        scores = {
+            'Biotech': biotech_score,
+            'Pharmaceutical': pharma_score,
+            'Medical Devices': device_score,
+            'Healthcare Services': service_score
+        }
 
-        except Exception as e:
-            logger.error(f"Error calculating pipeline valuation for {ticker}: {e}")
-            return {
-                'method': 'Pipeline Valuation',
-                'error': str(e),
-                'value_per_share': None
-            }
+        max_score = max(scores.values())
+        max_subsectors = [sub for sub, score in scores.items() if score == max_score]
 
-    def _calculate_healthcare_discount_rate(self, ticker: str, financial_data: Dict,
-                                            subsector: str) -> float:
+        if len(max_subsectors) == 1:
+            subsector = max_subsectors[0]
+            confidence = min(0.9, 0.5 + (max_score / 10))
+        else:
+            # If tie, prefer the more specific classification
+            if 'Biotech' in max_subsectors:
+                subsector = 'Biotech'
+            elif 'Pharmaceutical' in max_subsectors:
+                subsector = 'Pharmaceutical'
+            elif 'Medical Devices' in max_subsectors:
+                subsector = 'Medical Devices'
+            else:
+                subsector = 'Healthcare Services'
+            confidence = min(0.7, 0.4 + (max_score / 10))
+
+        # Further refinement for pharmaceutical/biotech companies
+        if subsector in ['Biotech', 'Pharmaceutical']:
+            if metrics.get('net_income', 0) is not None:
+                if metrics.get('net_income', 0) < 0 and metrics.get('rd_to_revenue', 0) > 0.2:
+                    if subsector == 'Pharmaceutical':
+                        subsector = 'Early-Stage Pharma'
+                    else:
+                        subsector = 'Development-Stage Biotech'
+                    characteristics.append('Pre-profit R&D-intensive company')
+                elif metrics.get('net_income', 0) > 0:
+                    if subsector == 'Pharmaceutical':
+                        subsector = 'Commercial-Stage Pharma'
+                    else:
+                        subsector = 'Commercial-Stage Biotech'
+                    characteristics.append('Profitable with commercialized products')
+
+        # Add subsector-specific characteristics
+        if subsector == 'Biotech' or subsector == 'Development-Stage Biotech':
+            characteristics.append('Focus on biological drugs and therapies')
+            characteristics.append('Typically higher risk/reward profile than traditional pharma')
+        elif subsector == 'Pharmaceutical' or subsector == 'Commercial-Stage Pharma':
+            characteristics.append('Develops and markets pharmaceutical drugs')
+            characteristics.append('More diversified product portfolio than biotech')
+        elif subsector == 'Medical Devices':
+            characteristics.append('Produces medical equipment and supplies')
+            characteristics.append('Different regulatory pathway than drugs (FDA 510(k)/PMA vs. NDA)')
+        elif subsector == 'Healthcare Services':
+            characteristics.append('Provides healthcare services directly to patients or other providers')
+            characteristics.append('Less R&D intensive, more focus on operational efficiency')
+
+        return {
+            'subsector': subsector,
+            'confidence': confidence,
+            'characteristics': characteristics,
+            'metrics': metrics
+        }
+
+    def _calculate_healthcare_metrics(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Calculate appropriate discount rate for healthcare company based on
-        risk profile and subsector.
+        Calculate healthcare sector-specific financial metrics
 
         Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Healthcare subsector
+            financial_data: Dictionary containing company financial information
 
         Returns:
-            Discount rate as float
+            Dictionary with healthcare-specific metrics
         """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            beta = market_data.get('beta')
+        metrics = {}
 
-            # Base discount rate from sector parameters
-            base_rate = self.sector_params.get('default_discount_rate', 0.11)
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+        cash_flow = financial_data.get('cash_flow')
 
-            # Subsector risk premium
-            subsector_premium = {
-                'Pharmaceuticals': 0.00,  # Base case
-                'Biotechnology': 0.04,  # Higher risk
-                'Medical Devices': 0.01,  # Slightly higher risk
-                'Healthcare Services': -0.01,  # Lower risk
-                'Healthcare Technology': 0.02  # Moderate risk
-            }.get(subsector, 0.00)
+        if income_stmt is None or income_stmt.empty:
+            return metrics
 
-            # Company-specific adjustments
-            company_premium = 0.00
+        # Get the latest financial data
+        income = income_stmt.iloc[:, 0]
+        balance = balance_sheet.iloc[:, 0] if balance_sheet is not None and not balance_sheet.empty else None
+        cf = cash_flow.iloc[:, 0] if cash_flow is not None and not cash_flow.empty else None
 
-            # Beta-based adjustment if available
-            if beta is not None:
-                # Higher beta = higher risk = higher discount rate
-                if beta > 1.5:
-                    company_premium += 0.02
-                elif beta < 0.8:
-                    company_premium -= 0.01
+        # Calculate R&D intensity (key metric for healthcare)
+        if 'Research and Development' in income.index and 'Total Revenue' in income.index:
+            rd_expense = income['Research and Development']
+            revenue = income['Total Revenue']
 
-            # Adjust based on profitability
-            income_stmt = financial_data.get('income_statement')
-            if income_stmt is not None:
-                latest_income = income_stmt.iloc[:, 0]
+            if revenue > 0:
+                metrics['rd_to_revenue'] = rd_expense / revenue
 
-                # Check profitability
-                if 'Net Income' in latest_income.index:
-                    net_income = latest_income.loc['Net Income']
+            # Also calculate absolute R&D spend
+            metrics['rd_expense'] = rd_expense
 
-                    if net_income <= 0:
-                        # Unprofitable companies are higher risk
-                        company_premium += 0.03
+            # Calculate 3-year R&D CAGR if we have historical data
+            if income_stmt.shape[1] >= 3 and 'Research and Development' in income_stmt.index:
+                rd_3yr_ago = income_stmt.iloc[income_stmt.index.get_loc('Research and Development'),
+                min(2, income_stmt.shape[1] - 1)]
 
-                    # Check profit margin if revenue available
-                    if 'Total Revenue' in latest_income.index and latest_income.loc['Total Revenue'] > 0:
-                        margin = net_income / latest_income.loc['Total Revenue']
+                if rd_3yr_ago > 0:
+                    # Calculate compound annual growth rate
+                    years = min(3, income_stmt.shape[1])
+                    metrics['rd_growth_cagr'] = (rd_expense / rd_3yr_ago) ** (1 / years) - 1
 
-                        if margin < 0.05:
-                            company_premium += 0.01
-                        elif margin > 0.20:
-                            company_premium -= 0.01
+        # Calculate gross margin
+        if 'Gross Profit' in income.index and 'Total Revenue' in income.index:
+            gross_profit = income['Gross Profit']
+            revenue = income['Total Revenue']
 
-            # Adjust based on R&D intensity (higher R&D = higher risk but also potential)
-            if income_stmt is not None:
-                latest_income = income_stmt.iloc[:, 0]
+            if revenue > 0:
+                metrics['gross_margin'] = gross_profit / revenue
 
-                rd_expense = None
-                for rd_name in ['Research & Development', 'R&D Expenses', 'Research and Development']:
-                    if rd_name in latest_income.index:
-                        rd_expense = latest_income.loc[rd_name]
-                        break
+        # Calculate operating margin
+        if 'Operating Income' in income.index and 'Total Revenue' in income.index:
+            operating_income = income['Operating Income']
+            revenue = income['Total Revenue']
 
-                if rd_expense is not None and 'Total Revenue' in latest_income.index and latest_income.loc[
-                    'Total Revenue'] > 0:
-                    rd_intensity = rd_expense / latest_income.loc['Total Revenue']
+            if revenue > 0:
+                metrics['operating_margin'] = operating_income / revenue
 
-                    if rd_intensity > 0.20:
-                        # Very high R&D intensity
-                        company_premium += 0.02
-                    elif rd_intensity > 0.10:
-                        # High R&D intensity
-                        company_premium += 0.01
+        # Calculate cash runway (critical for pre-profit healthcare companies)
+        if balance is not None and cf is not None:
+            if 'Cash and Cash Equivalents' in balance.index and 'Operating Cash Flow' in cf.index:
+                cash = balance['Cash and Cash Equivalents']
+                operating_cf = cf['Operating Cash Flow']
 
-            # Calculate final discount rate
-            discount_rate = base_rate + subsector_premium + company_premium
+                # For companies with negative operating cash flow
+                if operating_cf < 0:
+                    cash_burn_rate = abs(operating_cf)
+                    metrics['cash_runway_years'] = cash / cash_burn_rate
 
-            # Ensure discount rate is in reasonable range
-            discount_rate = max(0.08, min(0.20, discount_rate))
+                    if metrics['cash_runway_years'] < 1:
+                        metrics['cash_runway_assessment'] = "Critical - less than 1 year"
+                    elif metrics['cash_runway_years'] < 2:
+                        metrics['cash_runway_assessment'] = "Concerning - less than 2 years"
+                    elif metrics['cash_runway_years'] < 3:
+                        metrics['cash_runway_assessment'] = "Adequate - 2-3 years"
+                    else:
+                        metrics['cash_runway_assessment'] = "Strong - more than 3 years"
 
-            return discount_rate
+        # Calculate efficiency of R&D spending
+        if 'rd_expense' in metrics and 'Total Revenue' in income.index:
+            revenue = income['Total Revenue']
+            metrics['revenue_per_rd_dollar'] = revenue / metrics['rd_expense'] if metrics['rd_expense'] > 0 else 0
 
-        except Exception as e:
-            logger.warning(f"Error calculating healthcare discount rate for {ticker}: {e}")
-            # Return default rate from sector parameters
-            return self.sector_params.get('default_discount_rate', 0.11)
+        # Get revenue growth
+        if income_stmt.shape[1] >= 2 and 'Total Revenue' in income_stmt.index:
+            current_revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 0]
+            prev_revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 1]
 
-    def _estimate_healthcare_growth_rate(self, ticker: str, financial_data: Dict,
-                                         subsector: str) -> float:
+            if prev_revenue > 0:
+                metrics['revenue_growth_yoy'] = (current_revenue / prev_revenue) - 1
+
+                # Calculate 3-year revenue CAGR if we have enough data
+                if income_stmt.shape[1] >= 3:
+                    revenue_3yr_ago = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'),
+                    min(2, income_stmt.shape[1] - 1)]
+
+                    if revenue_3yr_ago > 0:
+                        years = min(3, income_stmt.shape[1])
+                        metrics['revenue_cagr_3yr'] = (current_revenue / revenue_3yr_ago) ** (1 / years) - 1
+
+        return metrics
+
+    def _assess_healthcare_risks(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Estimate appropriate growth rate for healthcare company based on
-        historical data and subsector characteristics.
+        Assess specific risks related to healthcare companies
 
         Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Healthcare subsector
+            financial_data: Dictionary containing company financial information
 
         Returns:
-            Estimated growth rate as float
+            Dictionary with risk assessment
         """
-        try:
-            # Get income statement for historical growth analysis
-            income_stmt = financial_data.get('income_statement')
+        # Get subsector and metrics
+        subsector_info = self._determine_healthcare_subsector(financial_data)
+        subsector = subsector_info['subsector']
+        metrics = self._calculate_healthcare_metrics(financial_data)
 
-            if income_stmt is None or income_stmt.empty:
-                # Use subsector default if no data available
-                return {
-                    'Pharmaceuticals': 0.05,  # 5% for pharma
-                    'Biotechnology': 0.15,  # 15% for biotech
-                    'Medical Devices': 0.07,  # 7% for devices
-                    'Healthcare Services': 0.05,  # 5% for services
-                    'Healthcare Technology': 0.12  # 12% for health tech
-                }.get(subsector, 0.06)
+        risks = {
+            'overall_risk': 'Moderate',
+            'financial_risk': 'Moderate',
+            'regulatory_risk': 'High',  # Healthcare is highly regulated by default
+            'development_risk': 'Moderate',
+            'competition_risk': 'Moderate',
+            'specific_risks': [],
+            'risk_score': 5.0  # Scale 1-10
+        }
 
-            # Check revenue growth history
-            if 'Total Revenue' in income_stmt.index:
-                revenue = income_stmt.loc['Total Revenue']
+        # Financial risk assessment
+        if 'cash_runway_years' in metrics:
+            if metrics['cash_runway_years'] < 1:
+                risks['financial_risk'] = 'Very High'
+                risks['specific_risks'].append('Critical cash runway under 1 year')
+                risks['risk_score'] += 2.0
+            elif metrics['cash_runway_years'] < 2:
+                risks['financial_risk'] = 'High'
+                risks['specific_risks'].append('Short cash runway under 2 years')
+                risks['risk_score'] += 1.0
+            elif metrics['cash_runway_years'] > 4:
+                risks['financial_risk'] = 'Low'
 
-                # Calculate annual growth rates if we have at least 2 years of data
+        # Development risk assessment based on subsector
+        if subsector in ['Biotech', 'Development-Stage Biotech', 'Early-Stage Pharma']:
+            risks['development_risk'] = 'Very High'
+            risks['specific_risks'].append('High clinical development failure rates')
+            risks['risk_score'] += 1.5
+        elif subsector in ['Commercial-Stage Pharma', 'Commercial-Stage Biotech']:
+            risks['development_risk'] = 'High'
+            risks['specific_risks'].append('Pipeline development risks for future growth')
+            risks['risk_score'] += 0.5
+        elif subsector == 'Medical Devices':
+            risks['development_risk'] = 'Moderate'
+        elif subsector == 'Healthcare Services':
+            risks['development_risk'] = 'Low'
+            risks['risk_score'] -= 0.5
+
+        # Regulatory risk assessment based on subsector
+        if subsector in ['Biotech', 'Development-Stage Biotech', 'Early-Stage Pharma']:
+            risks['regulatory_risk'] = 'Very High'
+            risks['specific_risks'].append('FDA approval uncertainties')
+            risks['risk_score'] += 1.0
+        elif subsector in ['Commercial-Stage Pharma', 'Commercial-Stage Biotech']:
+            risks['regulatory_risk'] = 'High'
+        elif subsector == 'Medical Devices':
+            risks['regulatory_risk'] = 'High'
+            risks['specific_risks'].append('FDA 510(k) or PMA pathway risks')
+        elif subsector == 'Healthcare Services':
+            risks['regulatory_risk'] = 'Moderate'
+            risks['specific_risks'].append('Healthcare policy and reimbursement risks')
+            risks['risk_score'] -= 0.5
+
+        # Patent/IP risk for research-based companies
+        if 'rd_to_revenue' in metrics and metrics['rd_to_revenue'] > 0.1:
+            risks['specific_risks'].append('Patent cliff and intellectual property risks')
+            risks['risk_score'] += 0.5
+
+        # Competition risk assessment
+        if subsector == 'Healthcare Services':
+            risks['competition_risk'] = 'Moderate'
+            risks['specific_risks'].append('Local market competition')
+        elif subsector == 'Medical Devices':
+            risks['competition_risk'] = 'High'
+            risks['specific_risks'].append('Rapid technological obsolescence risk')
+            risks['risk_score'] += 0.5
+
+        # Additional risks for loss-making companies
+        income_stmt = financial_data.get('income_statement')
+        if income_stmt is not None and not income_stmt.empty:
+            income = income_stmt.iloc[:, 0]
+            if 'Net Income' in income.index and income['Net Income'] < 0:
+                # Check number of consecutive loss-making years
+                loss_years = 0
+                for i in range(min(income_stmt.shape[1], 5)):
+                    if i < income_stmt.shape[1] and 'Net Income' in income_stmt.index:
+                        if income_stmt.iloc[income_stmt.index.get_loc('Net Income'), i] < 0:
+                            loss_years += 1
+
+                if loss_years >= 3:
+                    risks['specific_risks'].append(f'Persistent losses for {loss_years} consecutive years')
+                    risks['financial_risk'] = 'High'
+                    risks['risk_score'] += 1.0
+
+        # Cap the risk score
+        risks['risk_score'] = min(10.0, max(1.0, risks['risk_score']))
+
+        # Determine overall risk based on risk score
+        if risks['risk_score'] >= 8.0:
+            risks['overall_risk'] = 'Very High'
+        elif risks['risk_score'] >= 6.0:
+            risks['overall_risk'] = 'High'
+        elif risks['risk_score'] >= 4.0:
+            risks['overall_risk'] = 'Moderate'
+        elif risks['risk_score'] >= 2.0:
+            risks['overall_risk'] = 'Low'
+        else:
+            risks['overall_risk'] = 'Very Low'
+
+        return risks
+
+    def _analyze_growth_potential(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze growth potential specific to healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with growth analysis
+        """
+        # Get subsector information
+        subsector_info = self._determine_healthcare_subsector(financial_data)
+        subsector = subsector_info['subsector']
+
+        # Get financial metrics
+        metrics = self._calculate_healthcare_metrics(financial_data)
+
+        growth_analysis = {
+            'growth_potential': 'Moderate',
+            'growth_drivers': [],
+            'growth_barriers': [],
+            'revenue_growth': metrics.get('revenue_growth_yoy'),
+            'forward_growth_estimate': None,
+            'growth_sustainability_score': 5.0  # Scale 1-10
+        }
+
+        # Extract income statement for historical analysis
+        income_stmt = financial_data.get('income_statement')
+
+        if income_stmt is not None and not income_stmt.empty:
+            # Calculate historical growth metrics if we have enough data
+            if income_stmt.shape[1] >= 3 and 'Total Revenue' in income_stmt.index:
+                # Calculate revenue growth stability
                 growth_rates = []
+                for i in range(min(income_stmt.shape[1], 5) - 1):
+                    if i + 1 < income_stmt.shape[1]:
+                        current = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), i]
+                        previous = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), i + 1]
 
-                if len(revenue) >= 2:
-                    for i in range(len(revenue) - 1):
-                        if revenue[i + 1] > 0:  # Avoid division by zero
-                            annual_growth = (revenue[i] / revenue[i + 1]) - 1
-                            growth_rates.append(annual_growth)
+                        if previous > 0:
+                            growth_rate = (current / previous) - 1
+                            growth_rates.append(growth_rate)
 
                 if growth_rates:
-                    # Calculate weighted average (more recent years have higher weight)
-                    weights = list(range(1, len(growth_rates) + 1))
-                    weighted_growth = sum(r * w for r, w in zip(growth_rates, weights)) / sum(weights)
+                    growth_analysis['historical_growth_rates'] = growth_rates
+                    growth_analysis['mean_growth_rate'] = sum(growth_rates) / len(growth_rates)
+                    growth_analysis['growth_volatility'] = np.std(growth_rates) if len(growth_rates) > 1 else 0
 
-                    # Adjust extreme values
-                    if weighted_growth > 0.25:
-                        # Cap very high growth rate and adjust down
-                        weighted_growth = 0.25 - (weighted_growth - 0.25) * 0.5
-                    elif weighted_growth < 0:
-                        # Adjust negative growth less severely as it may be temporary
-                        weighted_growth = weighted_growth * 0.5
+                    # Assess growth stability
+                    if growth_analysis['growth_volatility'] < 0.05:
+                        growth_analysis['growth_stability'] = 'Very Stable'
+                        growth_analysis['growth_sustainability_score'] += 1.0
+                    elif growth_analysis['growth_volatility'] < 0.1:
+                        growth_analysis['growth_stability'] = 'Stable'
+                        growth_analysis['growth_sustainability_score'] += 0.5
+                    elif growth_analysis['growth_volatility'] > 0.25:
+                        growth_analysis['growth_stability'] = 'Highly Volatile'
+                        growth_analysis['growth_sustainability_score'] -= 1.0
+                        growth_analysis['growth_barriers'].append('Inconsistent historical growth')
+                    else:
+                        growth_analysis['growth_stability'] = 'Moderately Volatile'
 
-                    # Blend with subsector average for stability
-                    subsector_growth = {
-                        'Pharmaceuticals': 0.05,
-                        'Biotechnology': 0.15,
-                        'Medical Devices': 0.07,
-                        'Healthcare Services': 0.05,
-                        'Healthcare Technology': 0.12
-                    }.get(subsector, 0.06)
+        # Subsector-specific growth analysis
+        if subsector in ['Biotech', 'Development-Stage Biotech']:
+            # Early-stage companies with high growth potential but high risk
+            growth_analysis['growth_potential'] = 'Very High'
+            growth_analysis['growth_drivers'].append('Novel biological therapies with large market potential')
+            growth_analysis['growth_drivers'].append('High unmet medical need in target indications')
+            growth_analysis['growth_barriers'].append('Clinical development and regulatory hurdles')
+            growth_analysis['growth_barriers'].append('Funding requirements for R&D progression')
 
-                    blended_growth = (weighted_growth * 0.7) + (subsector_growth * 0.3)
+            # Adjust growth score based on R&D investment
+            if metrics.get('rd_to_revenue', 0) > 0.2:
+                growth_analysis['growth_sustainability_score'] += 1.0
 
-                    return max(0.02, min(0.25, blended_growth))  # Ensure reasonable range
+            # Estimate forward growth
+            growth_analysis['forward_growth_estimate'] = 0.30  # Biotech can have explosive growth upon approval
 
-            # If we can't calculate from history, use subsector default
-            return {
-                'Pharmaceuticals': 0.05,
-                'Biotechnology': 0.15,
-                'Medical Devices': 0.07,
-                'Healthcare Services': 0.05,
-                'Healthcare Technology': 0.12
-            }.get(subsector, 0.06)
+        elif subsector in ['Pharmaceutical', 'Commercial-Stage Pharma', 'Commercial-Stage Biotech']:
+            growth_analysis['growth_potential'] = 'Moderate to High'
+            growth_analysis['growth_drivers'].append('Existing commercial products with established revenue')
+            growth_analysis['growth_drivers'].append('Pipeline products for future growth')
+            growth_analysis['growth_barriers'].append('Patent expirations and generic competition')
 
-        except Exception as e:
-            logger.warning(f"Error estimating healthcare growth rate for {ticker}: {e}")
-            # Return default rate based on subsector
-            return {
-                'Pharmaceuticals': 0.05,
-                'Biotechnology': 0.15,
-                'Medical Devices': 0.07,
-                'Healthcare Services': 0.05,
-                'Healthcare Technology': 0.12
-            }.get(subsector, 0.06)
+            # Check for R&D investment as growth driver
+            if metrics.get('rd_to_revenue', 0) > 0.15:
+                growth_analysis['growth_drivers'].append('Strong R&D investment supporting future pipeline')
+                growth_analysis['growth_sustainability_score'] += 1.0
+            elif metrics.get('rd_to_revenue', 0) < 0.1:
+                growth_analysis['growth_barriers'].append('Below-average R&D investment may limit future growth')
+                growth_analysis['growth_sustainability_score'] -= 1.0
+
+            # Estimate forward growth based on historical performance
+            if 'mean_growth_rate' in growth_analysis:
+                growth_analysis['forward_growth_estimate'] = growth_analysis[
+                                                                 'mean_growth_rate'] * 0.9  # Slight discount
+            else:
+                growth_analysis['forward_growth_estimate'] = 0.08  # Industry average
+
+        elif subsector == 'Medical Devices':
+            growth_analysis['growth_potential'] = 'Moderate'
+            growth_analysis['growth_drivers'].append('Innovation in medical technology')
+            growth_analysis['growth_drivers'].append('Aging population increasing device demand')
+            growth_analysis['growth_barriers'].append('Reimbursement challenges for new devices')
+            growth_analysis['growth_barriers'].append('Competitive landscape with rapid technological change')
+
+            # Estimate forward growth
+            if 'mean_growth_rate' in growth_analysis:
+                growth_analysis['forward_growth_estimate'] = growth_analysis['mean_growth_rate']
+            else:
+                growth_analysis['forward_growth_estimate'] = 0.07  # Industry average
+
+        elif subsector == 'Healthcare Services':
+            growth_analysis['growth_potential'] = 'Moderate'
+            growth_analysis['growth_drivers'].append('Increasing healthcare demand from aging population')
+            growth_analysis['growth_drivers'].append('Potential for operational efficiency improvements')
+            growth_analysis['growth_barriers'].append('Reimbursement pressure from insurers and government')
+            growth_analysis['growth_barriers'].append('Regulatory changes affecting business model')
+
+            # Estimate forward growth
+            if 'mean_growth_rate' in growth_analysis:
+                growth_analysis['forward_growth_estimate'] = growth_analysis['mean_growth_rate']
+            else:
+                growth_analysis['forward_growth_estimate'] = 0.06  # Industry average
+
+        # Adjust growth potential based on historical performance
+        if 'mean_growth_rate' in growth_analysis:
+            if growth_analysis['mean_growth_rate'] > 0.25:
+                growth_analysis['growth_potential'] = 'Very High'
+                growth_analysis['growth_sustainability_score'] += 1.0
+            elif growth_analysis['mean_growth_rate'] > 0.15:
+                growth_analysis['growth_potential'] = 'High'
+                growth_analysis['growth_sustainability_score'] += 0.5
+            elif growth_analysis['mean_growth_rate'] < 0.05:
+                if growth_analysis['growth_potential'] != 'Very High':  # Don't downgrade early biotech
+                    growth_analysis['growth_potential'] = 'Low'
+                    growth_analysis['growth_sustainability_score'] -= 0.5
+
+        # Cap the sustainability score
+        growth_analysis['growth_sustainability_score'] = min(10.0,
+                                                             max(1.0, growth_analysis['growth_sustainability_score']))
+
+        return growth_analysis
+
+    def _assess_innovation_metrics(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Assess innovation capabilities specific to healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with innovation assessment
+        """
+        # Get subsector and metrics
+        subsector_info = self._determine_healthcare_subsector(financial_data)
+        subsector = subsector_info['subsector']
+        metrics = self._calculate_healthcare_metrics(financial_data)
+
+        innovation_assessment = {
+            'innovation_strength': 'Moderate',
+            'key_innovation_metrics': {},
+            'innovation_drivers': [],
+            'innovation_barriers': [],
+            'innovation_score': 5.0  # Scale 1-10
+        }
+
+        # R&D intensity is the primary innovation metric in healthcare
+        if 'rd_to_revenue' in metrics:
+            rd_intensity = metrics['rd_to_revenue']
+            innovation_assessment['key_innovation_metrics']['rd_intensity'] = rd_intensity
+
+            if rd_intensity > 0.25:
+                innovation_assessment['innovation_strength'] = 'Very Strong'
+                innovation_assessment['innovation_score'] += 2.0
+                innovation_assessment['innovation_drivers'].append(
+                    'Exceptionally high R&D investment (>25% of revenue)')
+            elif rd_intensity > 0.15:
+                innovation_assessment['innovation_strength'] = 'Strong'
+                innovation_assessment['innovation_score'] += 1.0
+                innovation_assessment['innovation_drivers'].append('Above-average R&D investment (>15% of revenue)')
+            elif rd_intensity < 0.05:
+                innovation_assessment['innovation_strength'] = 'Weak'
+                innovation_assessment['innovation_score'] -= 1.0
+                innovation_assessment['innovation_barriers'].append('Below-average R&D investment (<5% of revenue)')
+
+        # R&D growth rate
+        if 'rd_growth_cagr' in metrics:
+            rd_growth = metrics['rd_growth_cagr']
+            innovation_assessment['key_innovation_metrics']['rd_growth'] = rd_growth
+
+            if rd_growth > 0.2:
+                innovation_assessment['innovation_score'] += 1.0
+                innovation_assessment['innovation_drivers'].append('Rapidly increasing R&D investment (>20% CAGR)')
+            elif rd_growth > 0.1:
+                innovation_assessment['innovation_score'] += 0.5
+                innovation_assessment['innovation_drivers'].append('Growing R&D investment (>10% CAGR)')
+            elif rd_growth < 0:
+                innovation_assessment['innovation_score'] -= 1.0
+                innovation_assessment['innovation_barriers'].append('Decreasing R&D investment')
+
+        # R&D efficiency
+        if 'revenue_per_rd_dollar' in metrics:
+            rd_efficiency = metrics['revenue_per_rd_dollar']
+            innovation_assessment['key_innovation_metrics']['rd_efficiency'] = rd_efficiency
+
+            # Different expectations based on subsector
+            if subsector in ['Commercial-Stage Pharma', 'Commercial-Stage Biotech']:
+                if rd_efficiency > 5:
+                    innovation_assessment['innovation_score'] += 1.0
+                    innovation_assessment['innovation_drivers'].append('High R&D efficiency (>$5 revenue per $1 R&D)')
+                elif rd_efficiency < 2:
+                    innovation_assessment['innovation_score'] -= 0.5
+                    innovation_assessment['innovation_barriers'].append('Low R&D efficiency (<$2 revenue per $1 R&D)')
+            elif subsector == 'Medical Devices' and rd_efficiency < 3:
+                innovation_assessment['innovation_score'] -= 0.5
+                innovation_assessment['innovation_barriers'].append('Below-average R&D efficiency for device company')
+
+        # Subsector-specific assessments
+        if subsector in ['Biotech', 'Development-Stage Biotech']:
+            innovation_assessment['innovation_drivers'].append('Focus on novel biological therapies')
+
+            # Pre-revenue biotech is expected to have no R&D efficiency yet
+            if 'revenue_per_rd_dollar' in innovation_assessment['key_innovation_metrics']:
+                del innovation_assessment['key_innovation_metrics']['rd_efficiency']
+
+            # High rd_intensity is expected for biotech
+            if metrics.get('rd_to_revenue', 0) > 0.5:
+                innovation_assessment['innovation_drivers'].append('R&D-focused business model (>50% of revenue)')
+                innovation_assessment['innovation_score'] += 0.5
+
+        elif subsector in ['Pharmaceutical', 'Commercial-Stage Pharma']:
+            if metrics.get('rd_to_revenue', 0) > 0.15:
+                innovation_assessment['innovation_drivers'].append('Above-average pharmaceutical R&D investment')
+                innovation_assessment['innovation_score'] += 0.5
+
+        elif subsector == 'Medical Devices':
+            if metrics.get('rd_to_revenue', 0) > 0.1:
+                innovation_assessment['innovation_drivers'].append('Strong R&D for a medical device company')
+                innovation_assessment['innovation_score'] += 0.5
+
+        elif subsector == 'Healthcare Services':
+            # Services companies typically have minimal R&D
+            innovation_assessment['innovation_barriers'].append('Service-focused business with limited product R&D')
+            innovation_assessment['innovation_score'] -= 1.0
+
+        # Cap the innovation score
+        innovation_assessment['innovation_score'] = min(10.0, max(1.0, innovation_assessment['innovation_score']))
+
+        # Final innovation strength assessment based on score
+        if innovation_assessment['innovation_score'] >= 8.0:
+            innovation_assessment['innovation_strength'] = 'Very Strong'
+        elif innovation_assessment['innovation_score'] >= 6.0:
+            innovation_assessment['innovation_strength'] = 'Strong'
+        elif innovation_assessment['innovation_score'] >= 4.0:
+            innovation_assessment['innovation_strength'] = 'Moderate'
+        elif innovation_assessment['innovation_score'] >= 2.0:
+            innovation_assessment['innovation_strength'] = 'Weak'
+        else:
+            innovation_assessment['innovation_strength'] = 'Very Weak'
+
+        return innovation_assessment
+
+    def _assess_regulatory_exposure(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Assess regulatory exposure specific to healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with regulatory exposure assessment
+        """
+        # Get subsector
+        subsector_info = self._determine_healthcare_subsector(financial_data)
+        subsector = subsector_info['subsector']
+
+        regulatory_assessment = {
+            'regulatory_exposure': 'High',  # Healthcare default
+            'regulatory_risk_factors': [],
+            'regulatory_opportunities': [],
+            'regulatory_risk_score': 7.0,  # Scale 1-10, healthcare starts high
+            'key_regulatory_considerations': []
+        }
+
+        # Subsector-specific regulatory assessment
+        if subsector in ['Biotech', 'Development-Stage Biotech', 'Early-Stage Pharma']:
+            regulatory_assessment['regulatory_exposure'] = 'Very High'
+            regulatory_assessment['regulatory_risk_score'] += 1.0
+            regulatory_assessment['regulatory_risk_factors'].append('FDA approval process for novel therapies')
+            regulatory_assessment['regulatory_risk_factors'].append('Clinical trial design and endpoint requirements')
+            regulatory_assessment['key_regulatory_considerations'].append('Phase I/II/III clinical trial progression')
+            regulatory_assessment['key_regulatory_considerations'].append('FDA meeting outcomes and guidance')
+
+            # Opportunity in breakthrough designations
+            regulatory_assessment['regulatory_opportunities'].append('Potential for breakthrough therapy designation')
+            regulatory_assessment['regulatory_opportunities'].append(
+                'Orphan drug designation potential for rare diseases')
+
+        elif subsector in ['Pharmaceutical', 'Commercial-Stage Pharma', 'Commercial-Stage Biotech']:
+            regulatory_assessment['regulatory_risk_factors'].append('Post-marketing surveillance requirements')
+            regulatory_assessment['regulatory_risk_factors'].append('Patent challenges and generic competition')
+            regulatory_assessment['regulatory_risk_factors'].append('Pricing pressure from government programs')
+            regulatory_assessment['key_regulatory_considerations'].append(
+                'REMS (Risk Evaluation and Mitigation Strategies) requirements')
+            regulatory_assessment['key_regulatory_considerations'].append('Manufacturing facility compliance (GMP)')
+
+            # Commercial stage typically has some approved products reducing overall risk
+            regulatory_assessment['regulatory_risk_score'] -= 0.5
+
+            # Opportunity in label expansions
+            regulatory_assessment['regulatory_opportunities'].append('Label expansion opportunities for existing drugs')
+            regulatory_assessment['regulatory_opportunities'].append('New indication approvals expanding market')
+
+        elif subsector == 'Medical Devices':
+            regulatory_assessment['regulatory_risk_factors'].append('510(k) clearance or PMA approval pathways')
+            regulatory_assessment['regulatory_risk_factors'].append('Post-market surveillance requirements')
+            regulatory_assessment['regulatory_risk_factors'].append('Reimbursement code assignments')
+            regulatory_assessment['key_regulatory_considerations'].append('Device classification (Class I, II, or III)')
+            regulatory_assessment['key_regulatory_considerations'].append('Quality System Regulation compliance')
+
+            # 510(k) pathway is slightly less rigorous than drug approval
+            regulatory_assessment['regulatory_risk_score'] -= 1.0
+
+            # Opportunity in breakthrough device designation
+            regulatory_assessment['regulatory_opportunities'].append('Breakthrough device designation potential')
+            regulatory_assessment['regulatory_opportunities'].append('De Novo classification process for novel devices')
+
+        elif subsector == 'Healthcare Services':
+            regulatory_assessment['regulatory_exposure'] = 'Moderate'
+            regulatory_assessment['regulatory_risk_score'] -= 2.0
+            regulatory_assessment['regulatory_risk_factors'].append('Medicare/Medicaid reimbursement changes')
+            regulatory_assessment['regulatory_risk_factors'].append('HIPAA compliance requirements')
+            regulatory_assessment['regulatory_risk_factors'].append('Affordable Care Act provisions')
+            regulatory_assessment['key_regulatory_considerations'].append('State-specific healthcare regulations')
+            regulatory_assessment['key_regulatory_considerations'].append('Data privacy and security requirements')
+
+            # Opportunity in value-based care models
+            regulatory_assessment['regulatory_opportunities'].append('Value-based care model incentives')
+            regulatory_assessment['regulatory_opportunities'].append('Telehealth expansion and reimbursement')
+
+        # Adjust regulatory exposure based on risk score
+        if regulatory_assessment['regulatory_risk_score'] >= 8.0:
+            regulatory_assessment['regulatory_exposure'] = 'Very High'
+        elif regulatory_assessment['regulatory_risk_score'] >= 6.0:
+            regulatory_assessment['regulatory_exposure'] = 'High'
+        elif regulatory_assessment['regulatory_risk_score'] >= 4.0:
+            regulatory_assessment['regulatory_exposure'] = 'Moderate'
+        else:
+            regulatory_assessment['regulatory_exposure'] = 'Low'
+
+        return regulatory_assessment
+
+    def _pipeline_based_valuation(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Pipeline-based DCF valuation method, particularly suited for biotech and early-stage pharma
+
+        This method values companies based on the probability-adjusted net present value
+        of their drug/therapy pipeline, particularly useful for companies without current revenue.
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with valuation results
+        """
+        # Get company info
+        company_info = financial_data.get('company_info', {})
+        ticker = company_info.get('symbol', 'Unknown')
+
+        # Get market data
+        market_data = financial_data.get('market_data', {})
+        current_price = market_data.get('share_price')
+        shares_outstanding = market_data.get('shares_outstanding')
+
+        # Get subsector for more tailored analysis
+        subsector = self._determine_healthcare_subsector(financial_data)['subsector']
+
+        # Since we don't have direct pipeline data in financial statements,
+        # we'll create a simplified model based on R&D spending and other metrics
+
+        # Extract balance sheet and cash flow to estimate cash available
+        balance_sheet = financial_data.get('balance_sheet')
+        income_stmt = financial_data.get('income_statement')
+        cash_flow = financial_data.get('cash_flow')
+
+        # Initialize valuation results
+        valuation_result = {
+            'company': ticker,
+            'method': 'pipeline_based_dcf',
+            'subsector': subsector,
+            'enterprise_value': None,
+            'equity_value': None,
+            'value_per_share': None,
+            'current_price': current_price,
+            'upside_potential': None,
+            'key_assumptions': {}
+        }
+
+        # Cannot perform valuation without basic financial data
+        if income_stmt is None or income_stmt.empty:
+            valuation_result['error'] = "Insufficient financial data for pipeline-based valuation"
+            return valuation_result
+
+        # Extract necessary data
+        if balance_sheet is not None and not balance_sheet.empty:
+            balance = balance_sheet.iloc[:, 0]
+
+            # Get cash position
+            if 'Cash and Cash Equivalents' in balance.index:
+                cash = balance['Cash and Cash Equivalents']
+                valuation_result['key_assumptions']['cash_position'] = float(cash)
+
+            # Get total debt
+            total_debt = 0
+            for debt_field in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
+                if debt_field in balance.index:
+                    total_debt += balance[debt_field]
+
+            valuation_result['key_assumptions']['total_debt'] = float(total_debt)
+
+        # Get R&D spending (key for pipeline valuation)
+        income = income_stmt.iloc[:, 0]
+        rd_expense = 0
+        if 'Research and Development' in income.index:
+            rd_expense = income['Research and Development']
+            valuation_result['key_assumptions']['annual_rd_expense'] = float(rd_expense)
+
+        # Get revenue to determine if pre-commercial or commercial stage
+        revenue = 0
+        if 'Total Revenue' in income.index:
+            revenue = income['Total Revenue']
+            valuation_result['key_assumptions']['annual_revenue'] = float(revenue)
+
+        # Determine if pre-commercial or commercial
+        is_pre_commercial = revenue < rd_expense * 0.5  # Significantly less revenue than R&D spend
+
+        # Set assumptions based on subsector and commercial status
+        if subsector in ['Biotech', 'Development-Stage Biotech', 'Early-Stage Pharma'] and is_pre_commercial:
+            # Pre-commercial biotech assumptions
+            discount_rate = 0.15  # Higher discount rate for pre-commercial
+            value_multiplier = 4.5  # Approximate multiple of R&D spend for valuation
+            success_probability = 0.15  # Probability of successful commercialization
+            time_to_market = 5  # Years until potential commercialization
+            peak_sales_to_rd_ratio = 12  # Peak annual sales as multiple of current R&D
+
+            # Pipeline value calculation - simplified approach for development-stage biotech
+            peak_sales_potential = rd_expense * peak_sales_to_rd_ratio
+
+            # Adjust based on R&D intensity
+            if rd_expense > 100000000:  # >$100M annual R&D
+                value_multiplier = 5.0
+                success_probability = 0.18
+            elif rd_expense < 20000000:  # <$20M annual R&D
+                value_multiplier = 3.5
+                success_probability = 0.12
+
+            # Record assumptions
+            valuation_result['key_assumptions']['discount_rate'] = discount_rate
+            valuation_result['key_assumptions']['value_multiplier'] = value_multiplier
+            valuation_result['key_assumptions']['success_probability'] = success_probability
+            valuation_result['key_assumptions']['time_to_market'] = time_to_market
+            valuation_result['key_assumptions']['peak_sales_potential'] = float(peak_sales_potential)
+
+            # Calculate risk-adjusted NPV
+            risk_adjusted_npv = 0
+
+            # Simple projection for peak sales achieved over time_to_market + 5 years with 8-year patent life
+            projected_sales = []
+            patent_life = 8  # years of exclusivity after approval
+            ramp_up_years = 3  # years to reach peak sales after launch
+
+            for year in range(1, time_to_market + patent_life + 1):
+                if year <= time_to_market:
+                    # Pre-launch: no revenue
+                    annual_sales = 0
+                elif year <= time_to_market + ramp_up_years:
+                    # Ramp-up phase to peak sales
+                    ramp_factor = (year - time_to_market) / ramp_up_years
+                    annual_sales = peak_sales_potential * ramp_factor
+                elif year <= time_to_market + patent_life:
+                    # Peak sales during exclusivity
+                    annual_sales = peak_sales_potential
+                else:
+                    # Decline after patent expiry
+                    annual_sales = peak_sales_potential * 0.3  # 70% decline
+
+                # Discount to present value
+                present_value = annual_sales / ((1 + discount_rate) ** year)
+
+                # Apply success probability
+                risk_adjusted_present_value = present_value * success_probability
+                risk_adjusted_npv += risk_adjusted_present_value
+
+                projected_sales.append({
+                    'year': year,
+                    'phase': 'Pre-launch' if year <= time_to_market else 'Commercial',
+                    'annual_sales': float(annual_sales),
+                    'present_value': float(present_value),
+                    'risk_adjusted_pv': float(risk_adjusted_present_value)
+                })
+
+            # Approximate costs and margins
+            cost_of_revenue_pct = 0.25  # 25% COGS for biotech
+            opex_pct = 0.40  # 40% operating expenses excluding R&D
+            operating_margin = 1 - cost_of_revenue_pct - opex_pct
+            tax_rate = 0.21  # US corporate tax rate
+
+            # Adjust NPV for operating margin and taxes
+            operating_profit_npv = risk_adjusted_npv * operating_margin
+            after_tax_npv = operating_profit_npv * (1 - tax_rate)
+
+            # Add these assumptions
+            valuation_result['key_assumptions']['operating_margin'] = operating_margin
+            valuation_result['key_assumptions']['tax_rate'] = tax_rate
+
+            # Alternatively, use R&D multiple method as a crosscheck
+            rd_multiple_valuation = rd_expense * value_multiplier
+
+            # Calculate enterprise value (weighted average of methods)
+            enterprise_value = (after_tax_npv * 0.7) + (rd_multiple_valuation * 0.3)
+
+            # Adjust for cash and debt
+            equity_value = enterprise_value + valuation_result['key_assumptions'].get('cash_position', 0) - \
+                           valuation_result['key_assumptions'].get('total_debt', 0)
+
+            # Calculate per share value
+            if shares_outstanding:
+                value_per_share = equity_value / shares_outstanding
+
+                # Calculate upside/downside vs current price
+                if current_price:
+                    upside_potential = (value_per_share / current_price) - 1
+                    valuation_result['upside_potential'] = float(upside_potential)
+
+                valuation_result['value_per_share'] = float(value_per_share)
+
+            valuation_result['enterprise_value'] = float(enterprise_value)
+            valuation_result['equity_value'] = float(equity_value)
+            valuation_result['projected_sales'] = projected_sales
+
+            # Add probabilistic range
+            valuation_result['bull_case'] = float(value_per_share * 1.5)  # 50% higher success probability
+            valuation_result['bear_case'] = float(value_per_share * 0.5)  # 50% lower success probability
+
+        else:
+            # For commercial-stage companies, use standard multi-stage DCF
+            return self._multi_stage_dcf_valuation(financial_data)
+
+        return valuation_result
+
+    def _multi_stage_dcf_valuation(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Multi-stage DCF valuation method suitable for established healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with valuation results
+        """
+        # Get company info
+        company_info = financial_data.get('company_info', {})
+        ticker = company_info.get('symbol', 'Unknown')
+
+        # Get subsector for more tailored analysis
+        subsector = self._determine_healthcare_subsector(financial_data)['subsector']
+
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+        cash_flow = financial_data.get('cash_flow')
+
+        # Get market data
+        market_data = financial_data.get('market_data', {})
+        current_price = market_data.get('share_price')
+        shares_outstanding = market_data.get('shares_outstanding')
+
+        # Initialize valuation results
+        valuation_result = {
+            'company': ticker,
+            'method': 'multi_stage_dcf',
+            'subsector': subsector,
+            'enterprise_value': None,
+            'equity_value': None,
+            'value_per_share': None,
+            'current_price': current_price,
+            'upside_potential': None,
+            'key_assumptions': {},
+            'forecast': {}
+        }
+
+        # Cannot perform valuation without basic financial data
+        if income_stmt is None or income_stmt.empty or balance_sheet is None or balance_sheet.empty:
+            valuation_result['error'] = "Insufficient financial data for DCF valuation"
+            return valuation_result
+
+        # Get historical free cash flow data
+        historical_fcf = []
+        if cash_flow is not None and not cash_flow.empty:
+            for i in range(min(5, cash_flow.shape[1])):
+                if i < cash_flow.shape[1]:
+                    cf_data = cash_flow.iloc[:, i]
+
+                    # Try to get FCF directly
+                    if 'Free Cash Flow' in cf_data.index:
+                        fcf = cf_data['Free Cash Flow']
+                    # Otherwise calculate from components
+                    elif 'Operating Cash Flow' in cf_data.index and 'Capital Expenditure' in cf_data.index:
+                        fcf = cf_data['Operating Cash Flow'] + cf_data['Capital Expenditure']  # CapEx is negative
+                    else:
+                        continue
+
+                    historical_fcf.append(float(fcf))
+
+        # If we don't have FCF data, try to estimate from income statement
+        if not historical_fcf and income_stmt is not None and not income_stmt.empty:
+            for i in range(min(5, income_stmt.shape[1])):
+                if i < income_stmt.shape[1]:
+                    inc_data = income_stmt.iloc[:, i]
+
+                    if 'Net Income' in inc_data.index:
+                        net_income = inc_data['Net Income']
+
+                        # Rough FCF approximation (net income × 0.9 assuming 10% of income goes to capex/wc)
+                        estimated_fcf = net_income * 0.9
+                        historical_fcf.append(float(estimated_fcf))
+
+        if not historical_fcf:
+            valuation_result['error'] = "Unable to determine cash flows for DCF valuation"
+            return valuation_result
+
+        # Get the most recent FCF as starting point
+        starting_fcf = historical_fcf[0]
+
+        # Calculate historical growth rate
+        if len(historical_fcf) > 1:
+            growth_rates = []
+            for i in range(len(historical_fcf) - 1):
+                if historical_fcf[i + 1] > 0:  # Avoid division by zero or negative
+                    annual_growth = (historical_fcf[i] / historical_fcf[i + 1]) - 1
+                    growth_rates.append(annual_growth)
+
+            if growth_rates:
+                # Use weighted average favoring recent growth
+                weights = list(range(1, len(growth_rates) + 1))
+                historical_growth = sum(rate * weight for rate, weight in zip(growth_rates, weights)) / sum(weights)
+            else:
+                historical_growth = 0.08  # Default healthcare sector growth
+        else:
+            historical_growth = 0.08  # Default growth rate
+
+        # Set DCF parameters based on subsector
+        if subsector in ['Biotech', 'Commercial-Stage Biotech']:
+            # High growth potential but higher risk
+            high_growth_years = 5
+            high_growth_rate = max(historical_growth, 0.12)  # At least 12% for biotech
+            transition_years = 5
+            terminal_growth = 0.03
+            discount_rate = 0.11
+
+        elif subsector in ['Pharmaceutical', 'Commercial-Stage Pharma']:
+            # Moderate growth with patent protection
+            high_growth_years = 5
+            high_growth_rate = max(historical_growth, 0.08)  # At least 8% for pharma
+            transition_years = 5
+            terminal_growth = 0.025
+            discount_rate = 0.09
+
+        elif subsector == 'Medical Devices':
+            # Moderate growth with technological innovation
+            high_growth_years = 5
+            high_growth_rate = max(historical_growth, 0.07)  # At least 7% for medical devices
+            transition_years = 5
+            terminal_growth = 0.025
+            discount_rate = 0.095
+
+        elif subsector == 'Healthcare Services':
+            # Steady growth with demographic tailwinds
+            high_growth_years = 4
+            high_growth_rate = max(historical_growth, 0.06)  # At least 6% for services
+            transition_years = 4
+            terminal_growth = 0.02
+            discount_rate = 0.08
+
+        else:
+            # Default healthcare parameters
+            high_growth_years = 5
+            high_growth_rate = max(historical_growth, 0.07)
+            transition_years = 5
+            terminal_growth = 0.025
+            discount_rate = 0.09
+
+        # Record the assumptions
+        valuation_result['key_assumptions']['high_growth_years'] = high_growth_years
+        valuation_result['key_assumptions']['high_growth_rate'] = float(high_growth_rate)
+        valuation_result['key_assumptions']['transition_years'] = transition_years
+        valuation_result['key_assumptions']['terminal_growth_rate'] = float(terminal_growth)
+        valuation_result['key_assumptions']['discount_rate'] = float(discount_rate)
+        valuation_result['key_assumptions']['starting_fcf'] = float(starting_fcf)
+
+        # Forecast cash flows for high growth phase
+        high_growth_fcf = []
+        cumulative_fcf = starting_fcf
+
+        for year in range(1, high_growth_years + 1):
+            fcf = cumulative_fcf * (1 + high_growth_rate)
+            high_growth_fcf.append(float(fcf))
+            cumulative_fcf = fcf
+
+        # Forecast cash flows for transition phase
+        transition_fcf = []
+
+        for year in range(1, transition_years + 1):
+            # Linear decline in growth rate from high_growth_rate to terminal_growth
+            growth_rate = high_growth_rate - ((high_growth_rate - terminal_growth) * year / transition_years)
+            fcf = cumulative_fcf * (1 + growth_rate)
+            transition_fcf.append(float(fcf))
+            cumulative_fcf = fcf
+
+        # Calculate terminal value
+        terminal_fcf = transition_fcf[-1] * (1 + terminal_growth)
+        terminal_value = terminal_fcf / (discount_rate - terminal_growth)
+
+        # Discount all cash flows to present value
+        present_value_high_growth = sum(fcf / (1 + discount_rate) ** year
+                                        for year, fcf in enumerate(high_growth_fcf, 1))
+
+        present_value_transition = sum(fcf / (1 + discount_rate) ** (year + high_growth_years)
+                                       for year, fcf in enumerate(transition_fcf, 1))
+
+        present_value_terminal = terminal_value / (1 + discount_rate) ** (high_growth_years + transition_years)
+
+        # Calculate enterprise value
+        enterprise_value = present_value_high_growth + present_value_transition + present_value_terminal
+
+        # Calculate net debt
+        net_debt = 0
+        if balance_sheet is not None and not balance_sheet.empty:
+            balance = balance_sheet.iloc[:, 0]
+
+            # Calculate total debt
+            total_debt = 0
+            for debt_field in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
+                if debt_field in balance.index:
+                    total_debt += balance[debt_field]
+
+            # Get cash and equivalents
+            cash = 0
+            if 'Cash and Cash Equivalents' in balance.index:
+                cash = balance['Cash and Cash Equivalents']
+
+            net_debt = total_debt - cash
+
+        # Calculate equity value
+        equity_value = enterprise_value - net_debt
+
+        # Calculate per share value
+        if shares_outstanding:
+            value_per_share = equity_value / shares_outstanding
+
+            # Calculate upside/downside vs current price
+            if current_price:
+                upside_potential = (value_per_share / current_price) - 1
+                valuation_result['upside_potential'] = float(upside_potential)
+
+            valuation_result['value_per_share'] = float(value_per_share)
+
+        valuation_result['enterprise_value'] = float(enterprise_value)
+        valuation_result['equity_value'] = float(equity_value)
+        valuation_result['net_debt'] = float(net_debt)
+
+        # Save the forecast
+        valuation_result['forecast'] = {
+            'high_growth_fcf': high_growth_fcf,
+            'transition_fcf': transition_fcf,
+            'terminal_value': float(terminal_value),
+            'present_value_high_growth': float(present_value_high_growth),
+            'present_value_transition': float(present_value_transition),
+            'present_value_terminal': float(present_value_terminal)
+        }
+
+        # Add sensitivity analysis
+        valuation_result['sensitivity'] = {
+            'discount_rate_plus_1pct': float(self._recalculate_dcf_value(
+                high_growth_fcf, transition_fcf, terminal_fcf, discount_rate + 0.01,
+                terminal_growth, high_growth_years, transition_years, net_debt, shares_outstanding
+            )),
+            'discount_rate_minus_1pct': float(self._recalculate_dcf_value(
+                high_growth_fcf, transition_fcf, terminal_fcf, discount_rate - 0.01,
+                terminal_growth, high_growth_years, transition_years, net_debt, shares_outstanding
+            )),
+            'growth_rate_plus_1pct': float(self._recalculate_dcf_value(
+                high_growth_fcf, transition_fcf, terminal_fcf, discount_rate,
+                terminal_growth + 0.01, high_growth_years, transition_years, net_debt, shares_outstanding
+            )),
+            'growth_rate_minus_1pct': float(self._recalculate_dcf_value(
+                high_growth_fcf, transition_fcf, terminal_fcf, discount_rate,
+                terminal_growth - 0.01, high_growth_years, transition_years, net_debt, shares_outstanding
+            ))
+        }
+
+        return valuation_result
+
+    def _recalculate_dcf_value(self, high_growth_fcf, transition_fcf, terminal_fcf,
+                               discount_rate, terminal_growth, high_growth_years,
+                               transition_years, net_debt, shares_outstanding):
+        """Helper function to recalculate DCF value with different parameters"""
+        terminal_value = terminal_fcf / (discount_rate - terminal_growth)
+
+        pv_high_growth = sum(fcf / (1 + discount_rate) ** year
+                             for year, fcf in enumerate(high_growth_fcf, 1))
+
+        pv_transition = sum(fcf / (1 + discount_rate) ** (year + high_growth_years)
+                            for year, fcf in enumerate(transition_fcf, 1))
+
+        pv_terminal = terminal_value / (1 + discount_rate) ** (high_growth_years + transition_years)
+
+        enterprise_value = pv_high_growth + pv_transition + pv_terminal
+        equity_value = enterprise_value - net_debt
+
+        if shares_outstanding:
+            return equity_value / shares_outstanding
+        else:
+            return None
+
+    def _standard_dcf_valuation(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Standard DCF valuation method for established healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with valuation results
+        """
+        # This is a simpler DCF model compared to multi-stage, useful for stable companies
+        # For healthcare, the multi-stage model is generally more appropriate, so we'll redirect
+        return self._multi_stage_dcf_valuation(financial_data)
+
+    def _ebitda_multiple_valuation(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        EBITDA multiple valuation method, common for healthcare companies
+
+        Args:
+            financial_data: Dictionary containing company financial information
+
+        Returns:
+            Dictionary with valuation results
+        """
+        # Get company info
+        company_info = financial_data.get('company_info', {})
+        ticker = company_info.get('symbol', 'Unknown')
+
+        # Get subsector for more tailored analysis
+        subsector = self._determine_healthcare_subsector(financial_data)['subsector']
+
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+
+        # Get market data
+        market_data = financial_data.get('market_data', {})
+        current_price = market_data.get('share_price')
+        shares_outstanding = market_data.get('shares_outstanding')
+
+        # Initialize valuation results
+        valuation_result = {
+            'company': ticker,
+            'method': 'ebitda_multiple',
+            'subsector': subsector,
+            'enterprise_value': None,
+            'equity_value': None,
+            'value_per_share': None,
+            'current_price': current_price,
+            'upside_potential': None,
+            'key_assumptions': {}
+        }
+
+        # Cannot perform valuation without basic financial data
+        if income_stmt is None or income_stmt.empty or balance_sheet is None or balance_sheet.empty:
+            valuation_result['error'] = "Insufficient financial data for EBITDA multiple valuation"
+            return valuation_result
+
+        # Get EBITDA from income statement
+        income = income_stmt.iloc[:, 0]
+        ebitda = None
+
+        if 'EBITDA' in income.index:
+            ebitda = income['EBITDA']
+        elif 'Operating Income' in income.index and 'Depreciation & Amortization' in income.index:
+            # Calculate EBITDA from components
+            ebitda = income['Operating Income'] + income['Depreciation & Amortization']
+
+        if ebitda is None or ebitda <= 0:
+            valuation_result['error'] = "Unable to determine positive EBITDA for multiple valuation"
+            return valuation_result
+
+        # Set appropriate EBITDA multiple based on subsector
+        if subsector in ['Biotech', 'Commercial-Stage Biotech', 'Development-Stage Biotech']:
+            # Higher multiples for high-growth biotech
+            ebitda_multiple = 15.0
+        elif subsector in ['Pharmaceutical', 'Commercial-Stage Pharma', 'Early-Stage Pharma']:
+            # Strong, stable pharma companies
+            ebitda_multiple = 13.0
+        elif subsector == 'Medical Devices':
+            # Medical device companies
+            ebitda_multiple = 12.0
+        elif subsector == 'Healthcare Services':
+            # Service companies typically lower multiple
+            ebitda_multiple = 10.0
+        else:
+            # Default healthcare multiple
+            ebitda_multiple = 12.0
+
+        # Record the assumptions
+        valuation_result['key_assumptions']['ebitda'] = float(ebitda)
+        valuation_result['key_assumptions']['ebitda_multiple'] = float(ebitda_multiple)
+
+        # Calculate enterprise value
+        enterprise_value = ebitda * ebitda_multiple
+
+        # Calculate net debt
+        net_debt = 0
+        if balance_sheet is not None and not balance_sheet.empty:
+            balance = balance_sheet.iloc[:, 0]
+
+            # Calculate total debt
+            total_debt = 0
+            for debt_field in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
+                if debt_field in balance.index:
+                    total_debt += balance[debt_field]
+
+            # Get cash and equivalents
+            cash = 0
+            if 'Cash and Cash Equivalents' in balance.index:
+                cash = balance['Cash and Cash Equivalents']
+
+            net_debt = total_debt - cash
+
+        # Calculate equity value
+        equity_value = enterprise_value - net_debt
+
+        # Calculate per share value
+        if shares_outstanding:
+            value_per_share = equity_value / shares_outstanding
+
+            # Calculate upside/downside vs current price
+            if current_price:
+                upside_potential = (value_per_share / current_price) - 1
+                valuation_result['upside_potential'] = float(upside_potential)
+
+            valuation_result['value_per_share'] = float(value_per_share)
+
+        valuation_result['enterprise_value'] = float(enterprise_value)
+        valuation_result['equity_value'] = float(equity_value)
+        valuation_result['net_debt'] = float(net_debt)
+
+        # Add sensitivity analysis with different multiples
+        multiples_sensitivity = {}
+        for multiple_delta in [-3, -2, -1, 1, 2, 3]:
+            test_multiple = ebitda_multiple + multiple_delta
+            test_ev = ebitda * test_multiple
+            test_equity = test_ev - net_debt
+
+            if shares_outstanding:
+                test_price = test_equity / shares_outstanding
+                multiples_sensitivity[f'multiple_{test_multiple:.1f}x'] = float(test_price)
+
+        valuation_result['multiples_sensitivity'] = multiples_sensitivity
+
+        return valuation_result
+
+
+# Register this analyzer with the factory
+from StockAnalysisSystem.src.valuation.sector_factor import SectorFactory
+
+SectorFactory.register_analyzer("Healthcare", HealthcareSectorAnalyzer)

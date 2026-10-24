@@ -97,7 +97,7 @@ class BaseValuation:
         Returns:
             Dictionary with DCF valuation results
         """
-        # This is a base implementation - specific DCF models will be implemented 
+        # This is a base implementation - specific DCF models will be implemented
         # in dcf_models.py with more sophisticated forecasting and adjustments
 
         try:
@@ -753,3 +753,501 @@ class BaseValuation:
                 return self.sector_dcf_parameters[sector].get('default_discount_rate')
             else:
                 return self.dcf_parameters.get('default_discount_rate')
+
+    def _get_sector_multiples(self, sector: str = None) -> Dict[str, float]:
+        """
+        Get appropriate valuation multiples for a given sector
+
+        Args:
+            sector: Industry sector
+
+        Returns:
+            Dictionary of valuation multiples
+        """
+        # Default multiples (for general use)
+        default_multiples = {
+            'pe': 15.0,  # P/E ratio
+            'forward_pe': 12.0,  # Forward P/E ratio
+            'peg': 1.0,  # Price/Earnings to Growth
+            'ps': 2.0,  # Price to Sales
+            'pb': 2.0,  # Price to Book
+            'ev_ebitda': 10.0,  # Enterprise Value to EBITDA
+            'ev_revenue': 3.0,  # Enterprise Value to Revenue
+            'ev_fcf': 15.0  # Enterprise Value to Free Cash Flow
+        }
+
+        # Sector-specific multiples based on typical values
+        sector_multiples = {
+            'Technology': {
+                'pe': 25.0, 'forward_pe': 20.0, 'ps': 5.0, 'pb': 5.0, 'ev_ebitda': 15.0
+            },
+            'Healthcare': {
+                'pe': 20.0, 'forward_pe': 16.0, 'ps': 4.0, 'pb': 4.0, 'ev_ebitda': 12.0
+            },
+            'Financials': {
+                'pe': 12.0, 'forward_pe': 10.0, 'ps': 3.0, 'pb': 1.5, 'ev_ebitda': 8.0
+            },
+            'Energy': {
+                'pe': 12.0, 'forward_pe': 10.0, 'ps': 1.5, 'pb': 1.5, 'ev_ebitda': 6.0
+            },
+            'Consumer Discretionary': {
+                'pe': 18.0, 'forward_pe': 15.0, 'ps': 1.5, 'pb': 3.0, 'ev_ebitda': 9.0
+            },
+            'Consumer Staples': {
+                'pe': 20.0, 'forward_pe': 18.0, 'ps': 2.0, 'pb': 4.0, 'ev_ebitda': 12.0
+            },
+            'Industrials': {
+                'pe': 18.0, 'forward_pe': 15.0, 'ps': 1.5, 'pb': 3.0, 'ev_ebitda': 9.0
+            },
+            'Materials': {
+                'pe': 15.0, 'forward_pe': 12.0, 'ps': 1.5, 'pb': 2.0, 'ev_ebitda': 8.0
+            },
+            'Real Estate': {
+                'pe': 18.0, 'forward_pe': 15.0, 'ps': 3.0, 'pb': 2.0, 'ev_ebitda': 15.0
+            },
+            'Communication Services': {
+                'pe': 20.0, 'forward_pe': 16.0, 'ps': 3.0, 'pb': 3.0, 'ev_ebitda': 10.0
+            },
+            'Utilities': {
+                'pe': 18.0, 'forward_pe': 16.0, 'ps': 2.0, 'pb': 1.5, 'ev_ebitda': 10.0
+            }
+        }
+
+        # Return sector-specific multiples if available, else default
+        if sector and sector in sector_multiples:
+            return sector_multiples[sector]
+        else:
+            # Try to match sector partially (e.g., "Tech" should match "Technology")
+            if sector:
+                for sector_key in sector_multiples:
+                    if sector.lower() in sector_key.lower() or sector_key.lower() in sector.lower():
+                        return sector_multiples[sector_key]
+
+            return default_multiples
+
+    def _adjust_book_value(self, book_value: float, balance_sheet: pd.Series, sector: str = None) -> float:
+        """
+        Adjust book value based on sector-specific factors
+
+        Args:
+            book_value: Raw book value
+            balance_sheet: Balance sheet data
+            sector: Industry sector
+
+        Returns:
+            Adjusted book value
+        """
+        try:
+            # Start with raw book value
+            adjusted_value = book_value
+
+            # Adjustments for technology and R&D-heavy sectors
+            if sector in ['Technology', 'Healthcare', 'Communication Services']:
+                # Increase value to account for undervalued intellectual property
+                # and R&D (which is typically expensed rather than capitalized)
+                if 'Intangible Assets' in balance_sheet.index:
+                    intangibles = balance_sheet.loc['Intangible Assets']
+                    adjusted_value += intangibles * 0.5  # Add back 50% of intangibles
+
+                # If R&D or similar costs can be found, adjust for them
+                rd_indicators = ['Research and Development', 'R&D Expense', 'Research Expense']
+                for rd_item in rd_indicators:
+                    if rd_item in balance_sheet.index:
+                        rd_expense = balance_sheet.loc[rd_item]
+                        adjusted_value += rd_expense * 3  # Capitalize 3 years of R&D
+
+            # Adjustments for real estate and asset-heavy sectors
+            elif sector in ['Real Estate', 'Utilities', 'Energy', 'Materials', 'Industrials']:
+                # Adjust for potential undervaluation of property and equipment
+                if 'Property Plant and Equipment' in balance_sheet.index:
+                    ppe = balance_sheet.loc['Property Plant and Equipment']
+                    if sector == 'Real Estate':
+                        adjusted_value += ppe * 0.2  # Add 20% to property values
+                    else:
+                        adjusted_value += ppe * 0.1  # Add 10% to property values
+
+            # Adjustments for financial sector
+            elif sector == 'Financials':
+                # Financial firms may have undervalued loan portfolios or investments
+                if 'Total Investments' in balance_sheet.index:
+                    investments = balance_sheet.loc['Total Investments']
+                    adjusted_value += investments * 0.05  # Add 5% to investment values
+
+            # General adjustment for all sectors
+            # Goodwill is often overvalued after acquisitions
+            if 'Goodwill' in balance_sheet.index:
+                goodwill = balance_sheet.loc['Goodwill']
+                adjusted_value -= goodwill * 0.2  # Subtract 20% of goodwill
+
+            return max(adjusted_value, book_value * 0.8)  # Don't reduce by more than 20%
+
+        except Exception as e:
+            logger.error(f"Error adjusting book value: {e}")
+            return book_value  # Return original value if adjustment fails
+
+    def _calculate_liquidation_value(self, balance_sheet: pd.Series) -> float:
+        """
+        Calculate liquidation value by applying discount to assets
+
+        Args:
+            balance_sheet: Balance sheet data
+
+        Returns:
+            Liquidation value
+        """
+        try:
+            liquidation_value = 0
+
+            # Apply different recovery rates to different asset classes
+
+            # Cash and equivalents (100% recovery)
+            for cash_item in ['Cash and Cash Equivalents', 'Short Term Investments', 'Cash and Short Term Investments']:
+                if cash_item in balance_sheet.index:
+                    liquidation_value += balance_sheet.loc[cash_item]
+
+            # Accounts receivable (80% recovery)
+            for receivable_item in ['Accounts Receivable', 'Net Receivables']:
+                if receivable_item in balance_sheet.index:
+                    liquidation_value += balance_sheet.loc[receivable_item] * 0.8
+
+            # Inventory (50% recovery)
+            if 'Inventory' in balance_sheet.index:
+                liquidation_value += balance_sheet.loc['Inventory'] * 0.5
+
+            # Property, plant and equipment (40% recovery)
+            for ppe_item in ['Property Plant and Equipment', 'Gross Property Plant and Equipment']:
+                if ppe_item in balance_sheet.index:
+                    liquidation_value += balance_sheet.loc[ppe_item] * 0.4
+
+            # Intangibles (10% recovery, often worthless in liquidation)
+            for intangible_item in ['Intangible Assets', 'Goodwill']:
+                if intangible_item in balance_sheet.index:
+                    liquidation_value += balance_sheet.loc[intangible_item] * 0.1
+
+            # Other assets (30% recovery)
+            if 'Other Assets' in balance_sheet.index:
+                liquidation_value += balance_sheet.loc['Other Assets'] * 0.3
+
+            # Subtract liabilities
+            for liability_item in ['Total Liabilities', 'Total Current Liabilities', 'Long Term Debt']:
+                if liability_item in balance_sheet.index:
+                    liquidation_value -= balance_sheet.loc[liability_item]
+
+            # Ensure value isn't negative
+            return max(0, liquidation_value)
+
+        except Exception as e:
+            logger.error(f"Error calculating liquidation value: {e}")
+            # Fallback: assume liquidation value is 50% of book value
+            if 'Total Stockholder Equity' in balance_sheet.index:
+                return balance_sheet.loc['Total Stockholder Equity'] * 0.5
+            elif 'Total Assets' in balance_sheet.index and 'Total Liabilities' in balance_sheet.index:
+                return (balance_sheet.loc['Total Assets'] - balance_sheet.loc['Total Liabilities']) * 0.5
+            else:
+                return 0
+
+    def _estimate_replacement_value(self, balance_sheet: pd.Series, sector: str = None) -> float:
+        """
+        Estimate replacement value (cost to rebuild business)
+
+        Args:
+            balance_sheet: Balance sheet data
+            sector: Industry sector
+
+        Returns:
+            Replacement value estimate
+        """
+        try:
+            replacement_value = 0
+
+            # Physical assets (replacement cost higher than book value due to inflation)
+            if 'Property Plant and Equipment' in balance_sheet.index:
+                ppe = balance_sheet.loc['Property Plant and Equipment']
+                # Different sectors have different PPE intensity and replacement costs
+                if sector in ['Energy', 'Materials', 'Utilities', 'Industrials', 'Real Estate']:
+                    replacement_value += ppe * 1.3  # 30% premium for asset-heavy sectors
+                else:
+                    replacement_value += ppe * 1.2  # 20% premium for other sectors
+
+            # Inventory (replacement at market value)
+            if 'Inventory' in balance_sheet.index:
+                replacement_value += balance_sheet.loc['Inventory'] * 1.1
+
+            # Intangibles and R&D (cost to develop intellectual property)
+            if 'Intangible Assets' in balance_sheet.index:
+                intangibles = balance_sheet.loc['Intangible Assets']
+                if sector in ['Technology', 'Healthcare', 'Communication Services']:
+                    replacement_value += intangibles * 2.0  # High cost to redevelop IP
+                else:
+                    replacement_value += intangibles * 1.5
+
+            # Brand value and other intangibles (cost to build brand recognition)
+            if 'Goodwill' in balance_sheet.index:
+                goodwill = balance_sheet.loc['Goodwill']
+                if sector in ['Consumer Discretionary', 'Consumer Staples']:
+                    replacement_value += goodwill * 0.8  # Brand-heavy sectors
+                else:
+                    replacement_value += goodwill * 0.5
+
+            # Working capital requirements
+            current_assets = 0
+            current_liabilities = 0
+
+            if 'Total Current Assets' in balance_sheet.index:
+                current_assets = balance_sheet.loc['Total Current Assets']
+
+            if 'Total Current Liabilities' in balance_sheet.index:
+                current_liabilities = balance_sheet.loc['Total Current Liabilities']
+
+            working_capital = current_assets - current_liabilities
+            replacement_value += working_capital
+
+            # Add additional costs for customer acquisition, employee hiring, etc.
+            # This is a rough estimate based on sector
+            if 'Total Assets' in balance_sheet.index:
+                total_assets = balance_sheet.loc['Total Assets']
+
+                if sector in ['Technology', 'Healthcare']:
+                    replacement_value += total_assets * 0.15  # 15% premium
+                elif sector in ['Consumer Discretionary', 'Consumer Staples']:
+                    replacement_value += total_assets * 0.12  # 12% premium
+                else:
+                    replacement_value += total_assets * 0.10  # 10% premium
+
+            return replacement_value
+
+        except Exception as e:
+            logger.error(f"Error estimating replacement value: {e}")
+            # Fallback: estimate replacement value as 120% of book value
+            if 'Total Stockholder Equity' in balance_sheet.index:
+                return balance_sheet.loc['Total Stockholder Equity'] * 1.2
+            elif 'Total Assets' in balance_sheet.index and 'Total Liabilities' in balance_sheet.index:
+                return (balance_sheet.loc['Total Assets'] - balance_sheet.loc['Total Liabilities']) * 1.2
+            else:
+                return 0
+
+    def _estimate_dividend_growth(self, financial_data: Dict[str, Any]) -> float:
+        """
+        Estimate dividend growth rate based on historical data and financial metrics
+
+        Args:
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Estimated dividend growth rate
+        """
+        try:
+            # Extract required data
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+
+            if income_stmt is None or balance_sheet is None or income_stmt.empty or balance_sheet.empty:
+                return 0.03  # Default to 3% if data not available
+
+            # Get historical dividend data if available
+            historical_dividends = None
+            try:
+                # Try to get historical dividends from data_loader
+                ticker = financial_data.get('company_info', {}).get('symbol')
+                if ticker:
+                    historical_dividends = self.data_loader.get_historical_dividends(ticker)
+            except:
+                pass
+
+            # Method 1: Calculate from historical dividend growth if available
+            if historical_dividends is not None and not historical_dividends.empty and len(historical_dividends) >= 2:
+                # Resample to get annual dividends
+                annual_dividends = historical_dividends.resample('Y').sum()
+
+                if len(annual_dividends) >= 2:
+                    # Calculate growth rates
+                    growth_rates = []
+                    annual_dividends_values = annual_dividends.values
+
+                    for i in range(1, len(annual_dividends_values)):
+                        if annual_dividends_values[i - 1] > 0:
+                            growth_rate = (annual_dividends_values[i] / annual_dividends_values[i - 1]) - 1
+                            growth_rates.append(growth_rate)
+
+                    if growth_rates:
+                        # Weight recent years more heavily
+                        weights = list(range(1, len(growth_rates) + 1))
+                        weighted_growth = sum(g * w for g, w in zip(growth_rates, weights)) / sum(weights)
+                        return max(0.01, min(0.15, weighted_growth))  # Cap between 1% and 15%
+
+            # Method 2: Estimate from fundamentals (sustainable growth rate)
+            # Sustainable Growth Rate = Retention Ratio * Return on Equity
+
+            # Get the most recent data
+            income = income_stmt.iloc[:, 0]
+            balance = balance_sheet.iloc[:, 0]
+
+            # Calculate retention ratio (1 - Dividend Payout Ratio)
+            retention_ratio = 0.7  # Default assumption: 70% retention
+
+            if 'Net Income' in income.index:
+                net_income = income.loc['Net Income']
+
+                # Try to find dividend info
+                dividend_payout = None
+
+                for div_item in ['Dividends Paid', 'Common Stock Dividends Paid']:
+                    if div_item in income.index:
+                        dividend_payout = abs(income.loc[div_item])
+                        break
+
+                if dividend_payout is not None and net_income > 0:
+                    payout_ratio = dividend_payout / net_income
+                    retention_ratio = 1 - payout_ratio
+
+            # Calculate ROE
+            roe = 0.10  # Default assumption: 10% ROE
+
+            if 'Net Income' in income.index and 'Total Stockholder Equity' in balance.index:
+                net_income = income.loc['Net Income']
+                equity = balance.loc['Total Stockholder Equity']
+
+                if equity > 0:
+                    roe = net_income / equity
+
+            # Calculate sustainable growth rate
+            sustainable_growth = retention_ratio * roe
+
+            # Ensure growth is within reasonable bounds
+            growth_rate = max(0.01, min(0.15, sustainable_growth))
+
+            return growth_rate
+
+        except Exception as e:
+            logger.error(f"Error estimating dividend growth: {e}")
+            return 0.03  # Default to 3% growth
+
+    def _calculate_wacc_components(self, financial_data: Dict[str, Any], sector: str = None) -> Dict[str, float]:
+        """
+        Calculate detailed components of Weighted Average Cost of Capital
+
+        Args:
+            financial_data: Dictionary with financial statements and market data
+            sector: Industry sector for sector-specific adjustments
+
+        Returns:
+            Dictionary with WACC components
+        """
+        try:
+            # Extract required data
+            balance_sheet = financial_data.get('balance_sheet')
+            income_stmt = financial_data.get('income_statement')
+            market_data = financial_data.get('market_data', {})
+
+            beta = market_data.get('beta', 1.0)  # Default to market beta (1.0) if not available
+
+            # Get the most recent data
+            balance = balance_sheet.iloc[:, 0] if balance_sheet is not None and not balance_sheet.empty else None
+            income = income_stmt.iloc[:, 0] if income_stmt is not None and not income_stmt.empty else None
+
+            # Calculate Cost of Equity using CAPM
+            # CAPM: Cost of Equity = Risk-Free Rate + Beta * Market Risk Premium
+            market_risk_premium = 0.05  # Standard assumption: ~5%
+            cost_of_equity = self.risk_free_rate + beta * market_risk_premium
+
+            # Calculate Cost of Debt
+            # Try to extract interest expense and total debt from financial statements
+            interest_expense = None
+            total_debt = 0
+
+            if income is not None and 'Interest Expense' in income.index:
+                interest_expense = abs(income.loc['Interest Expense'])
+
+            if balance is not None:
+                for debt_item in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
+                    if debt_item in balance.index:
+                        total_debt += balance.loc[debt_item]
+
+            # Calculate effective interest rate if possible
+            if interest_expense is not None and total_debt > 0:
+                cost_of_debt = interest_expense / total_debt
+                # Ensure cost of debt is reasonable
+                cost_of_debt = max(0.02, min(0.10, cost_of_debt))
+            else:
+                # Estimate based on sector and risk-free rate
+                if sector in ['Utilities', 'Consumer Staples', 'Real Estate']:
+                    # Lower risk sectors
+                    cost_of_debt = self.risk_free_rate + 0.02
+                elif sector in ['Technology', 'Healthcare', 'Consumer Discretionary']:
+                    # Higher risk sectors
+                    cost_of_debt = self.risk_free_rate + 0.04
+                else:
+                    # Medium risk sectors
+                    cost_of_debt = self.risk_free_rate + 0.03
+
+            # Estimate tax rate
+            tax_rate = 0.25  # Default corporate tax rate
+
+            if income is not None and 'Income Tax Expense' in income.index and 'Income Before Tax' in income.index:
+                pretax_income = income.loc['Income Before Tax']
+                tax_expense = income.loc['Income Tax Expense']
+
+                if pretax_income > 0:
+                    effective_tax_rate = tax_expense / pretax_income
+                    # Ensure tax rate is reasonable
+                    tax_rate = max(0.10, min(0.40, effective_tax_rate))
+
+            # After-tax cost of debt
+            after_tax_cost_of_debt = cost_of_debt * (1 - tax_rate)
+
+            # Calculate capital structure weights
+            market_cap = market_data.get('market_cap')
+
+            if market_cap and market_cap > 0 and total_debt >= 0:
+                total_value = market_cap + total_debt
+                weight_equity = market_cap / total_value
+                weight_debt = total_debt / total_value
+            else:
+                # Use sector averages if market data not available
+                if sector in ['Financials', 'Utilities', 'Real Estate']:
+                    # Higher debt sectors
+                    weight_equity = 0.6
+                    weight_debt = 0.4
+                elif sector in ['Technology', 'Healthcare']:
+                    # Lower debt sectors
+                    weight_equity = 0.8
+                    weight_debt = 0.2
+                else:
+                    # Medium debt sectors
+                    weight_equity = 0.7
+                    weight_debt = 0.3
+
+            # Calculate WACC
+            wacc = (weight_equity * cost_of_equity) + (weight_debt * after_tax_cost_of_debt)
+
+            # Ensure WACC is reasonable
+            wacc = max(0.05, min(0.20, wacc))
+
+            return {
+                'wacc': wacc,
+                'cost_of_equity': cost_of_equity,
+                'cost_of_debt': cost_of_debt,
+                'after_tax_cost_of_debt': after_tax_cost_of_debt,
+                'weight_equity': weight_equity,
+                'weight_debt': weight_debt,
+                'tax_rate': tax_rate,
+                'beta': beta,
+                'risk_free_rate': self.risk_free_rate,
+                'market_risk_premium': market_risk_premium
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating WACC components: {e}")
+            # Return default values
+            return {
+                'wacc': 0.10,
+                'cost_of_equity': 0.12,
+                'cost_of_debt': 0.05,
+                'after_tax_cost_of_debt': 0.0375,
+                'weight_equity': 0.7,
+                'weight_debt': 0.3,
+                'tax_rate': 0.25,
+                'beta': 1.0,
+                'risk_free_rate': self.risk_free_rate,
+                'market_risk_premium': 0.05
+            }

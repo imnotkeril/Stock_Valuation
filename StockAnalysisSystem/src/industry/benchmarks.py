@@ -1,14 +1,17 @@
 import os
+import sys
 import logging
 import pandas as pd
-import json
-from typing import Dict, List, Optional, Union, Any
-from pathlib import Path
+import numpy as np
+from typing import Dict, List, Tuple, Optional, Union, Any
+from datetime import datetime, timedelta
 
-import sys
+# Add the project root to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, project_root)
-from StockAnalysisSystem.src.config import SECTOR_DATA_DIR, SECTOR_MAPPING
+
+from StockAnalysisSystem.src.config import SECTOR_METRICS, SECTOR_MAPPING
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
 
 # Setup logging
 logging.basicConfig(
@@ -20,734 +23,637 @@ logger = logging.getLogger('industry_benchmarks')
 
 class IndustryBenchmarks:
     """
-    Class for managing industry benchmarks and sector-specific data.
-    Provides data for comparing companies with industry averages.
+    Class for managing industry benchmarks and sector-specific metrics.
+    Provides methods to retrieve, calculate and compare company metrics against industry standards.
     """
 
-    def __init__(self, data_dir: str = SECTOR_DATA_DIR):
+    def __init__(self, data_loader: Optional[DataLoader] = None):
         """
-        Initialize industry benchmarks manager
+        Initialize the industry benchmarks manager
 
         Args:
-            data_dir: Directory for sector data files
+            data_loader: Optional DataLoader instance for fetching market data
         """
-        self.data_dir = Path(data_dir)
+        self.data_loader = data_loader if data_loader else DataLoader()
+
+        # Load sector metrics configuration
+        self.sector_metrics = SECTOR_METRICS
+
+        # Load industry mapping
         self.sector_mapping = SECTOR_MAPPING
 
-        # Ensure data directory exists
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-load static benchmarks for faster access
+        self._static_benchmarks = self._load_static_benchmarks()
 
-        # Load sector benchmarks if available, otherwise use defaults
-        self.benchmarks = self._load_benchmarks()
+        # Cache for dynamically calculated benchmarks
+        self._dynamic_benchmarks_cache = {}
+        self._cache_expiry = datetime.now() - timedelta(days=1)  # Force initial refresh
 
-        logger.info(f"Initialized IndustryBenchmarks with data directory: {self.data_dir}")
+        logger.info("Industry benchmarks system initialized")
 
-    def get_sector_benchmarks(self, sector: str) -> Dict[str, Dict[str, float]]:
+    def get_benchmarks(self, sector: str, metric_type: Optional[str] = None,
+                       refresh: bool = False) -> Dict[str, Any]:
         """
-        Get benchmark financial ratios for a specific sector
+        Get benchmark metrics for a specific industry sector
 
         Args:
-            sector: The market sector name
+            sector: The market sector (e.g., "Technology", "Healthcare")
+            metric_type: Optional type of metrics to retrieve (e.g., "valuation", "profitability")
+            refresh: Force refresh of dynamic benchmarks
 
         Returns:
-            Dictionary of benchmark ratios by category
+            Dictionary containing benchmark metrics for the sector
         """
-        # Normalize sector name
+        # Normalize sector name to match our configuration
         normalized_sector = self._normalize_sector_name(sector)
 
-        # Return benchmarks for the sector if available, otherwise return defaults
-        return self.benchmarks.get(normalized_sector, self._get_default_benchmarks())
+        if not normalized_sector:
+            logger.warning(f"Unrecognized sector: {sector}")
+            return {}
 
-    def get_industry_benchmarks(self, industry: str) -> Dict[str, Dict[str, float]]:
+        # Get static benchmarks
+        static_benchmarks = self._static_benchmarks.get(normalized_sector, {})
+
+        # Check if we need dynamic benchmarks
+        current_time = datetime.now()
+        cache_expired = (current_time - self._cache_expiry).days >= 1
+
+        if refresh or cache_expired or normalized_sector not in self._dynamic_benchmarks_cache:
+            # Refresh dynamic benchmarks
+            self._refresh_dynamic_benchmarks()
+            self._cache_expiry = current_time
+
+        # Get dynamic benchmarks
+        dynamic_benchmarks = self._dynamic_benchmarks_cache.get(normalized_sector, {})
+
+        # Combine static and dynamic benchmarks
+        combined_benchmarks = {**static_benchmarks, **dynamic_benchmarks}
+
+        # Filter by metric type if specified
+        if metric_type:
+            filtered_benchmarks = {}
+            for key, value in combined_benchmarks.items():
+                if isinstance(value, dict) and metric_type in key.lower():
+                    filtered_benchmarks[key] = value
+
+            return filtered_benchmarks
+
+        return combined_benchmarks
+
+    def compare_with_benchmarks(self, company_metrics: Dict[str, Any],
+                                sector: str) -> Dict[str, Dict[str, Any]]:
         """
-        Get benchmark financial ratios for a specific industry
+        Compare company metrics with sector benchmarks
 
         Args:
-            industry: The industry name
+            company_metrics: Dictionary of company metrics
+            sector: The market sector of the company
 
         Returns:
-            Dictionary of benchmark ratios by category
+            Dictionary with comparison results including percentile rankings
         """
-        # Map industry to sector first
-        sector = self._map_industry_to_sector(industry)
+        # Get sector benchmarks
+        benchmarks = self.get_benchmarks(sector)
 
-        # Get sector benchmarks as a base
-        sector_benchmarks = self.get_sector_benchmarks(sector)
+        if not benchmarks:
+            return {"error": f"No benchmarks available for sector: {sector}"}
 
-        # Look for industry-specific benchmarks
-        industry_benchmarks = self._get_industry_specific_benchmarks(industry)
+        comparison_results = {}
 
-        # Merge sector and industry benchmarks, with industry taking precedence
-        merged_benchmarks = {}
-        for category in sector_benchmarks:
-            if category in industry_benchmarks:
-                merged_benchmarks[category] = {**sector_benchmarks[category], **industry_benchmarks[category]}
-            else:
-                merged_benchmarks[category] = sector_benchmarks[category]
+        # Process each category of metrics
+        for category, metrics in company_metrics.items():
+            category_benchmarks = {}
 
-        return merged_benchmarks
+            for metric_name, metric_value in metrics.items():
+                # Skip if value is None
+                if metric_value is None:
+                    continue
 
-    def get_sector_performance(self) -> pd.DataFrame:
+                # Find the corresponding benchmark
+                benchmark_found = False
+
+                # Check if metric exists directly in benchmarks
+                if metric_name in benchmarks:
+                    benchmark_value = benchmarks[metric_name]
+                    benchmark_found = True
+
+                # Check if metric exists in a category in benchmarks
+                if not benchmark_found:
+                    for bench_category, bench_metrics in benchmarks.items():
+                        if isinstance(bench_metrics, dict) and metric_name in bench_metrics:
+                            benchmark_value = bench_metrics[metric_name]
+                            benchmark_found = True
+                            break
+
+                if benchmark_found:
+                    # Create comparison data
+                    comparison = self._create_comparison(metric_name, metric_value, benchmark_value)
+                    category_benchmarks[metric_name] = comparison
+
+            if category_benchmarks:
+                comparison_results[category] = category_benchmarks
+
+        return comparison_results
+
+    def get_sector_percentiles(self, sector: str, metrics: List[str]) -> Dict[str, Dict[str, float]]:
         """
-        Get recent performance metrics for all sectors
+        Get percentile distributions for specific metrics in a sector
+
+        Args:
+            sector: Market sector name
+            metrics: List of metrics to get percentiles for
 
         Returns:
-            DataFrame with sector performance data
+            Dictionary with percentile distributions for each metric
         """
+        normalized_sector = self._normalize_sector_name(sector)
+
+        if not normalized_sector:
+            return {}
+
+        # Try to get sector data from data_loader
         try:
-            # Check if we have recent data file
-            performance_file = self.data_dir / "sector_performance.csv"
+            # Get a list of companies in this sector
+            sector_companies = self._get_sector_companies(normalized_sector)
 
-            if performance_file.exists():
-                # Load data
-                df = pd.read_csv(performance_file)
+            if not sector_companies:
+                logger.warning(f"No companies found for sector: {normalized_sector}")
+                return {}
 
-                # Check if data is recent (within 7 days)
-                if 'date' in df.columns:
-                    latest_date = pd.to_datetime(df['date'].max())
-                    now = pd.Timestamp.now()
-                    if (now - latest_date).days <= 7:
-                        return df
+            # Collect metrics for all companies
+            metrics_data = {}
+            for metric in metrics:
+                metrics_data[metric] = []
 
-            # If no file or data is old, return sample data
-            return self._get_sample_sector_performance()
+            for ticker in sector_companies:
+                company_data = self._get_company_metrics(ticker)
+                for metric in metrics:
+                    if metric in company_data and company_data[metric] is not None:
+                        metrics_data[metric].append(company_data[metric])
+
+            # Calculate percentiles
+            percentiles = {}
+            percentile_values = [10, 25, 50, 75, 90]
+
+            for metric, values in metrics_data.items():
+                if values:
+                    metric_percentiles = {}
+                    for p in percentile_values:
+                        try:
+                            metric_percentiles[f"p{p}"] = np.percentile(values, p)
+                        except Exception as e:
+                            logger.error(f"Error calculating percentile {p} for {metric}: {e}")
+                            metric_percentiles[f"p{p}"] = None
+
+                    # Also include min, max, mean
+                    metric_percentiles["min"] = min(values)
+                    metric_percentiles["max"] = max(values)
+                    metric_percentiles["mean"] = sum(values) / len(values)
+                    metric_percentiles["count"] = len(values)
+
+                    percentiles[metric] = metric_percentiles
+
+            return percentiles
+
         except Exception as e:
-            logger.error(f"Error loading sector performance data: {e}")
-            return self._get_sample_sector_performance()
+            logger.error(f"Error getting sector percentiles for {sector}: {e}")
+            return {}
 
-    def update_benchmarks(self, sector: str, benchmarks: Dict[str, Dict[str, float]]) -> bool:
+    def get_metric_ranking(self, ticker: str, metric: str) -> Dict[str, Any]:
         """
-        Update benchmarks for a specific sector
+        Get ranking of a company for a specific metric within its sector
 
         Args:
-            sector: The market sector name
-            benchmarks: New benchmark data
+            ticker: Company ticker symbol
+            metric: Metric name to rank
 
         Returns:
-            True if successful, False otherwise
+            Dictionary with ranking information
         """
         try:
-            # Normalize sector name
+            # Get company metrics
+            company_metrics = self._get_company_metrics(ticker)
+
+            if not company_metrics or metric not in company_metrics:
+                return {"error": f"Metric {metric} not available for {ticker}"}
+
+            company_value = company_metrics[metric]
+
+            # Get company sector
+            company_info = {}
+            if self.data_loader:
+                company_info = self.data_loader.get_company_info(ticker)
+
+            if not company_info or 'sector' not in company_info:
+                return {"error": f"Sector information not available for {ticker}"}
+
+            sector = company_info['sector']
             normalized_sector = self._normalize_sector_name(sector)
 
-            # Update internal benchmarks dictionary
-            self.benchmarks[normalized_sector] = benchmarks
+            # Get sector companies
+            sector_companies = self._get_sector_companies(normalized_sector)
 
-            # Save to file
-            self._save_benchmarks()
+            if not sector_companies:
+                return {"error": f"No peer companies found in sector {sector}"}
 
-            logger.info(f"Updated benchmarks for sector: {normalized_sector}")
-            return True
+            # Collect metric values for all sector companies
+            metric_values = []
+            for peer_ticker in sector_companies:
+                peer_metrics = self._get_company_metrics(peer_ticker)
+                if peer_metrics and metric in peer_metrics and peer_metrics[metric] is not None:
+                    metric_values.append((peer_ticker, peer_metrics[metric]))
+
+            if not metric_values:
+                return {"error": f"No comparable data found for metric {metric} in sector {sector}"}
+
+            # Sort by metric value (determine if higher is better or lower is better)
+            higher_is_better = self._is_higher_better(metric)
+            metric_values.sort(key=lambda x: x[1], reverse=higher_is_better)
+
+            # Find company's position
+            company_position = next((i for i, (ticker_val, _) in enumerate(metric_values)
+                                     if ticker_val == ticker), -1)
+
+            if company_position == -1:
+                return {"error": f"Company {ticker} not found in sorted metrics list"}
+
+            # Calculate percentile
+            percentile = (len(metric_values) - company_position) / len(metric_values) * 100 if higher_is_better else \
+                company_position / len(metric_values) * 100
+
+            return {
+                "ticker": ticker,
+                "metric": metric,
+                "value": company_value,
+                "sector": sector,
+                "rank": company_position + 1,
+                "total_companies": len(metric_values),
+                "percentile": percentile,
+                "top_companies": metric_values[:5] if higher_is_better else metric_values[-5:],
+                "bottom_companies": metric_values[-5:] if higher_is_better else metric_values[:5]
+            }
+
         except Exception as e:
-            logger.error(f"Error updating benchmarks for sector {sector}: {e}")
-            return False
+            logger.error(f"Error getting metric ranking for {ticker}, {metric}: {e}")
+            return {"error": f"Failed to calculate ranking: {str(e)}"}
 
-    def get_peer_companies(self, ticker: str, sector: str, max_peers: int = 5) -> List[str]:
+    def get_sector_matrix(self, sector: str, x_metric: str, y_metric: str) -> Dict[str, Any]:
         """
-        Get list of peer companies in the same sector
+        Create a positioning matrix for companies in a sector based on two metrics
 
         Args:
-            ticker: Company ticker
-            sector: Company sector
-            max_peers: Maximum number of peers to return
+            sector: Market sector name
+            x_metric: Metric for X-axis
+            y_metric: Metric for Y-axis
 
         Returns:
-            List of peer tickers
+            Dictionary with matrix data
         """
-        # In a real implementation, this would query a database or API
-        # Here we provide sample data
-        sector_peers = {
-            "Technology": ["AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "INTC", "CSCO", "ADBE", "CRM"],
-            "Healthcare": ["JNJ", "UNH", "PFE", "MRK", "ABT", "TMO", "ABBV", "DHR", "BMY", "LLY"],
-            "Financials": ["JPM", "BAC", "WFC", "C", "GS", "MS", "BLK", "AXP", "V", "MA"],
-            "Consumer Discretionary": ["AMZN", "HD", "MCD", "NKE", "SBUX", "TGT", "LOW", "TJX", "BKNG", "DG"],
-            "Consumer Staples": ["PG", "KO", "PEP", "WMT", "COST", "PM", "MO", "EL", "CL", "GIS"],
-            "Energy": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "KMI"],
-            "Industrials": ["HON", "UNP", "UPS", "BA", "CAT", "GE", "LMT", "RTX", "MMM", "FDX"],
-            "Materials": ["LIN", "APD", "ECL", "SHW", "NEM", "FCX", "DOW", "DD", "NUE", "BHP"],
-            "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "PSA", "SPG", "O", "DLR", "AVB", "EQR"],
-            "Communication Services": ["GOOGL", "META", "VZ", "T", "CMCSA", "NFLX", "DIS", "TMUS", "ATVI", "EA"],
-            "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "ES", "WEC"]
-        }
-
-        # Get normalized sector name
         normalized_sector = self._normalize_sector_name(sector)
 
-        # Get peers for the sector
-        peers = sector_peers.get(normalized_sector, [])
-
-        # Remove the ticker itself from the list
-        peers = [p for p in peers if p != ticker]
-
-        # Return up to max_peers
-        return peers[:max_peers]
-
-    # Private helper methods
-
-    def _load_benchmarks(self) -> Dict[str, Dict[str, Dict[str, float]]]:
-        """Load benchmark data from files or return defaults"""
-        benchmarks = {}
+        if not normalized_sector:
+            return {"error": f"Unrecognized sector: {sector}"}
 
         try:
-            # Check if we have a benchmarks file
-            benchmark_file = self.data_dir / "sector_benchmarks.json"
+            # Get sector companies
+            sector_companies = self._get_sector_companies(normalized_sector)
 
-            if benchmark_file.exists():
-                # Load benchmarks
-                with open(benchmark_file, 'r') as f:
-                    benchmarks = json.load(f)
+            if not sector_companies:
+                return {"error": f"No companies found for sector: {normalized_sector}"}
 
-                logger.info(f"Loaded benchmarks for {len(benchmarks)} sectors")
-            else:
-                # Use default benchmarks
-                benchmarks = self._get_default_sectors_benchmarks()
+            # Collect metrics for all companies
+            matrix_data = []
 
-                # Save defaults for future use
-                self._save_benchmarks(benchmarks)
+            for ticker in sector_companies:
+                company_metrics = self._get_company_metrics(ticker)
+                company_info = self.data_loader.get_company_info(ticker) if self.data_loader else {}
 
-                logger.info("Created default sector benchmarks")
+                if company_metrics and x_metric in company_metrics and y_metric in company_metrics:
+                    x_value = company_metrics[x_metric]
+                    y_value = company_metrics[y_metric]
+
+                    if x_value is not None and y_value is not None:
+                        market_cap = company_info.get('market_cap', None)
+
+                        matrix_data.append({
+                            "ticker": ticker,
+                            "name": company_info.get('name', ticker),
+                            "x_value": x_value,
+                            "y_value": y_value,
+                            "market_cap": market_cap
+                        })
+
+            if not matrix_data:
+                return {"error": f"No companies with both {x_metric} and {y_metric} metrics in {sector}"}
+
+            # Calculate quadrant boundaries (medians)
+            x_values = [item["x_value"] for item in matrix_data]
+            y_values = [item["y_value"] for item in matrix_data]
+
+            x_median = np.median(x_values)
+            y_median = np.median(y_values)
+
+            # Assign quadrants
+            for item in matrix_data:
+                if item["x_value"] >= x_median and item["y_value"] >= y_median:
+                    item["quadrant"] = 1  # Top right
+                elif item["x_value"] < x_median and item["y_value"] >= y_median:
+                    item["quadrant"] = 2  # Top left
+                elif item["x_value"] < x_median and item["y_value"] < y_median:
+                    item["quadrant"] = 3  # Bottom left
+                else:
+                    item["quadrant"] = 4  # Bottom right
+
+            return {
+                "sector": sector,
+                "x_metric": x_metric,
+                "y_metric": y_metric,
+                "x_median": x_median,
+                "y_median": y_median,
+                "companies": matrix_data
+            }
+
         except Exception as e:
-            logger.error(f"Error loading benchmarks: {e}")
-            benchmarks = self._get_default_sectors_benchmarks()
+            logger.error(f"Error creating sector matrix for {sector}: {e}")
+            return {"error": f"Failed to create sector matrix: {str(e)}"}
 
-        return benchmarks
+    def calculate_sector_average(self, sector: str, metrics: List[str]) -> Dict[str, float]:
+        """
+        Calculate average values for specified metrics across a sector
 
-    def _save_benchmarks(self, benchmarks=None) -> bool:
-        """Save benchmarks to file"""
-        if benchmarks is None:
-            benchmarks = self.benchmarks
+        Args:
+            sector: Market sector name
+            metrics: List of metrics to calculate averages for
+
+        Returns:
+            Dictionary with average values for each metric
+        """
+        normalized_sector = self._normalize_sector_name(sector)
+
+        if not normalized_sector:
+            return {}
 
         try:
-            # Save to file
-            benchmark_file = self.data_dir / "sector_benchmarks.json"
+            # Get sector companies
+            sector_companies = self._get_sector_companies(normalized_sector)
 
-            with open(benchmark_file, 'w') as f:
-                json.dump(benchmarks, f, indent=2)
+            if not sector_companies:
+                logger.warning(f"No companies found for sector: {normalized_sector}")
+                return {}
 
-            logger.info(f"Saved benchmarks to {benchmark_file}")
-            return True
+            # Collect metrics for all companies
+            metrics_data = {metric: [] for metric in metrics}
+
+            for ticker in sector_companies:
+                company_metrics = self._get_company_metrics(ticker)
+
+                for metric in metrics:
+                    if metric in company_metrics and company_metrics[metric] is not None:
+                        metrics_data[metric].append(company_metrics[metric])
+
+            # Calculate averages, filtering out extreme values
+            averages = {}
+
+            for metric, values in metrics_data.items():
+                if values:
+                    # Remove outliers (values beyond 3 standard deviations)
+                    if len(values) > 5:  # Only apply outlier removal if we have enough data
+                        mean = np.mean(values)
+                        std = np.std(values)
+                        filtered_values = [v for v in values if abs(v - mean) <= 3 * std]
+                    else:
+                        filtered_values = values
+
+                    averages[metric] = sum(filtered_values) / len(filtered_values)
+                else:
+                    averages[metric] = None
+
+            return averages
+
         except Exception as e:
-            logger.error(f"Error saving benchmarks: {e}")
-            return False
+            logger.error(f"Error calculating sector averages for {sector}: {e}")
+            return {}
+
+    def _load_static_benchmarks(self) -> Dict[str, Dict[str, Any]]:
+        """Load static benchmarks from configuration"""
+        static_benchmarks = {}
+
+        for sector, metrics in self.sector_metrics.items():
+            if 'benchmarks' in metrics:
+                static_benchmarks[sector] = metrics['benchmarks']
+
+        return static_benchmarks
+
+    def _refresh_dynamic_benchmarks(self):
+        """Refresh dynamically calculated benchmarks from current market data"""
+        dynamic_benchmarks = {}
+
+        try:
+            # Define key metrics to calculate for each sector
+            # These are metrics that change over time and should be calculated dynamically
+            key_metrics = {
+                "valuation": ["pe_ratio", "ps_ratio", "pb_ratio", "ev_ebitda"],
+                "profitability": ["gross_margin", "operating_margin", "net_margin", "roe", "roa"],
+                "leverage": ["debt_to_equity", "debt_to_ebitda"],
+                "growth": ["revenue_growth", "eps_growth"]
+            }
+
+            # Process each sector
+            for sector in self.sector_metrics.keys():
+                # Flatten metrics list
+                all_metrics = []
+                for category in key_metrics.values():
+                    all_metrics.extend(category)
+
+                # Calculate averages
+                sector_averages = self.calculate_sector_average(sector, all_metrics)
+
+                # Organize by category
+                categorized_benchmarks = {}
+                for category, metrics in key_metrics.items():
+                    category_benchmarks = {}
+                    for metric in metrics:
+                        if metric in sector_averages:
+                            category_benchmarks[metric] = sector_averages[metric]
+
+                    if category_benchmarks:
+                        categorized_benchmarks[category] = category_benchmarks
+
+                dynamic_benchmarks[sector] = categorized_benchmarks
+
+        except Exception as e:
+            logger.error(f"Error refreshing dynamic benchmarks: {e}")
+
+        self._dynamic_benchmarks_cache = dynamic_benchmarks
 
     def _normalize_sector_name(self, sector: str) -> str:
-        """Normalize sector name to match our benchmark keys"""
-        # Check if it's already a valid sector
-        if sector in self.benchmarks:
+        """Normalize sector name to match our configuration"""
+        # Check exact match
+        if sector in self.sector_metrics:
             return sector
 
-        # Try common variants
-        sector_variants = {
-            "Technology": ["Information Technology", "Tech", "IT", "Information Tech"],
-            "Financials": ["Financial", "Finance", "Banking", "Banks"],
-            "Healthcare": ["Health Care", "Health", "Medical"],
-            "Consumer Discretionary": ["Consumer Cyclical", "Discretionary", "Retail"],
-            "Consumer Staples": ["Staples", "Consumer Defensive"],
-            "Energy": ["Oil & Gas", "Energy Equipment", "Energy Services"],
-            "Industrials": ["Industrial", "Manufacturing", "Aerospace", "Defense", "Transportation"],
-            "Materials": ["Basic Materials", "Chemicals", "Mining"],
-            "Real Estate": ["Realty", "REIT", "Property"],
-            "Communication Services": ["Communication", "Telecom", "Media"],
-            "Utilities": ["Utility", "Electric Utility", "Water Utility", "Gas Utility"]
-        }
+        # Check case-insensitive match
+        sector_lower = sector.lower()
+        for config_sector in self.sector_metrics.keys():
+            if config_sector.lower() == sector_lower:
+                return config_sector
 
-        # Check for common variants
-        for standard_sector, variants in sector_variants.items():
-            if any(variant.lower() in sector.lower() for variant in variants):
-                return standard_sector
+        # Check partial match
+        for config_sector in self.sector_metrics.keys():
+            if sector_lower in config_sector.lower() or config_sector.lower() in sector_lower:
+                return config_sector
 
-        # If not found, return original sector
-        return sector
+        # Check sector mapping
+        for config_sector, industries in self.sector_mapping.items():
+            for industry in industries:
+                if sector_lower == industry.lower() or sector_lower in industry.lower():
+                    return config_sector
 
+        return ""
 
-    def _map_industry_to_sector(self, industry: str) -> str:
-        """Map an industry to its parent sector"""
-        industry_to_sector = {}
+    def _get_sector_companies(self, sector: str) -> List[str]:
+        """Get list of companies in a specific sector"""
+        if not self.data_loader:
+            return []
 
-        # Build industry to sector mapping from the sector mapping
-        for sector, industries in self.sector_mapping.items():
-            for ind in industries:
-                industry_to_sector[ind.lower()] = sector
-
-        # Normalize industry name
-        industry_lower = industry.lower()
-
-        # Direct lookup
-        if industry_lower in industry_to_sector:
-            return industry_to_sector[industry_lower]
-
-        # Try partial match
-        for ind, sector in industry_to_sector.items():
-            if ind in industry_lower or industry_lower in ind:
-                return sector
-
-        # If no match found, try to guess based on keywords
-        sector_keywords = {
-            "Technology": ["software", "hardware", "semiconductor", "tech", "internet", "computer", "electronics"],
-            "Healthcare": ["health", "medical", "pharma", "biotech", "drug", "hospital"],
-            "Financials": ["bank", "insurance", "asset", "financial", "invest", "capital", "credit"],
-            "Consumer Discretionary": ["retail", "auto", "luxury", "apparel", "restaurant", "hotel", "entertainment"],
-            "Consumer Staples": ["food", "beverage", "household", "personal", "grocery"],
-            "Energy": ["oil", "gas", "energy", "fuel", "power", "renewable"],
-            "Industrials": ["industrial", "machinery", "defense", "aerospace", "transport"],
-            "Materials": ["material", "chemical", "metal", "mining", "steel", "paper"],
-            "Real Estate": ["real estate", "property", "reit", "development"],
-            "Communication Services": ["communication", "telecom", "media", "entertainment", "social"],
-            "Utilities": ["utility", "electric", "water", "gas"]
-        }
-
-        # Count keyword matches for each sector
-        sector_matches = {sector: 0 for sector in sector_keywords}
-        for sector, keywords in sector_keywords.items():
-            for keyword in keywords:
-                if keyword in industry_lower:
-                    sector_matches[sector] += 1
-
-        # Get sector with most matches
-        best_match = max(sector_matches.items(), key=lambda x: x[1])
-
-        # If we have at least one match, return the sector
-        if best_match[1] > 0:
-            return best_match[0]
-
-        # If still no match, return a default
-        return "Unknown"
-
-
-    def _get_industry_specific_benchmarks(self, industry: str) -> Dict[str, Dict[str, float]]:
-        """Get industry-specific benchmark data"""
         try:
-            # Check if we have industry benchmark file
-            industry_file = self.data_dir / f"industry_{industry.lower().replace(' ', '_')}.json"
+            # For a real implementation, you would use a proper API or database
+            # to get all companies in a sector. Here we use a simplified approach.
 
-            if industry_file.exists():
-                # Load benchmarks
-                with open(industry_file, 'r') as f:
-                    return json.load(f)
+            # Option 1: Use sector ETFs holdings
+            sector_etfs = {
+                "Technology": "XLK",
+                "Healthcare": "XLV",
+                "Financials": "XLF",
+                "Consumer Discretionary": "XLY",
+                "Consumer Staples": "XLP",
+                "Energy": "XLE",
+                "Utilities": "XLU",
+                "Real Estate": "XLRE",
+                "Materials": "XLB",
+                "Industrials": "XLI",
+                "Communication Services": "XLC"
+            }
 
-            # If no file, return empty dict
-            return {}
+            etf_ticker = sector_etfs.get(sector)
+            if etf_ticker:
+                # This is a placeholder for actual implementation
+                # In a real system, you would fetch ETF holdings
+                # Here we just return some sample tickers
+                if sector == "Technology":
+                    return ["AAPL", "MSFT", "NVDA", "ADBE", "ORCL", "CRM", "IBM", "AMD", "INTC", "CSCO"]
+                elif sector == "Healthcare":
+                    return ["JNJ", "PFE", "MRK", "UNH", "ABBV", "LLY", "TMO", "ABT", "MDT", "AMGN"]
+                # Add more sectors as needed
+
+            # Option 2: Use screening API to find companies by sector
+            # This would be implemented in a real system
+
+            return []
+
         except Exception as e:
-            logger.error(f"Error loading industry benchmarks for {industry}: {e}")
+            logger.error(f"Error getting companies for sector {sector}: {e}")
+            return []
+
+    def _get_company_metrics(self, ticker: str) -> Dict[str, Any]:
+        """Get key metrics for a company"""
+        if not self.data_loader:
             return {}
 
+        try:
+            # Get financial ratios from data loader
+            financial_ratios = self.data_loader.get_financial_ratios(ticker)
 
-    def _get_default_benchmarks(self) -> Dict[str, Dict[str, float]]:
-        """Get default benchmarks for generic companies"""
+            # Flatten the ratios dictionary for easier access
+            metrics = {}
+            for category, ratios in financial_ratios.items():
+                if isinstance(ratios, dict):
+                    for ratio_name, ratio_value in ratios.items():
+                        metrics[ratio_name] = ratio_value
+
+            return metrics
+
+        except Exception as e:
+            logger.error(f"Error getting metrics for {ticker}: {e}")
+            return {}
+
+    def _create_comparison(self, metric_name: str, company_value: float,
+                           benchmark_value: float) -> Dict[str, Any]:
+        """Create comparison data between company metric and benchmark"""
+        # Determine if higher values are better for this metric
+        higher_is_better = self._is_higher_better(metric_name)
+
+        # Calculate relative difference
+        if benchmark_value != 0:
+            relative_diff = (company_value - benchmark_value) / abs(benchmark_value)
+        else:
+            relative_diff = 0 if company_value == 0 else 1 if company_value > 0 else -1
+
+        # Determine assessment
+        if higher_is_better:
+            if relative_diff > 0.2:
+                assessment = "excellent"
+            elif relative_diff > 0.05:
+                assessment = "good"
+            elif relative_diff > -0.05:
+                assessment = "average"
+            elif relative_diff > -0.2:
+                assessment = "below_average"
+            else:
+                assessment = "poor"
+        else:
+            if relative_diff < -0.2:
+                assessment = "excellent"
+            elif relative_diff < -0.05:
+                assessment = "good"
+            elif relative_diff < 0.05:
+                assessment = "average"
+            elif relative_diff < 0.2:
+                assessment = "below_average"
+            else:
+                assessment = "poor"
+
+        # Define color based on assessment
+        colors = {
+            "excellent": "#74f174",  # Green
+            "good": "#a5e1ad",  # Light green
+            "average": "#fff59d",  # Yellow
+            "below_average": "#ffb74d",  # Orange
+            "poor": "#faa1a4"  # Red
+        }
+
         return {
-            "valuation": {
-                "pe_ratio": 20.0,
-                "ps_ratio": 2.5,
-                "pb_ratio": 3.0,
-                "ev_ebitda": 12.0
-            },
-            "profitability": {
-                "gross_margin": 0.40,
-                "operating_margin": 0.15,
-                "net_margin": 0.10,
-                "roe": 0.15,
-                "roa": 0.08
-            },
-            "liquidity": {
-                "current_ratio": 1.8,
-                "quick_ratio": 1.5,
-                "cash_ratio": 0.8
-            },
-            "leverage": {
-                "debt_to_equity": 0.7,
-                "interest_coverage": 8.0,
-                "debt_to_assets": 0.3
-            },
-            "efficiency": {
-                "asset_turnover": 0.9,
-                "inventory_turnover": 5.0,
-                "receivables_turnover": 7.0
-            },
-            "growth": {
-                "revenue_growth": 0.05,
-                "net_income_growth": 0.05
-            }
+            "company_value": company_value,
+            "benchmark_value": benchmark_value,
+            "relative_diff": relative_diff,
+            "absolute_diff": company_value - benchmark_value,
+            "percent_diff": relative_diff * 100,
+            "assessment": assessment,
+            "color": colors[assessment],
+            "higher_is_better": higher_is_better
         }
 
+    def _is_higher_better(self, metric_name: str) -> bool:
+        """Determine if higher values are better for this metric"""
+        # Metrics where lower values are better
+        lower_is_better_metrics = [
+            "pe_ratio", "forward_pe", "pb_ratio", "ps_ratio", "ev_ebitda", "ev_revenue",
+            "debt_to_equity", "debt_to_assets", "debt_to_ebitda",
+            "days_inventory_outstanding", "days_sales_outstanding",
+            "cash_conversion_cycle", "churn_rate", "expense_ratio",
+            "beta", "volatility"
+        ]
 
-    def _get_default_sectors_benchmarks(self) -> Dict[str, Dict[str, Dict[str, float]]]:
-        """Get default benchmarks for all sectors"""
-        return {
-            "Technology": {
-                "valuation": {
-                    "pe_ratio": 30.0,
-                    "ps_ratio": 5.0,
-                    "pb_ratio": 6.0,
-                    "ev_ebitda": 18.0,
-                    "ev_revenue": 5.0
-                },
-                "profitability": {
-                    "gross_margin": 0.60,
-                    "operating_margin": 0.25,
-                    "net_margin": 0.20,
-                    "roe": 0.22,
-                    "roa": 0.15
-                },
-                "liquidity": {
-                    "current_ratio": 2.5,
-                    "quick_ratio": 2.0,
-                    "cash_ratio": 1.5
-                },
-                "leverage": {
-                    "debt_to_equity": 0.5,
-                    "interest_coverage": 15.0,
-                    "debt_to_assets": 0.2
-                },
-                "efficiency": {
-                    "asset_turnover": 0.7,
-                    "rnd_to_revenue": 0.15
-                },
-                "growth": {
-                    "revenue_growth": 0.15,
-                    "net_income_growth": 0.18
-                }
-            },
-            "Healthcare": {
-                "valuation": {
-                    "pe_ratio": 25.0,
-                    "ps_ratio": 4.0,
-                    "pb_ratio": 4.0,
-                    "ev_ebitda": 15.0
-                },
-                "profitability": {
-                    "gross_margin": 0.65,
-                    "operating_margin": 0.18,
-                    "net_margin": 0.15,
-                    "roe": 0.18,
-                    "roa": 0.10
-                },
-                "liquidity": {
-                    "current_ratio": 2.0,
-                    "quick_ratio": 1.7,
-                    "cash_ratio": 1.2
-                },
-                "leverage": {
-                    "debt_to_equity": 0.6,
-                    "interest_coverage": 12.0,
-                    "debt_to_assets": 0.25
-                },
-                "efficiency": {
-                    "asset_turnover": 0.5,
-                    "rnd_to_revenue": 0.12
-                },
-                "growth": {
-                    "revenue_growth": 0.08,
-                    "net_income_growth": 0.10
-                }
-            },
-            "Financials": {
-                "valuation": {
-                    "pe_ratio": 14.0,
-                    "pb_ratio": 1.2,
-                    "ps_ratio": 3.0
-                },
-                "profitability": {
-                    "net_margin": 0.25,
-                    "roe": 0.12,
-                    "roa": 0.01
-                },
-                "liquidity": {
-                    "current_ratio": 1.2
-                },
-                "leverage": {
-                    "debt_to_equity": 1.5
-                },
-                "efficiency": {
-                    "asset_turnover": 0.05
-                },
-                "growth": {
-                    "revenue_growth": 0.05,
-                    "net_income_growth": 0.06
-                }
-            },
-            "Consumer Discretionary": {
-                "valuation": {
-                    "pe_ratio": 22.0,
-                    "ps_ratio": 1.5,
-                    "pb_ratio": 3.5,
-                    "ev_ebitda": 12.0
-                },
-                "profitability": {
-                    "gross_margin": 0.35,
-                    "operating_margin": 0.12,
-                    "net_margin": 0.08,
-                    "roe": 0.15,
-                    "roa": 0.08
-                },
-                "liquidity": {
-                    "current_ratio": 1.8,
-                    "quick_ratio": 0.9,
-                    "cash_ratio": 0.5
-                },
-                "leverage": {
-                    "debt_to_equity": 0.8,
-                    "interest_coverage": 8.0,
-                    "debt_to_assets": 0.35
-                },
-                "efficiency": {
-                    "asset_turnover": 1.2,
-                    "inventory_turnover": 6.0
-                },
-                "growth": {
-                    "revenue_growth": 0.06,
-                    "net_income_growth": 0.07
-                }
-            },
-            "Consumer Staples": {
-                "valuation": {
-                    "pe_ratio": 22.0,
-                    "ps_ratio": 1.8,
-                    "pb_ratio": 5.0,
-                    "ev_ebitda": 14.0
-                },
-                "profitability": {
-                    "gross_margin": 0.40,
-                    "operating_margin": 0.15,
-                    "net_margin": 0.12,
-                    "roe": 0.20,
-                    "roa": 0.09
-                },
-                "liquidity": {
-                    "current_ratio": 1.5,
-                    "quick_ratio": 0.8,
-                    "cash_ratio": 0.4
-                },
-                "leverage": {
-                    "debt_to_equity": 1.0,
-                    "interest_coverage": 10.0,
-                    "debt_to_assets": 0.4
-                },
-                "efficiency": {
-                    "asset_turnover": 1.0,
-                    "inventory_turnover": 7.0
-                },
-                "growth": {
-                    "revenue_growth": 0.04,
-                    "net_income_growth": 0.05
-                }
-            },
-            "Energy": {
-                "valuation": {
-                    "pe_ratio": 15.0,
-                    "ps_ratio": 1.0,
-                    "pb_ratio": 1.5,
-                    "ev_ebitda": 6.0
-                },
-                "profitability": {
-                    "gross_margin": 0.30,
-                    "operating_margin": 0.15,
-                    "net_margin": 0.10,
-                    "roe": 0.10,
-                    "roa": 0.06
-                },
-                "liquidity": {
-                    "current_ratio": 1.5,
-                    "quick_ratio": 1.2,
-                    "cash_ratio": 0.6
-                },
-                "leverage": {
-                    "debt_to_equity": 0.4,
-                    "interest_coverage": 10.0,
-                    "debt_to_assets": 0.2
-                },
-                "efficiency": {
-                    "asset_turnover": 0.4
-                },
-                "growth": {
-                    "revenue_growth": 0.03,
-                    "net_income_growth": 0.03
-                }
-            },
-            "Industrials": {
-                "valuation": {
-                    "pe_ratio": 20.0,
-                    "ps_ratio": 1.5,
-                    "pb_ratio": 3.0,
-                    "ev_ebitda": 10.0
-                },
-                "profitability": {
-                    "gross_margin": 0.30,
-                    "operating_margin": 0.12,
-                    "net_margin": 0.08,
-                    "roe": 0.14,
-                    "roa": 0.07
-                },
-                "liquidity": {
-                    "current_ratio": 1.7,
-                    "quick_ratio": 1.2,
-                    "cash_ratio": 0.5
-                },
-                "leverage": {
-                    "debt_to_equity": 0.7,
-                    "interest_coverage": 12.0,
-                    "debt_to_assets": 0.3
-                },
-                "efficiency": {
-                    "asset_turnover": 0.8,
-                    "inventory_turnover": 5.0
-                },
-                "growth": {
-                    "revenue_growth": 0.05,
-                    "net_income_growth": 0.06
-                }
-            },
-            "Materials": {
-                "valuation": {
-                    "pe_ratio": 18.0,
-                    "ps_ratio": 1.3,
-                    "pb_ratio": 2.0,
-                    "ev_ebitda": 8.0
-                },
-                "profitability": {
-                    "gross_margin": 0.25,
-                    "operating_margin": 0.10,
-                    "net_margin": 0.08,
-                    "roe": 0.12,
-                    "roa": 0.06
-                },
-                "liquidity": {
-                    "current_ratio": 1.8,
-                    "quick_ratio": 1.3,
-                    "cash_ratio": 0.6
-                },
-                "leverage": {
-                    "debt_to_equity": 0.6,
-                    "interest_coverage": 9.0,
-                    "debt_to_assets": 0.25
-                },
-                "efficiency": {
-                    "asset_turnover": 0.7,
-                    "inventory_turnover": 6.0
-                },
-                "growth": {
-                    "revenue_growth": 0.04,
-                    "net_income_growth": 0.04
-                }
-            },
-            "Real Estate": {
-                "valuation": {
-                    "pe_ratio": 18.0,
-                    "ps_ratio": 5.0,
-                    "pb_ratio": 1.8,
-                    "ev_ebitda": 15.0
-                },
-                "profitability": {
-                    "gross_margin": 0.60,
-                    "operating_margin": 0.30,
-                    "net_margin": 0.20,
-                    "roe": 0.10,
-                    "roa": 0.04
-                },
-                "liquidity": {
-                    "current_ratio": 2.0,
-                    "quick_ratio": 1.8,
-                    "cash_ratio": 0.7
-                },
-                "leverage": {
-                    "debt_to_equity": 1.2,
-                    "interest_coverage": 3.0,
-                    "debt_to_assets": 0.5
-                },
-                "efficiency": {
-                    "asset_turnover": 0.15
-                },
-                "growth": {
-                    "revenue_growth": 0.04,
-                    "net_income_growth": 0.05
-                }
-            },
-            "Communication Services": {
-                "valuation": {
-                    "pe_ratio": 20.0,
-                    "ps_ratio": 2.5,
-                    "pb_ratio": 3.0,
-                    "ev_ebitda": 9.0
-                },
-                "profitability": {
-                    "gross_margin": 0.50,
-                    "operating_margin": 0.20,
-                    "net_margin": 0.15,
-                    "roe": 0.15,
-                    "roa": 0.08
-                },
-                "liquidity": {
-                    "current_ratio": 1.6,
-                    "quick_ratio": 1.4,
-                    "cash_ratio": 0.8
-                },
-                "leverage": {
-                    "debt_to_equity": 0.9,
-                    "interest_coverage": 8.0,
-                    "debt_to_assets": 0.4
-                },
-                "efficiency": {
-                    "asset_turnover": 0.6
-                },
-                "growth": {
-                    "revenue_growth": 0.07,
-                    "net_income_growth": 0.08
-                }
-            },
-            "Utilities": {
-                "valuation": {
-                    "pe_ratio": 18.0,
-                    "ps_ratio": 2.0,
-                    "pb_ratio": 1.8,
-                    "ev_ebitda": 12.0
-                },
-                "profitability": {
-                    "gross_margin": 0.45,
-                    "operating_margin": 0.20,
-                    "net_margin": 0.12,
-                    "roe": 0.10,
-                    "roa": 0.04
-                },
-                "liquidity": {
-                    "current_ratio": 1.0,
-                    "quick_ratio": 0.8,
-                    "cash_ratio": 0.3
-                },
-                "leverage": {
-                    "debt_to_equity": 1.5,
-                    "interest_coverage": 3.5,
-                    "debt_to_assets": 0.6
-                },
-                "efficiency": {
-                    "asset_turnover": 0.3
-                },
-                "growth": {
-                    "revenue_growth": 0.03,
-                    "net_income_growth": 0.04
-                }
-            }
-        }
+        metric_lower = metric_name.lower()
 
-    def _get_sample_sector_performance(self) -> pd.DataFrame:
-        """Get sample sector performance data for UI when real data is not available"""
-        # Sample sector performance data
-        data = {
-            'Sector': [
-                'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary',
-                'Consumer Staples', 'Energy', 'Industrials', 'Materials',
-                'Real Estate', 'Communication Services', 'Utilities'
-            ],
-            '1D': [0.5, -0.2, 0.3, -0.1, 0.2, 1.2, 0.4, 0.8, -0.5, 0.1, -0.3],
-            '1W': [2.1, 1.5, -0.8, 1.2, 0.5, 3.2, 1.1, 2.3, -1.2, 0.7, -0.9],
-            '1M': [5.3, 3.2, 2.1, 4.5, 1.8, 7.5, 3.5, 4.8, -3.5, 2.2, 1.5],
-            '3M': [12.5, 7.8, 5.2, 10.3, 4.5, 15.2, 8.2, 9.5, -5.2, 6.5, 3.8],
-            '1Y': [25.3, 15.2, 10.5, 18.7, 8.2, -12.5, 14.5, 17.2, -8.5, 12.8, 7.5],
-            'YTD': [15.2, 8.5, 6.2, 11.2, 5.3, 9.8, 7.5, 10.2, -4.8, 7.2, 4.5]
-        }
+        # Check for exact matches
+        if metric_lower in lower_is_better_metrics:
+            return False
 
-        # Create DataFrame
-        df = pd.DataFrame(data)
+        # Check for partial matches
+        for lower_metric in lower_is_better_metrics:
+            if lower_metric in metric_lower:
+                return False
 
-        # Add date column
-        df['date'] = pd.Timestamp.now().strftime('%Y-%m-%d')
-
-        return df
+        # Default: higher is better
+        return True

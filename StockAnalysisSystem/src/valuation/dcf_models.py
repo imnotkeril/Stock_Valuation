@@ -14,18 +14,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.insert(0, project_root)
 
 # Import project modules
-from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
-from StockAnalysisSystem.src.utils.data_loader import DataLoader
-from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('dcf_models')
-
-from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS, SECTOR_METRICS
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 
@@ -50,7 +39,22 @@ class AdvancedDCFValuation(BaseValuation):
 
     def multi_stage_dcf_valuation(self, ticker: str, financial_data: Dict[str, Any] = None,
                                   sector: str = None) -> Dict[str, Any]:
-        """Perform a multi-stage DCF valuation with different growth phases"""
+        """
+        Perform a multi-stage DCF valuation with different growth phases
+
+        This model recognizes that companies typically go through different phases of growth:
+        1. High growth phase - rapid expansion
+        2. Transition phase - growth gradually slows
+        3. Mature phase - stable, terminal growth
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+            sector: Company sector for sector-specific adjustments
+
+        Returns:
+            Dictionary with DCF valuation results
+        """
         try:
             # Load financial data if not provided
             if financial_data is None:
@@ -569,755 +573,474 @@ class AdvancedDCFValuation(BaseValuation):
                 'error': str(e)
             }
 
-    # Helper methods for DCF calculations
+    def dividend_discount_valuation(self, ticker: str, financial_data: Dict[str, Any] = None,
+                                    sector: str = None) -> Dict[str, Any]:
+        """
+        Perform a Dividend Discount Model (DDM) valuation
 
-    def _estimate_initial_growth_rate(self, historical_fcf: pd.Series, ticker: str,
-                                      sector: str = None) -> float:
-        """Estimate initial growth rate based on historical data and sector trends"""
+        The DDM values a stock based on the present value of its expected future dividends.
+        This method is especially useful for mature companies with stable dividend payments.
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+            sector: Company sector for sector-specific adjustments
+
+        Returns:
+            Dictionary with DDM valuation results
+        """
         try:
-            # Start with the base growth rate estimate
-            base_growth = self._estimate_growth_rate(historical_fcf)
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
 
-            # Sector-specific growth adjustments
-            sector_growth_factors = {
-                "Technology": 1.2,  # Technology companies often grow faster
-                "Healthcare": 1.1,  # Healthcare has stable growth
-                "Financials": 0.9,  # Financial sector typically grows slower
-                "Consumer Discretionary": 1.0,  # Average growth
-                "Consumer Staples": 0.8,  # Slower but steady growth
-                "Energy": 0.9,  # Cyclical growth
-                "Industrials": 0.9,  # Moderate growth
-                "Materials": 0.9,  # Cyclical growth
-                "Real Estate": 0.8,  # Slower growth
-                "Communication Services": 1.1,  # Good growth potential
-                "Utilities": 0.7  # Slow but very stable growth
-            }
+            # Get parameters based on sector if available
+            params = self._get_dcf_parameters(sector)
 
-            # Adjust growth rate based on sector
-            if sector and sector in sector_growth_factors:
-                adjusted_growth = base_growth * sector_growth_factors[sector]
+            # Extract dividend history
+            if self.data_loader:
+                dividend_history = self.data_loader.get_historical_dividends(ticker)
             else:
-                adjusted_growth = base_growth
+                dividend_history = pd.Series()
 
-            # Cap growth rate to reasonable range
-            return max(0.01, min(0.30, adjusted_growth))
+            # Get market data
+            market_data = financial_data.get('market_data', {})
+            shares_outstanding = market_data.get('shares_outstanding')
 
-        except Exception as e:
-            logger.error(f"Error estimating initial growth rate: {e}")
-            return 0.05  # Default 5% growth
+            # Extract income statement and cash flow
+            income_stmt = financial_data.get('income_statement')
+            cash_flow = financial_data.get('cash_flow')
 
-    def _get_growth_assumption(self, financial_data: pd.DataFrame, metric: str,
-                               sector: str = None) -> float:
-        """Calculate growth assumptions for financial forecasting"""
-        try:
-            if metric not in financial_data.index:
-                # Default growth assumptions if data not available
-                default_growth = 0.05  # 5% general growth
+            # Check if company pays dividends
+            if dividend_history.empty or dividend_history.sum() == 0:
+                # Try to get dividend data from cash flow statement
+                if cash_flow is not None and 'Dividends Paid' in cash_flow.index:
+                    has_dividends = abs(cash_flow.iloc[0]['Dividends Paid']) > 0
+                    if not has_dividends:
+                        raise ValueError(f"Company {ticker} doesn't appear to pay dividends")
+                else:
+                    raise ValueError(f"No dividend data available for {ticker}")
 
-                # Sector-specific default growth rates
-                sector_growth = {
-                    "Technology": 0.10,
-                    "Healthcare": 0.07,
-                    "Financials": 0.04,
-                    "Consumer Discretionary": 0.05,
-                    "Consumer Staples": 0.03,
-                    "Energy": 0.03,
-                    "Industrials": 0.04,
-                    "Materials": 0.03,
-                    "Real Estate": 0.03,
-                    "Communication Services": 0.06,
-                    "Utilities": 0.02
+            # Calculate or estimate latest annual dividend
+            if not dividend_history.empty:
+                # Resample to annual frequency if we have multiple dividend payments
+                annual_dividends = dividend_history.resample('Y').sum()
+                latest_annual_dividend = annual_dividends.iloc[-1] if not annual_dividends.empty else 0
+            elif cash_flow is not None and 'Dividends Paid' in cash_flow.index:
+                # Estimate from cash flow
+                latest_annual_dividend = abs(
+                    cash_flow.iloc[0]['Dividends Paid']) / shares_outstanding if shares_outstanding else 0
+            else:
+                raise ValueError(f"Unable to determine dividend payments for {ticker}")
+
+            # If dividend is zero, this model is not appropriate
+            if latest_annual_dividend == 0:
+                raise ValueError(f"Cannot apply DDM to company {ticker} with no dividend payments")
+
+            # Estimate dividend growth rate
+            if not dividend_history.empty and len(dividend_history) >= 3:
+                # Calculate growth rate from historical dividends
+                annual_dividends = dividend_history.resample('Y').sum()
+
+                if len(annual_dividends) >= 2:
+                    # Calculate year-over-year growth rates
+                    growth_rates = []
+                    for i in range(1, len(annual_dividends)):
+                        if annual_dividends.iloc[i - 1] > 0:
+                            growth_rate = (annual_dividends.iloc[i] / annual_dividends.iloc[i - 1]) - 1
+                            growth_rates.append(growth_rate)
+
+                    if growth_rates:
+                        # Use average growth rate, potentially with more weight to recent years
+                        dividend_growth_rate = sum(growth_rates) / len(growth_rates)
+                    else:
+                        # Default growth if calculation fails
+                        dividend_growth_rate = 0.03  # 3% default growth
+                else:
+                    dividend_growth_rate = 0.03  # Default growth
+            else:
+                # Estimate from earnings growth if available
+                if income_stmt is not None and income_stmt.shape[1] >= 2:
+                    if 'Net Income' in income_stmt.index:
+                        # Calculate earnings growth rate
+                        latest_income = income_stmt.iloc[0]['Net Income']
+                        prev_income = income_stmt.iloc[1]['Net Income']
+
+                        if prev_income > 0:
+                            earnings_growth = (latest_income / prev_income) - 1
+                            # Dividend growth is typically lower than earnings growth
+                            dividend_growth_rate = min(earnings_growth * 0.7, 0.15)  # Cap at 15%
+                        else:
+                            dividend_growth_rate = 0.03  # Default
+
+            # Cap dividend growth rate to reasonable bounds
+            dividend_growth_rate = max(0.01, min(0.15, dividend_growth_rate))
+
+            # Calculate discount rate
+            discount_rate = self._calculate_discount_rate(ticker, financial_data, sector) or params[
+                'default_discount_rate']
+
+            # Ensure discount rate > dividend growth rate for model validity
+            if discount_rate <= dividend_growth_rate:
+                discount_rate = dividend_growth_rate + 0.03  # Add 3% minimum spread
+
+            # Check if we are using single-stage or multi-stage model
+            # For high-growth companies, a multi-stage model is more appropriate
+
+            if dividend_growth_rate > discount_rate * 0.66:  # If growth rate > 2/3 of discount rate
+                # Use multi-stage model (high growth followed by stable growth)
+                high_growth_years = 5
+                terminal_growth_rate = min(0.03, params['terminal_growth_rate'])  # Long-term sustainable growth
+
+                # Calculate dividend payments during high growth phase
+                high_growth_dividends = []
+                for year in range(1, high_growth_years + 1):
+                    dividend = latest_annual_dividend * (1 + dividend_growth_rate) ** year
+                    high_growth_dividends.append(dividend)
+
+                # Calculate present value of high growth phase dividends
+                pv_high_growth = sum(
+                    dividend / (1 + discount_rate) ** year
+                    for year, dividend in enumerate(high_growth_dividends, 1)
+                )
+
+                # Calculate terminal value using Gordon Growth Model
+                # The dividend in year after high growth phase
+                terminal_dividend = high_growth_dividends[-1] * (1 + terminal_growth_rate)
+                terminal_value = terminal_dividend / (discount_rate - terminal_growth_rate)
+
+                # Discount terminal value to present
+                pv_terminal = terminal_value / (1 + discount_rate) ** high_growth_years
+
+                # Final valuation is sum of high growth dividends + terminal value
+                value_per_share = pv_high_growth + pv_terminal
+
+                # Results dictionary with details
+                result = {
+                    'company': ticker,
+                    'method': 'multi_stage_ddm',
+                    'value_per_share': value_per_share,
+                    'latest_annual_dividend': latest_annual_dividend,
+                    'high_growth_rate': dividend_growth_rate,
+                    'terminal_growth_rate': terminal_growth_rate,
+                    'discount_rate': discount_rate,
+                    'high_growth_years': high_growth_years,
+                    'high_growth_dividends': high_growth_dividends,
+                    'pv_high_growth': pv_high_growth,
+                    'pv_terminal': pv_terminal,
+                    'sector': sector
+                }
+            else:
+                # Use single-stage Gordon Growth Model
+                # V = D1 / (r - g) where D1 is next year's dividend
+                next_dividend = latest_annual_dividend * (1 + dividend_growth_rate)
+                value_per_share = next_dividend / (discount_rate - dividend_growth_rate)
+
+                # Results dictionary with details
+                result = {
+                    'company': ticker,
+                    'method': 'gordon_growth_ddm',
+                    'value_per_share': value_per_share,
+                    'latest_annual_dividend': latest_annual_dividend,
+                    'next_dividend': next_dividend,
+                    'dividend_growth_rate': dividend_growth_rate,
+                    'discount_rate': discount_rate,
+                    'sector': sector
                 }
 
-                return sector_growth.get(sector, default_growth)
+            # Apply margin of safety
+            safety_margin = params['default_margin_of_safety']
+            result['conservative_value'] = value_per_share * (1 - safety_margin)
+            result['safety_margin'] = safety_margin
 
-            # Get the number of periods for analysis
-            periods = min(financial_data.shape[1], 5)  # Use up to 5 years of data
-
-            if periods < 2:
-                # Not enough data for historical calculation
-                default_growth = 0.05
-                return default_growth
-
-            # Calculate year-over-year growth rates
-            growth_rates = []
-
-            for i in range(periods - 1):
-                current_value = financial_data.iloc[:, i][metric]
-                prev_value = financial_data.iloc[:, i + 1][metric]
-
-                if prev_value > 0 and current_value > 0:
-                    yoy_growth = (current_value / prev_value) - 1
-                    growth_rates.append(yoy_growth)
-
-            if not growth_rates:
-                # Default if cannot calculate from history
-                default_growth = 0.05
-                return default_growth
-
-            # Use weighted average, giving more weight to recent periods
-            weights = list(range(1, len(growth_rates) + 1))
-            weighted_growth = sum(r * w for r, w in zip(growth_rates, weights)) / sum(weights)
-
-            # Apply sector adjustments if provided
-            if sector:
-                sector_modifiers = {
-                    "Technology": 1.2,
-                    "Healthcare": 1.1,
-                    "Financials": 0.9,
-                    "Consumer Discretionary": 1.0,
-                    "Consumer Staples": 0.8,
-                    "Energy": 0.9,
-                    "Industrials": 0.9,
-                    "Materials": 0.9,
-                    "Real Estate": 0.8,
-                    "Communication Services": 1.1,
-                    "Utilities": 0.7
-                }
-
-                modifier = sector_modifiers.get(sector, 1.0)
-                weighted_growth *= modifier
-
-            # Cap growth to reasonable range
-            max_growth = 0.30  # 30% cap on growth
-            min_growth = -0.10  # -10% floor on growth
-
-            return max(min_growth, min(max_growth, weighted_growth))
+            return result
 
         except Exception as e:
-            logger.error(f"Error calculating growth assumption for {metric}: {e}")
-            return 0.03  # Conservative default on error
+            logger.error(f"Error in dividend discount valuation for {ticker}: {e}")
+            return {
+                'company': ticker,
+                'method': 'dividend_discount_model',
+                'value_per_share': None,
+                'error': str(e)
+            }
 
-    def _calculate_financial_ratios(self, income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame,
-                                    cash_flow: pd.DataFrame) -> Dict[str, float]:
-        """Calculate key financial ratios from historical statements for forecasting"""
-        ratios = {}
+    def asset_based_valuation(self, ticker: str, financial_data: Dict[str, Any] = None,
+                              sector: str = None) -> Dict[str, Any]:
+        """
+        Perform an asset-based valuation (Net Asset Value)
 
+        This model values a company based on the fair market value of its assets
+        minus liabilities. It is most appropriate for capital-intensive businesses,
+        real estate companies, holding companies, and investment funds.
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+            sector: Company sector for sector-specific adjustments
+
+        Returns:
+            Dictionary with asset-based valuation results
+        """
         try:
-            # Use historical data to calculate ratios (use averages for stability)
-            # Get how many periods we have data for
-            income_periods = min(income_stmt.shape[1], 3)  # Use up to 3 years of data
-            balance_periods = min(balance_sheet.shape[1], 3)
-            cash_flow_periods = min(cash_flow.shape[1], 3)
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
 
-            # Profitability ratios
-            if 'Gross Profit' in income_stmt.index and 'Total Revenue' in income_stmt.index:
-                gross_margins = []
-                for i in range(income_periods):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        gross_margins.append(income_stmt.iloc[:, i]['Gross Profit'] / income_stmt.iloc[:, i]['Total Revenue'])
+            # Extract balance sheet
+            balance_sheet = financial_data.get('balance_sheet')
 
-                if gross_margins:
-                    ratios['Gross Margin'] = sum(gross_margins) / len(gross_margins)
+            # Get market data
+            market_data = financial_data.get('market_data', {})
+            shares_outstanding = market_data.get('shares_outstanding')
 
-            # R&D to Revenue ratio
-            if 'Research and Development' in income_stmt.index and 'Total Revenue' in income_stmt.index:
-                rd_ratios = []
-                for i in range(income_periods):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        rd_ratios.append(income_stmt.iloc[:, i]['Research and Development'] / income_stmt.iloc[:, i]['Total Revenue'])
+            if balance_sheet is None:
+                raise ValueError("Missing required balance sheet for asset-based valuation")
 
-                if rd_ratios:
-                    ratios['R&D Ratio'] = sum(rd_ratios) / len(rd_ratios)
-
-            # SG&A to Revenue ratio
-            if 'SG&A Expense' in income_stmt.index and 'Total Revenue' in income_stmt.index:
-                sga_ratios = []
-                for i in range(income_periods):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        sga_ratios.append(income_stmt.iloc[:, i]['SG&A Expense'] / income_stmt.iloc[:, i]['Total Revenue'])
-
-                if sga_ratios:
-                    ratios['SG&A Ratio'] = sum(sga_ratios) / len(sga_ratios)
-
-            # Other OpEx to Revenue ratio
-            if 'Other Operating Expenses' in income_stmt.index and 'Total Revenue' in income_stmt.index:
-                other_opex_ratios = []
-                for i in range(income_periods):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        other_opex_ratios.append(income_stmt.iloc[:, i]['Other Operating Expenses'] / income_stmt.iloc[:, i]['Total Revenue'])
-
-                if other_opex_ratios:
-                    ratios['Other OpEx Ratio'] = sum(other_opex_ratios) / len(other_opex_ratios)
-
-            # Effective Tax Rate
-            if 'Income Tax Expense' in income_stmt.index and 'Income Before Tax' in income_stmt.index:
-                tax_rates = []
-                for i in range(income_periods):
-                    if income_stmt.iloc[:, i]['Income Before Tax'] > 0:
-                        tax_rates.append(income_stmt.iloc[:, i]['Income Tax Expense'] / income_stmt.iloc[:, i]['Income Before Tax'])
-
-                if tax_rates:
-                    avg_tax_rate = sum(tax_rates) / len(tax_rates)
-                    ratios['Effective Tax Rate'] = min(0.4, max(0.15, avg_tax_rate))  # Cap between 15% and 40%
-
-            # Asset-based ratios
-
-            # Cash to Revenue
-            if 'Cash and Cash Equivalents' in balance_sheet.index and 'Total Revenue' in income_stmt.index:
-                cash_ratios = []
-                for i in range(min(balance_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        cash_ratios.append(balance_sheet.iloc[:, i]['Cash and Cash Equivalents'] / income_stmt.iloc[:, i]['Total Revenue'])
-
-                if cash_ratios:
-                    ratios['Cash to Revenue'] = sum(cash_ratios) / len(cash_ratios)
-
-            # Receivables to Revenue
-            if 'Net Receivables' in balance_sheet.index and 'Total Revenue' in income_stmt.index:
-                receivables_ratios = []
-                for i in range(min(balance_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        receivables_ratios.append(balance_sheet.iloc[:, i]['Net Receivables'] / income_stmt.iloc[:, i]['Total Revenue'])
-
-                if receivables_ratios:
-                    ratios['Receivables to Revenue'] = sum(receivables_ratios) / len(receivables_ratios)
-
-            # Inventory to COGS
-            if 'Inventory' in balance_sheet.index and 'Cost of Revenue' in income_stmt.index:
-                inventory_ratios = []
-                for i in range(min(balance_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Cost of Revenue'] > 0:
-                        inventory_ratios.append(balance_sheet.iloc[:, i]['Inventory'] / income_stmt.iloc[:, i]['Cost of Revenue'])
-
-                if inventory_ratios:
-                    ratios['Inventory to COGS'] = sum(inventory_ratios) / len(inventory_ratios)
-
-            # Payables to COGS
-            if 'Accounts Payable' in balance_sheet.index and 'Cost of Revenue' in income_stmt.index:
-                payables_ratios = []
-                for i in range(min(balance_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Cost of Revenue'] > 0:
-                        payables_ratios.append(balance_sheet.iloc[:, i]['Accounts Payable'] / income_stmt.iloc[:, i]['Cost of Revenue'])
-
-                if payables_ratios:
-                    ratios['Payables to COGS'] = sum(payables_ratios) / len(payables_ratios)
-
-            # CapEx to Revenue
-            if 'Capital Expenditure' in cash_flow.index and 'Total Revenue' in income_stmt.index:
-                capex_ratios = []
-                for i in range(min(cash_flow_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Total Revenue'] > 0:
-                        # Capital Expenditure is typically negative in cash flow statements
-                        capex_ratios.append(abs(cash_flow.iloc[:, i]['Capital Expenditure']) / income_stmt.iloc[:, i]['Total Revenue'])
-
-                if capex_ratios:
-                    ratios['CapEx to Revenue'] = sum(capex_ratios) / len(capex_ratios)
-
-            # Depreciation Rate
-            if 'Depreciation & Amortization' in income_stmt.index and 'Property Plant and Equipment' in balance_sheet.index:
-                depreciation_rates = []
-                for i in range(min(income_periods, balance_periods)):
-                    if balance_sheet.iloc[:, i]['Property Plant and Equipment'] > 0:
-                        depreciation_rates.append(income_stmt.iloc[:, i]['Depreciation & Amortization'] /
-                                                balance_sheet.iloc[:, i]['Property Plant and Equipment'])
-
-                if depreciation_rates:
-                    avg_rate = sum(depreciation_rates) / len(depreciation_rates)
-                    ratios['Depreciation Rate'] = min(0.2, max(0.05, avg_rate))  # Cap between 5% and 20%
-
-            # Interest Rate
-            if 'Interest Expense' in income_stmt.index and 'Total Debt' in balance_sheet.index:
-                interest_rates = []
-                for i in range(min(income_periods, balance_periods)):
-                    if balance_sheet.iloc[:, i]['Total Debt'] > 0:
-                        interest_rates.append(abs(income_stmt.iloc[:, i]['Interest Expense']) /
-                                            balance_sheet.iloc[:, i]['Total Debt'])
-
-                if interest_rates:
-                    avg_rate = sum(interest_rates) / len(interest_rates)
-                    ratios['Interest Rate'] = min(0.1, max(0.02, avg_rate))  # Cap between 2% and 10%
-
-            # Debt Growth Rate
-            if 'Total Debt' in balance_sheet.index and balance_periods > 1:
-                debt_growth_rates = []
-                for i in range(balance_periods - 1):
-                    if balance_sheet.iloc[:, i + 1]['Total Debt'] > 0:
-                        growth_rate = (balance_sheet.iloc[:, i]['Total Debt'] /
-                                    balance_sheet.iloc[:, i + 1]['Total Debt']) - 1
-                        debt_growth_rates.append(growth_rate)
-
-                if debt_growth_rates:
-                    avg_rate = sum(debt_growth_rates) / len(debt_growth_rates)
-                    ratios['Debt Growth Rate'] = min(0.2, max(-0.1, avg_rate))  # Cap between -10% and 20%
-
-            # Dividend Payout Ratio
-            if 'Dividends Paid' in cash_flow.index and 'Net Income' in income_stmt.index:
-                payout_ratios = []
-                for i in range(min(cash_flow_periods, income_periods)):
-                    if income_stmt.iloc[:, i]['Net Income'] > 0:
-                        payout_ratios.append(abs(cash_flow.iloc[:, i]['Dividends Paid']) /
-                                           income_stmt.iloc[:, i]['Net Income'])
-
-                if payout_ratios:
-                    avg_ratio = sum(payout_ratios) / len(payout_ratios)
-                    ratios['Dividend Payout Ratio'] = min(1.0, max(0.0, avg_ratio))  # Cap between 0% and 100%
-
-            return ratios
-
-        except Exception as e:
-            logger.error(f"Error calculating financial ratios: {e}")
-            return ratios
-
-    def _forecast_financial_statements(self, income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame,
-                                       cash_flow: pd.DataFrame, forecast_years: int,
-                                       sector: str = None) -> Dict[str, Any]:
-        """Create detailed forecasts of financial statements"""
-        try:
-            # Extract the most recent financial data
-            latest_income = income_stmt.iloc[:, 0]
+            # Get latest balance sheet data
             latest_balance = balance_sheet.iloc[:, 0]
-            latest_cash_flow = cash_flow.iloc[:, 0]
 
-            # Calculate historical financial ratios and trends
-            financial_ratios = self._calculate_financial_ratios(income_stmt, balance_sheet, cash_flow)
-
-            # Get growth assumptions
-            revenue_growth = self._get_growth_assumption(income_stmt, 'Total Revenue', sector)
-
-            # Create forecast dataframes
-            forecast_income = pd.DataFrame(index=income_stmt.index,
-                                           columns=[f'Year+{i + 1}' for i in range(forecast_years)])
-
-            forecast_balance = pd.DataFrame(index=balance_sheet.index,
-                                            columns=[f'Year+{i + 1}' for i in range(forecast_years)])
-
-            forecast_cash_flow = pd.DataFrame(index=cash_flow.index,
-                                              columns=[f'Year+{i + 1}' for i in range(forecast_years)])
-
-            # Forecast income statement
-            for year in range(forecast_years):
-                year_col = f'Year+{year + 1}'
-
-                # Revenue forecast
-                if 'Total Revenue' in latest_income.index:
-                    if year == 0:
-                        # First year based on historical growth
-                        forecast_income.loc['Total Revenue', year_col] = latest_income['Total Revenue'] * (
-                                    1 + revenue_growth)
-                    else:
-                        # Subsequent years with potentially declining growth
-                        growth_factor = revenue_growth * (1 - year * 0.1)  # Gradual decline in growth
-                        growth_factor = max(revenue_growth * 0.5, growth_factor)  # Floor at 50% of initial
-                        prev_revenue = forecast_income.loc['Total Revenue', f'Year+{year}']
-                        forecast_income.loc['Total Revenue', year_col] = prev_revenue * (1 + growth_factor)
-
-                # Cost of Revenue based on gross margin
-                if 'Total Revenue' in forecast_income.index and 'Cost of Revenue' in latest_income.index:
-                    if 'Gross Margin' in financial_ratios:
-                        gross_margin = financial_ratios['Gross Margin']
-                        forecast_revenue = forecast_income.loc['Total Revenue', year_col]
-                        forecast_income.loc['Cost of Revenue', year_col] = forecast_revenue * (1 - gross_margin)
-
-                # Operating expenses based on historical ratios
-                if 'Total Revenue' in forecast_income.index:
-                    forecast_revenue = forecast_income.loc['Total Revenue', year_col]
-
-                    # Research and Development
-                    if 'R&D Ratio' in financial_ratios and 'Research and Development' in latest_income.index:
-                        rd_ratio = financial_ratios['R&D Ratio']
-                        forecast_income.loc['Research and Development', year_col] = forecast_revenue * rd_ratio
-
-                    # SG&A (Sales, General & Administrative)
-                    if 'SG&A Ratio' in financial_ratios and 'SG&A Expense' in latest_income.index:
-                        sga_ratio = financial_ratios['SG&A Ratio']
-                        forecast_income.loc['SG&A Expense', year_col] = forecast_revenue * sga_ratio
-
-                    # Other Operating Expenses
-                    if 'Other OpEx Ratio' in financial_ratios and 'Other Operating Expenses' in latest_income.index:
-                        other_opex_ratio = financial_ratios['Other OpEx Ratio']
-                        forecast_income.loc['Other Operating Expenses', year_col] = forecast_revenue * other_opex_ratio
-
-                # Calculate operating income
-                operating_expense_items = [
-                    'Cost of Revenue', 'Research and Development',
-                    'SG&A Expense', 'Other Operating Expenses'
-                ]
-
-                if 'Total Revenue' in forecast_income.index:
-                    forecast_revenue = forecast_income.loc['Total Revenue', year_col]
-                    total_expenses = 0
-
-                    for expense_item in operating_expense_items:
-                        if expense_item in forecast_income.index and not pd.isna(
-                                forecast_income.loc[expense_item, year_col]):
-                            total_expenses += forecast_income.loc[expense_item, year_col]
-
-                    forecast_income.loc['Operating Income', year_col] = forecast_revenue - total_expenses
-
-                # Interest Expense based on debt levels
-                if 'Interest Expense' in latest_income.index and 'Total Debt' in latest_balance.index:
-                    # Assume debt grows with revenue but at a slower rate
-                    if 'Debt Growth Rate' in financial_ratios:
-                        debt_growth = financial_ratios['Debt Growth Rate']
-                    else:
-                        debt_growth = revenue_growth * 0.7  # 70% of revenue growth
-
-                    if 'Interest Rate' in financial_ratios:
-                        interest_rate = financial_ratios['Interest Rate']
-                    else:
-                        # Estimate interest rate from historical data
-                        if latest_balance['Total Debt'] > 0:
-                            interest_rate = abs(latest_income['Interest Expense']) / latest_balance['Total Debt']
-                        else:
-                            interest_rate = 0.05  # Default 5%
-
-                    if year == 0:
-                        forecast_debt = latest_balance['Total Debt'] * (1 + debt_growth)
-                    else:
-                        prev_debt = forecast_balance.loc[
-                            'Total Debt', f'Year+{year}'] if 'Total Debt' in forecast_balance.index else latest_balance[
-                                                                                                             'Total Debt'] * (
-                                                                                                                     1 + debt_growth) ** year
-                        forecast_debt = prev_debt * (1 + debt_growth)
-
-                    # Store debt for balance sheet forecast
-                    forecast_balance.loc['Total Debt', year_col] = forecast_debt
-
-                    # Calculate interest expense
-                    forecast_income.loc['Interest Expense', year_col] = -forecast_debt * interest_rate
-
-                # Income before tax
-                if 'Operating Income' in forecast_income.index and 'Interest Expense' in forecast_income.index:
-                    op_income = forecast_income.loc['Operating Income', year_col]
-                    int_expense = forecast_income.loc['Interest Expense', year_col]
-                    forecast_income.loc[
-                        'Income Before Tax', year_col] = op_income + int_expense  # int_expense is negative
-
-                # Income Tax
-                if 'Income Before Tax' in forecast_income.index:
-                    if 'Effective Tax Rate' in financial_ratios:
-                        tax_rate = financial_ratios['Effective Tax Rate']
-                    else:
-                        tax_rate = 0.25  # Default 25% tax rate
-
-                    pre_tax_income = forecast_income.loc['Income Before Tax', year_col]
-                    forecast_income.loc[
-                        'Income Tax Expense', year_col] = pre_tax_income * tax_rate if pre_tax_income > 0 else 0
-
-                # Net Income
-                if 'Income Before Tax' in forecast_income.index and 'Income Tax Expense' in forecast_income.index:
-                    pre_tax = forecast_income.loc['Income Before Tax', year_col]
-                    tax = forecast_income.loc['Income Tax Expense', year_col]
-                    forecast_income.loc['Net Income', year_col] = pre_tax - tax
-
-            # Forecast balance sheet
-            for year in range(forecast_years):
-                year_col = f'Year+{year + 1}'
-
-                # Assets
-                # Cash and Equivalents
-                if 'Cash and Cash Equivalents' in latest_balance.index:
-                    if 'Cash to Revenue' in financial_ratios:
-                        cash_ratio = financial_ratios['Cash to Revenue']
-                    else:
-                        cash_ratio = latest_balance['Cash and Cash Equivalents'] / latest_income[
-                            'Total Revenue'] if 'Total Revenue' in latest_income.index and latest_income[
-                            'Total Revenue'] > 0 else 0.1
-
-                    forecast_revenue = forecast_income.loc[
-                        'Total Revenue', year_col] if 'Total Revenue' in forecast_income.index else 0
-                    forecast_balance.loc['Cash and Cash Equivalents', year_col] = forecast_revenue * cash_ratio
-
-                # Accounts Receivable
-                if 'Net Receivables' in latest_balance.index and 'Total Revenue' in forecast_income.index:
-                    if 'Receivables to Revenue' in financial_ratios:
-                        receivables_ratio = financial_ratios['Receivables to Revenue']
-                    else:
-                        receivables_ratio = latest_balance['Net Receivables'] / latest_income[
-                            'Total Revenue'] if 'Total Revenue' in latest_income.index and latest_income[
-                            'Total Revenue'] > 0 else 0.15
-
-                    forecast_revenue = forecast_income.loc['Total Revenue', year_col]
-                    forecast_balance.loc['Net Receivables', year_col] = forecast_revenue * receivables_ratio
-
-                # Inventory
-                if 'Inventory' in latest_balance.index and 'Cost of Revenue' in forecast_income.index:
-                    if 'Inventory to COGS' in financial_ratios:
-                        inventory_ratio = financial_ratios['Inventory to COGS']
-                    else:
-                        inventory_ratio = latest_balance['Inventory'] / latest_income[
-                            'Cost of Revenue'] if 'Cost of Revenue' in latest_income.index and latest_income[
-                            'Cost of Revenue'] > 0 else 0.2
-
-                    forecast_cogs = forecast_income.loc['Cost of Revenue', year_col]
-                    forecast_balance.loc['Inventory', year_col] = forecast_cogs * inventory_ratio
-
-                # Property, Plant & Equipment (PP&E)
-                if 'Property Plant and Equipment' in latest_balance.index:
-                    if 'CapEx to Revenue' in financial_ratios:
-                        capex_ratio = financial_ratios['CapEx to Revenue']
-                    else:
-                        # Estimate from historical data
-                        if 'Capital Expenditure' in latest_cash_flow.index and 'Total Revenue' in latest_income.index:
-                            capex_ratio = abs(latest_cash_flow['Capital Expenditure']) / latest_income['Total Revenue']
-                        else:
-                            capex_ratio = 0.05  # Default 5% of revenue
-
-                    if 'Depreciation Rate' in financial_ratios:
-                        depreciation_rate = financial_ratios['Depreciation Rate']
-                    else:
-                        if 'Depreciation & Amortization' in latest_income.index and 'Property Plant and Equipment' in latest_balance.index:
-                            depreciation_rate = latest_income['Depreciation & Amortization'] / latest_balance[
-                                'Property Plant and Equipment']
-                        else:
-                            depreciation_rate = 0.1  # Default 10% depreciation
-
-                    forecast_revenue = forecast_income.loc[
-                        'Total Revenue', year_col] if 'Total Revenue' in forecast_income.index else 0
-                    capex = forecast_revenue * capex_ratio
-
-                    if year == 0:
-                        prev_ppe = latest_balance['Property Plant and Equipment']
-                    else:
-                        prev_ppe = forecast_balance.loc['Property Plant and Equipment', f'Year+{year}']
-
-                    depreciation = prev_ppe * depreciation_rate
-                    forecast_balance.loc['Property Plant and Equipment', year_col] = prev_ppe + capex - depreciation
-
-                    # Store depreciation for cash flow forecast
-                    forecast_income.loc['Depreciation & Amortization', year_col] = depreciation
-
-                # Total Assets
-                asset_items = [
-                    'Cash and Cash Equivalents', 'Net Receivables', 'Inventory',
-                    'Property Plant and Equipment', 'Intangible Assets', 'Goodwill',
-                    'Other Assets'
-                ]
-
-                total_assets = 0
-                for asset_item in asset_items:
-                    if asset_item in forecast_balance.index and not pd.isna(forecast_balance.loc[asset_item, year_col]):
-                        total_assets += forecast_balance.loc[asset_item, year_col]
-                    elif asset_item in latest_balance.index:
-                        # If not forecasted, assume it grows with revenue
-                        if 'Total Revenue' in forecast_income.index and 'Total Revenue' in latest_income.index:
-                            growth_factor = forecast_income.loc['Total Revenue', year_col] / latest_income[
-                                'Total Revenue']
-                            forecast_balance.loc[asset_item, year_col] = latest_balance[asset_item] * growth_factor
-                            total_assets += forecast_balance.loc[asset_item, year_col]
-
-                forecast_balance.loc['Total Assets', year_col] = total_assets
-
-                # Liabilities
-                # Accounts Payable
-                if 'Accounts Payable' in latest_balance.index and 'Cost of Revenue' in forecast_income.index:
-                    if 'Payables to COGS' in financial_ratios:
-                        payables_ratio = financial_ratios['Payables to COGS']
-                    else:
-                        payables_ratio = latest_balance['Accounts Payable'] / latest_income[
-                            'Cost of Revenue'] if 'Cost of Revenue' in latest_income.index and latest_income[
-                            'Cost of Revenue'] > 0 else 0.15
-
-                    forecast_cogs = forecast_income.loc['Cost of Revenue', year_col]
-                    forecast_balance.loc['Accounts Payable', year_col] = forecast_cogs * payables_ratio
-
-                # Total Liabilities
-                liability_items = [
-                    'Accounts Payable', 'Short Term Debt', 'Total Debt',
-                    'Other Current Liabilities', 'Other Liabilities'
-                ]
-
-                total_liabilities = 0
-                for liability_item in liability_items:
-                    if liability_item in forecast_balance.index and not pd.isna(
-                            forecast_balance.loc[liability_item, year_col]):
-                        total_liabilities += forecast_balance.loc[liability_item, year_col]
-                    elif liability_item in latest_balance.index:
-                        # If not forecasted, assume it grows with revenue
-                        if 'Total Revenue' in forecast_income.index and 'Total Revenue' in latest_income.index:
-                            growth_factor = forecast_income.loc['Total Revenue', year_col] / latest_income[
-                                'Total Revenue']
-                            forecast_balance.loc[liability_item, year_col] = latest_balance[
-                                                                                 liability_item] * growth_factor
-                            total_liabilities += forecast_balance.loc[liability_item, year_col]
-
-                forecast_balance.loc['Total Liabilities', year_col] = total_liabilities
-
-                # Stockholder Equity
-                if 'Total Stockholder Equity' in latest_balance.index:
-                    if year == 0:
-                        prev_equity = latest_balance['Total Stockholder Equity']
-                    else:
-                        prev_equity = forecast_balance.loc['Total Stockholder Equity', f'Year+{year}']
-
-                    net_income = forecast_income.loc[
-                        'Net Income', year_col] if 'Net Income' in forecast_income.index else 0
-
-                    # Estimate dividends paid
-                    if 'Dividend Payout Ratio' in financial_ratios:
-                        payout_ratio = financial_ratios['Dividend Payout Ratio']
-                    else:
-                        if 'Dividends Paid' in latest_cash_flow.index and 'Net Income' in latest_income.index:
-                            payout_ratio = abs(latest_cash_flow['Dividends Paid']) / latest_income['Net Income'] if \
-                            latest_income['Net Income'] > 0 else 0
-                        else:
-                            payout_ratio = 0.3  # Default 30% payout
-
-                    dividends = net_income * payout_ratio if net_income > 0 else 0
-
-                    # Assume no share issuances/buybacks for simplicity
-                    forecast_balance.loc['Total Stockholder Equity', year_col] = prev_equity + net_income - dividends
-
-                    # Store dividends for cash flow forecast
-                    forecast_cash_flow.loc['Dividends Paid', year_col] = -dividends
-
-            # Forecast cash flow statement
-            for year in range(forecast_years):
-                year_col = f'Year+{year + 1}'
-
-                # Net Income
-                if 'Net Income' in forecast_income.index:
-                    forecast_cash_flow.loc['Net Income', year_col] = forecast_income.loc['Net Income', year_col]
-
-                # Depreciation & Amortization
-                if 'Depreciation & Amortization' in forecast_income.index:
-                    forecast_cash_flow.loc['Depreciation & Amortization', year_col] = forecast_income.loc[
-                        'Depreciation & Amortization', year_col]
-
-                # Changes in Working Capital
-                working_capital_items = {
-                    'Net Receivables': -1,  # Increase in receivables = negative cash flow
-                    'Inventory': -1,  # Increase in inventory = negative cash flow
-                    'Accounts Payable': 1  # Increase in payables = positive cash flow
-                }
-
-                change_in_wc = 0
-                for item, direction in working_capital_items.items():
-                    if item in forecast_balance.index:
-                        if year == 0:
-                            prev_value = latest_balance[item] if item in latest_balance.index else 0
-                        else:
-                            prev_value = forecast_balance.loc[item, f'Year+{year}']
-
-                        current_value = forecast_balance.loc[item, year_col]
-                        change = current_value - prev_value
-                        change_in_wc += change * direction
-
-                forecast_cash_flow.loc['Change in Working Capital', year_col] = change_in_wc
-
-                # Operating Cash Flow
-                ocf_items = ['Net Income', 'Depreciation & Amortization', 'Change in Working Capital']
-                operating_cf = 0
-
-                for item in ocf_items:
-                    if item in forecast_cash_flow.index and not pd.isna(forecast_cash_flow.loc[item, year_col]):
-                        operating_cf += forecast_cash_flow.loc[item, year_col]
-
-                forecast_cash_flow.loc['Operating Cash Flow', year_col] = operating_cf
-
-                # Capital Expenditure
-                if 'Property Plant and Equipment' in forecast_balance.index:
-                    if year == 0:
-                        prev_ppe = latest_balance[
-                            'Property Plant and Equipment'] if 'Property Plant and Equipment' in latest_balance.index else 0
-                    else:
-                        prev_ppe = forecast_balance.loc['Property Plant and Equipment', f'Year+{year}']
-
-                    current_ppe = forecast_balance.loc['Property Plant and Equipment', year_col]
-                    depreciation = forecast_income.loc[
-                        'Depreciation & Amortization', year_col] if 'Depreciation & Amortization' in forecast_income.index else 0
-
-                    capex = -(current_ppe - prev_ppe + depreciation)  # Negative for cash outflow
-                    forecast_cash_flow.loc['Capital Expenditure', year_col] = capex
-
-                # Free Cash Flow
-                forecast_cash_flow.loc['Free Cash Flow', year_col] = operating_cf + forecast_cash_flow.loc[
-                    'Capital Expenditure', year_col] if 'Capital Expenditure' in forecast_cash_flow.index else operating_cf
-
-            # Extract forecasted FCF
-            forecasted_fcf = []
-            for year in range(forecast_years):
-                year_col = f'Year+{year + 1}'
-                if 'Free Cash Flow' in forecast_cash_flow.index:
-                    fcf = forecast_cash_flow.loc['Free Cash Flow', year_col]
-                    forecasted_fcf.append(fcf)
-
-            # Create a summary of forecasts
-            summary = {
-                'Income Statement': {
-                    'Revenue': [
-                        forecast_income.loc['Total Revenue', col] if 'Total Revenue' in forecast_income.index else None
-                        for col in forecast_income.columns],
-                    'Operating Income': [forecast_income.loc[
-                                             'Operating Income', col] if 'Operating Income' in forecast_income.index else None
-                                         for col in forecast_income.columns],
-                    'Net Income': [
-                        forecast_income.loc['Net Income', col] if 'Net Income' in forecast_income.index else None for
-                        col in forecast_income.columns]
-                },
-                'Balance Sheet': {
-                    'Total Assets': [
-                        forecast_balance.loc['Total Assets', col] if 'Total Assets' in forecast_balance.index else None
-                        for col in forecast_balance.columns],
-                    'Total Liabilities': [forecast_balance.loc[
-                                              'Total Liabilities', col] if 'Total Liabilities' in forecast_balance.index else None
-                                          for col in forecast_balance.columns],
-                    'Stockholder Equity': [forecast_balance.loc[
-                                               'Total Stockholder Equity', col] if 'Total Stockholder Equity' in forecast_balance.index else None
-                                           for col in forecast_balance.columns]
-                },
-                'Cash Flow': {
-                    'Operating Cash Flow': [forecast_cash_flow.loc[
-                                                'Operating Cash Flow', col] if 'Operating Cash Flow' in forecast_cash_flow.index else None
-                                            for col in forecast_cash_flow.columns],
-                    'CapEx': [forecast_cash_flow.loc[
-                                  'Capital Expenditure', col] if 'Capital Expenditure' in forecast_cash_flow.index else None
-                              for col in forecast_cash_flow.columns],
-                    'Free Cash Flow': [forecast_cash_flow.loc[
-                                           'Free Cash Flow', col] if 'Free Cash Flow' in forecast_cash_flow.index else None
-                                       for col in forecast_cash_flow.columns]
-                }
-            }
+            # Extract key asset and liability categories
+            total_assets = latest_balance.get('Total Assets')
+            total_liabilities = latest_balance.get('Total Liabilities Net Minority Interest')
+
+            if total_assets is None or total_liabilities is None:
+                raise ValueError("Missing total assets or liabilities data")
+
+            # Calculate book value (net asset value)
+            book_value = total_assets - total_liabilities
+
+            # Calculate book value per share
+            if shares_outstanding is not None and shares_outstanding > 0:
+                book_value_per_share = book_value / shares_outstanding
+            else:
+                # Estimate shares outstanding from market data
+                current_price = market_data.get('share_price')
+                market_cap = market_data.get('market_cap')
+
+                if current_price and market_cap and current_price > 0:
+                    estimated_shares = market_cap / current_price
+                    book_value_per_share = book_value / estimated_shares
+                else:
+                    raise ValueError("Cannot determine shares outstanding for per-share valuation")
+
+            # Apply sector-specific adjustments to book value
+            adjusted_book_value, adjustment_factors = self._apply_asset_adjustments(latest_balance, sector)
+
+            # Calculate adjusted book value per share
+            adjusted_book_value_per_share = adjusted_book_value / shares_outstanding if shares_outstanding else None
+
+            # Calculate price-to-book ratio
+            current_price = market_data.get('share_price')
+            if current_price and book_value_per_share:
+                price_to_book = current_price / book_value_per_share
+            else:
+                price_to_book = None
+
+            # Calculate adjusted price-to-book ratio
+            if current_price and adjusted_book_value_per_share:
+                adjusted_price_to_book = current_price / adjusted_book_value_per_share
+            else:
+                adjusted_price_to_book = None
+
+            # Apply margin of safety
+            # For asset-based valuations, often use adjusted book value as the base
+            params = self._get_dcf_parameters(sector)
+            safety_margin = params['default_margin_of_safety'] * 0.8  # Typically lower for asset-based valuations
+            conservative_value = adjusted_book_value_per_share * (
+                        1 - safety_margin) if adjusted_book_value_per_share else None
 
             return {
-                'income_statement': forecast_income,
-                'balance_sheet': forecast_balance,
-                'cash_flow': forecast_cash_flow,
-                'fcf': forecasted_fcf,
-                'summary': summary
+                'company': ticker,
+                'method': 'asset_based_valuation',
+                'book_value': book_value,
+                'book_value_per_share': book_value_per_share,
+                'adjusted_book_value': adjusted_book_value,
+                'adjusted_book_value_per_share': adjusted_book_value_per_share,
+                'price_to_book': price_to_book,
+                'adjusted_price_to_book': adjusted_price_to_book,
+                'current_price': current_price,
+                'conservative_value': conservative_value,
+                'safety_margin': safety_margin,
+                'adjustment_factors': adjustment_factors,
+                'sector': sector
             }
 
         except Exception as e:
-            logger.error(f"Error in financial forecasting: {e}")
-            # Return a minimal forecast with only FCF if full forecast fails
+            logger.error(f"Error in asset-based valuation for {ticker}: {e}")
             return {
-                'income_statement': pd.DataFrame(),
-                'balance_sheet': pd.DataFrame(),
-                'cash_flow': pd.DataFrame(),
-                'fcf': [],
-                'summary': {}
+                'company': ticker,
+                'method': 'asset_based_valuation',
+                'book_value_per_share': None,
+                'adjusted_book_value_per_share': None,
+                'error': str(e)
             }
+
+    def _apply_asset_adjustments(self, balance: pd.Series, sector: str = None) -> Tuple[float, Dict[str, float]]:
+        """
+        Apply adjustments to balance sheet items to get a more accurate asset value
+
+        Different assets may need to be marked up or down from their book value:
+        - Cash and cash equivalents: typically no adjustment needed
+        - Inventory: may need discounting due to obsolescence risk
+        - Real estate: often undervalued on balance sheets (historical cost)
+        - Intangible assets: may be overvalued or undervalued
+
+        Args:
+            balance: Balance sheet data as pandas Series
+            sector: Company sector for sector-specific adjustments
+
+        Returns:
+            Tuple of (adjusted book value, dictionary of adjustment factors)
+        """
+        # Start with unadjusted total assets and liabilities
+        total_assets = balance.get('Total Assets', 0)
+        total_liabilities = balance.get('Total Liabilities Net Minority Interest', 0)
+
+        # Initialize adjustments dictionary
+        adjustments = {}
+        adjustment_factors = {}
+
+        # Cash and short-term investments (typically no adjustment)
+        cash = balance.get('Cash and Cash Equivalents', 0)
+        short_term_investments = balance.get('Short Term Investments', 0)
+        adjustments['Cash and Investments'] = cash + short_term_investments
+        adjustment_factors['Cash and Investments'] = 1.0
+
+        # Accounts Receivable (typically discounted)
+        receivables = balance.get('Net Receivables', 0)
+        ar_factor = 0.9  # 10% discount for potentially uncollectable accounts
+        adjustments['Receivables'] = receivables * ar_factor
+        adjustment_factors['Receivables'] = ar_factor
+
+        # Inventory (discount varies by sector)
+        inventory = balance.get('Inventory', 0)
+        if sector == 'Technology':
+            inv_factor = 0.7  # Higher obsolescence risk
+        elif sector == 'Consumer Discretionary':
+            inv_factor = 0.75  # Fashion changes, trends
+        elif sector == 'Consumer Staples':
+            inv_factor = 0.9  # Lower obsolescence
+        else:
+            inv_factor = 0.8  # Default
+        adjustments['Inventory'] = inventory * inv_factor
+        adjustment_factors['Inventory'] = inv_factor
+
+        # Property, Plant & Equipment (often undervalued, especially land)
+        ppe = balance.get('Property Plant and Equipment', 0)
+        if sector == 'Real Estate':
+            ppe_factor = 1.5  # Significantly undervalued often
+        elif sector in ['Industrials', 'Energy', 'Materials']:
+            ppe_factor = 1.2  # Typically undervalued
+        else:
+            ppe_factor = 1.0  # Default - no adjustment
+        adjustments['PPE'] = ppe * ppe_factor
+        adjustment_factors['PPE'] = ppe_factor
+
+        # Intangible Assets (highly variable)
+        intangibles = balance.get('Intangible Assets', 0)
+        goodwill = balance.get('Goodwill', 0)
+
+        if sector in ['Technology', 'Healthcare', 'Communication Services']:
+            # These sectors often have valuable IP and brand value
+            intangibles_factor = 1.2
+        elif sector in ['Consumer Staples', 'Consumer Discretionary']:
+            # These can have valuable brands
+            intangibles_factor = 1.1
+        else:
+            # More conservative for other sectors
+            intangibles_factor = 0.7
+
+        # Often goodwill is written off in conservative analysis
+        goodwill_factor = 0.0
+
+        adjustments['Intangibles'] = intangibles * intangibles_factor
+        adjustment_factors['Intangibles'] = intangibles_factor
+
+        adjustments['Goodwill'] = goodwill * goodwill_factor
+        adjustment_factors['Goodwill'] = goodwill_factor
+
+        # Other assets (miscellaneous, often discounted)
+        other_assets = balance.get('Other Assets', 0)
+        other_factor = 0.8
+        adjustments['Other Assets'] = other_assets * other_factor
+        adjustment_factors['Other Assets'] = other_factor
+
+        # Liabilities (typically taken at face value)
+        # But could adjust for off-balance sheet liabilities if data available
+        liability_factor = 1.0
+        adjustments['Liabilities'] = total_liabilities * liability_factor
+        adjustment_factors['Liabilities'] = liability_factor
+
+        # Calculate total adjusted assets
+        adjusted_assets = sum([adj for key, adj in adjustments.items() if key != 'Liabilities'])
+
+        # Calculate adjusted book value
+        adjusted_book_value = adjusted_assets - adjustments['Liabilities']
+
+        return adjusted_book_value, adjustment_factors
 
 
 class SectorSpecificDCF(AdvancedDCFValuation):
     """
     DCF valuation models with sector-specific adjustments and techniques.
     Each sector may require different approaches to forecasting, risk assessment, and valuation.
+
+    This class provides specialized DCF implementations for different industry sectors,
+    as different sectors have unique financial characteristics, growth patterns,
+    and value drivers that require customized valuation approaches.
     """
 
     def __init__(self, data_loader: Optional[DataLoader] = None):
         """Initialize the sector-specific DCF valuation class"""
         super().__init__(data_loader)
-        logger.info("Initialized SectorSpecificDCF")
+
+        # Load sector-specific metrics and benchmarks from config
+        self.sector_metrics = SECTOR_METRICS
+
+        logger.info("Initialized SectorSpecificDCF with sector-specific parameters")
 
     def get_sector_dcf_model(self, sector: str) -> str:
-        """Get the appropriate DCF model type for a given sector"""
+        """
+        Get the appropriate DCF model type for a given sector
+
+        Different sectors require different valuation approaches due to varying
+        business models, growth patterns, and financial characteristics.
+
+        Args:
+            sector: Industry sector name
+
+        Returns:
+            String identifying the most appropriate DCF model type
+        """
+        # Map sectors to the most appropriate valuation models
+        # This mapping is based on industry best practices as documented in the PDF materials
         sector_model_mapping = {
-            "Technology": "multi_stage_dcf",
-            "Healthcare": "multi_stage_dcf",
-            "Financials": "dividend_discount",
-            "Consumer Discretionary": "forecast_driven_dcf",
-            "Consumer Staples": "forecast_driven_dcf",
-            "Energy": "scenario_analysis_dcf",
-            "Industrials": "forecast_driven_dcf",
-            "Materials": "scenario_analysis_dcf",
-            "Real Estate": "asset_based_nav",
-            "Communication Services": "multi_stage_dcf",
-            "Utilities": "dividend_discount"
+            "Technology": "multi_stage_dcf",  # Tech needs multi-stage due to high initial growth
+            "Healthcare": "multi_stage_dcf",  # Healthcare has longer growth runways
+            "Financials": "dividend_discount",  # Banks and financials are better valued with DDM
+            "Consumer Discretionary": "forecast_driven_dcf",  # Retail benefits from detailed forecasting
+            "Consumer Staples": "forecast_driven_dcf",  # Stable companies with predictable metrics
+            "Energy": "scenario_analysis_dcf",  # Energy needs scenarios due to commodity exposure
+            "Industrials": "forecast_driven_dcf",  # Manufacturing benefits from detailed forecasts
+            "Materials": "scenario_analysis_dcf",  # Materials are cyclical and need scenario analysis
+            "Real Estate": "asset_based_nav",  # REITs are primarily valued on asset value
+            "Communication Services": "multi_stage_dcf",  # Telecom/media has long-term contracts
+            "Utilities": "dividend_discount"  # Utilities are mature, dividend-focused companies
         }
 
-        return sector_model_mapping.get(sector, "multi_stage_dcf")
+        # Try exact match
+        model = sector_model_mapping.get(sector)
+        if model:
+            return model
+
+        # Try partial match
+        if sector:
+            for sector_key, model_type in sector_model_mapping.items():
+                if sector.lower() in sector_key.lower() or sector_key.lower() in sector.lower():
+                    return model_type
+
+        # Default to multi-stage DCF as the most versatile approach
+        return "multi_stage_dcf"
 
     def apply_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None,
                          sector: str = None) -> Dict[str, Any]:
@@ -1358,27 +1081,8 @@ class SectorSpecificDCF(AdvancedDCFValuation):
 
                 return dividend_result
             elif model_type == "asset_based_nav":
-                # For real estate, use asset-based approach with DCF as supplement
-                asset_result = self.asset_based_valuation(ticker, financial_data, sector)
-                dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, sector)
-
-                # Blend the two approaches (60% asset-based, 40% DCF for real estate)
-                if 'adjusted_book_value_per_share' in asset_result and asset_result['adjusted_book_value_per_share'] and \
-                        'value_per_share' in dcf_result and dcf_result['value_per_share']:
-                    blended_value = asset_result['adjusted_book_value_per_share'] * 0.6 + dcf_result[
-                        'value_per_share'] * 0.4
-
-                    asset_result['dcf_value_per_share'] = dcf_result['value_per_share']
-                    asset_result['blended_value_per_share'] = blended_value
-
-                    # Add key DCF parameters to result
-                    asset_result['dcf_parameters'] = {
-                        'discount_rate': dcf_result.get('discount_rate'),
-                        'initial_growth_rate': dcf_result.get('initial_growth_rate'),
-                        'terminal_growth': dcf_result.get('terminal_growth')
-                    }
-
-                return asset_result
+                # For real estate, use specialized real estate DCF model
+                return self.real_estate_dcf(ticker, financial_data)
             else:
                 # Default to multi-stage DCF
                 return self.multi_stage_dcf_valuation(ticker, financial_data, sector)
@@ -1389,7 +1093,23 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             return self.multi_stage_dcf_valuation(ticker, financial_data, sector)
 
     def financial_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Specialized DCF for financial sector companies (banks, insurance, etc.)"""
+        """
+        Specialized DCF for financial sector companies (banks, insurance, etc.)
+
+        Financial companies have unique characteristics requiring adjustments to standard DCF:
+        1. FCF is not as relevant due to regulated capital requirements
+        2. Dividend Discount Model often works better for banks
+        3. Profitability is tied to interest rates and credit quality
+        4. Return on Equity (ROE) is a critical driver of value
+        5. Balance sheet growth is a key factor unlike other sectors
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with financial sector DCF valuation results
+        """
         try:
             # Load financial data if not provided
             if financial_data is None:
@@ -1527,7 +1247,22 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             return self.dividend_discount_valuation(ticker, financial_data, "Financials")
 
     def tech_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Specialized DCF for technology sector companies"""
+        """
+        Specialized DCF for technology sector companies
+
+        Technology companies have unique characteristics that require adjustments to standard DCF:
+        1. Higher focus on growth and reinvestment
+        2. R&D is treated more as an investment than an expense
+        3. Longer growth runway but higher uncertainty
+        4. Often valued using alternative metrics like ARR, CAC, LTV
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with technology sector DCF valuation results
+        """
         try:
             # Load financial data if not provided
             if financial_data is None:
@@ -1724,19 +1459,73 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             return 0.10  # Default 10% growth for tech
 
     def energy_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Specialized DCF for energy sector companies"""
-        try:
-            # For energy companies:
-            # 1. Highly cyclical cash flows
-            # 2. Commodity price sensitivity
-            # 3. High capital intensity
+        """
+        Specialized DCF for energy sector companies
 
-            # Use scenario analysis DCF which is better for cyclical industries
+        Energy companies have unique characteristics requiring adjustments to standard DCF:
+        1. Highly cyclical cash flows tied to commodity prices
+        2. Reserve replacement is critical to long-term valuation
+        3. High capital intensity and maintenance capex requirements
+        4. Increasing regulatory and environmental pressures
+        5. Different valuation metrics like EV/EBITDA, P/CF, and reserve valuations
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with energy sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For energy companies, scenario analysis works better due to cyclicality
             scenario_analysis = self.scenario_analysis_dcf(ticker, financial_data, "Energy")
 
-            # Enhance with industry-specific considerations
-            # Note: In a full implementation, we would adjust for oil price scenarios,
-            # reserves, and regulatory changes
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Try to enhance with energy-specific metrics
+            energy_metrics = {}
+
+            # Calculate reserve life index if data available
+            # Note: In a real implementation, this would come from company reports
+            # As we don't have reserve data, we estimate based on available info
+            energy_metrics['reserve_life_index'] = None
+            energy_metrics['reserve_replacement_ratio'] = None
+
+            # Calculate P/CF (Price to Cash Flow) - important for energy companies
+            try:
+                market_data = financial_data.get('market_data', {})
+                market_cap = market_data.get('market_cap')
+
+                if market_cap and 'Operating Cash Flow' in cash_flow.index:
+                    operating_cf = cash_flow.iloc[:, 0]['Operating Cash Flow']
+                    if operating_cf > 0:
+                        energy_metrics['price_to_cash_flow'] = market_cap / operating_cf
+            except:
+                energy_metrics['price_to_cash_flow'] = None
+
+            # Enhance production costs if available
+            energy_metrics['production_cost_per_boe'] = None
+
+            # Add supplementary metrics to the result
+            scenario_analysis['energy_specific_metrics'] = energy_metrics
+
+            # Add oil price sensitivity analysis
+            # Simplified approach: estimate how valuation changes with oil price changes
+            oil_price_sensitivity = {
+                'base_case_oil_price': 70,  # Assumed base case oil price
+                'upside_case': scenario_analysis['scenarios']['bullish']['value_per_share'],
+                'base_case': scenario_analysis['scenarios']['base']['value_per_share'],
+                'downside_case': scenario_analysis['scenarios']['bearish']['value_per_share'],
+            }
+
+            scenario_analysis['oil_price_sensitivity'] = oil_price_sensitivity
 
             return scenario_analysis
 
@@ -1745,18 +1534,80 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             return self.scenario_analysis_dcf(ticker, financial_data, "Energy")
 
     def real_estate_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Specialized DCF for real estate companies and REITs"""
+        """
+        Specialized DCF for real estate companies and REITs
+
+        Real estate companies have unique characteristics requiring adjustments to standard DCF:
+        1. NAV (Net Asset Value) is a critical valuation method
+        2. FFO (Funds From Operations) is preferred over EPS
+        3. Cap rates determine property values and vary by property type
+        4. Recurring and predictable cash flows from leases
+        5. Different accounting treatment with large depreciation charges
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with real estate DCF valuation results
+        """
         try:
-            # For real estate:
-            # 1. NAV (Net Asset Value) is critical
-            # 2. FFO (Funds From Operations) instead of EPS
-            # 3. Cap rates are important
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
 
-            # Use asset based valuation
+            # For real estate, we need both NAV and income approaches
             asset_based = self.asset_based_valuation(ticker, financial_data, "Real Estate")
-
-            # Also calculate DCF
             dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, "Real Estate")
+
+            # Extract key financial statements for REIT-specific metrics
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+
+            # Calculate FFO (Funds From Operations) - key REIT metric
+            # FFO = Net Income + Depreciation - Gains on Sale of Properties
+            reit_metrics = {}
+
+            if income_stmt is not None and not income_stmt.empty:
+                latest_income = income_stmt.iloc[:, 0]
+
+                net_income = latest_income.get('Net Income', 0)
+                depreciation = latest_income.get('Depreciation & Amortization', 0)
+
+                # We don't typically have gains data, so it's a simplified FFO calculation
+                ffo = net_income + depreciation
+
+                # Calculate FFO per share
+                shares_outstanding = financial_data.get('market_data', {}).get('shares_outstanding')
+                if shares_outstanding and shares_outstanding > 0:
+                    ffo_per_share = ffo / shares_outstanding
+                    reit_metrics['ffo_per_share'] = ffo_per_share
+
+                    # Calculate P/FFO (Price to FFO) - important REIT valuation metric
+                    current_price = financial_data.get('market_data', {}).get('share_price')
+                    if current_price and ffo_per_share > 0:
+                        p_ffo = current_price / ffo_per_share
+                        reit_metrics['p_ffo'] = p_ffo
+
+                # Calculate FFO yield
+                market_cap = financial_data.get('market_data', {}).get('market_cap')
+                if market_cap and market_cap > 0 and ffo > 0:
+                    ffo_yield = ffo / market_cap
+                    reit_metrics['ffo_yield'] = ffo_yield
+
+            # Add occupancy rate and lease metrics if available
+            # (These would normally come from company reports)
+            reit_metrics['occupancy_rate'] = None
+            reit_metrics['weighted_avg_lease_term'] = None
+
+            # Estimate cap rate (simplified)
+            if 'ffo_yield' in reit_metrics:
+                # Cap rate is often related to FFO yield, but typically higher
+                estimated_cap_rate = min(reit_metrics['ffo_yield'] * 1.2, 0.08)
+                reit_metrics['estimated_cap_rate'] = estimated_cap_rate
+
+            # Add REIT-specific metrics to asset-based result
+            asset_based['reit_metrics'] = reit_metrics
 
             # Blend the approaches - real estate often valued via blend of asset value and income value
             if 'adjusted_book_value_per_share' in asset_based and asset_based['adjusted_book_value_per_share'] and \
@@ -1767,9 +1618,1271 @@ class SectorSpecificDCF(AdvancedDCFValuation):
                 asset_based['dcf_value_per_share'] = dcf_result['value_per_share']
                 asset_based['blended_value_per_share'] = blended_value
 
+                # If we have P/FFO, also calculate FFO-based value
+                if 'p_ffo' in reit_metrics and 'ffo_per_share' in reit_metrics:
+                    # Use sector average P/FFO (typically 12-18)
+                    sector_avg_p_ffo = 15
+                    ffo_based_value = reit_metrics['ffo_per_share'] * sector_avg_p_ffo
+                    asset_based['ffo_based_value'] = ffo_based_value
+
+                    # Include FFO-based value in the blend (50% NAV, 30% DCF, 20% FFO)
+                    enhanced_blend = (
+                            asset_based['adjusted_book_value_per_share'] * 0.5 +
+                            dcf_result['value_per_share'] * 0.3 +
+                            ffo_based_value * 0.2
+                    )
+
+                    asset_based['enhanced_blended_value'] = enhanced_blend
+
             return asset_based
 
         except Exception as e:
             logger.error(f"Error in real estate DCF for {ticker}: {e}")
             # Return asset-based valuation as fallback
             return self.asset_based_valuation(ticker, financial_data, "Real Estate")
+
+    def consumer_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None,
+                            discretionary: bool = True) -> Dict[str, Any]:
+        """
+        Specialized DCF for consumer sector companies (discretionary vs. staples)
+
+        Consumer companies have unique characteristics requiring adjustments to standard DCF:
+        1. Consumer Discretionary: More cyclical, higher growth potential, but more sensitive to economic cycles
+        2. Consumer Staples: More defensive, lower growth, stable margins and cash flows
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+            discretionary: True for Consumer Discretionary, False for Consumer Staples
+
+        Returns:
+            Dictionary with consumer sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # Set sector based on discretionary flag
+            sector = "Consumer Discretionary" if discretionary else "Consumer Staples"
+
+            # For consumer companies, forecast-driven DCF works best
+            return self.forecast_driven_dcf(ticker, financial_data, sector)
+
+        except Exception as e:
+            logger.error(f"Error in consumer sector DCF for {ticker}: {e}")
+            return self.forecast_driven_dcf(ticker, financial_data, sector)
+
+    def utilities_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Specialized DCF for utilities sector companies
+
+        Utilities companies have unique characteristics requiring adjustments to standard DCF:
+        1. Highly regulated with stable and predictable cash flows
+        2. High capital expenditures with long asset lifespans
+        3. Dividend-focused with high payout ratios
+        4. Growth tied to regulatory approvals and rate cases
+        5. Sensitivity to interest rates due to capital structure
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with utilities sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For utilities, dividend discount model is often most appropriate
+            dividend_result = self.dividend_discount_valuation(ticker, financial_data, "Utilities")
+
+            # If the company doesn't pay dividends, fall back to standard DCF
+            if 'error' in dividend_result and 'dividend' in dividend_result['error'].lower():
+                logger.info(f"Falling back to multi-stage DCF for {ticker} as dividend model failed")
+                dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, "Utilities")
+            else:
+                # Use both DDM and DCF for comparison
+                dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, "Utilities")
+
+                # Combine results - for utilities, DDM is often more reliable
+                if 'value_per_share' in dividend_result and 'value_per_share' in dcf_result:
+                    # Weighted average (60% DDM, 40% DCF for utilities)
+                    if dividend_result['value_per_share'] is not None and dcf_result['value_per_share'] is not None:
+                        combined_value = (
+                                dividend_result['value_per_share'] * 0.6 +
+                                dcf_result['value_per_share'] * 0.4
+                        )
+                        dcf_result['combined_value_per_share'] = combined_value
+                        dcf_result['ddm_value_per_share'] = dividend_result['value_per_share']
+
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Calculate utilities-specific metrics
+            utilities_metrics = {}
+
+            # Dividend metrics (critical for utilities)
+            if cash_flow is not None and income_stmt is not None and not cash_flow.empty and not income_stmt.empty:
+                latest_cash_flow = cash_flow.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Dividends Paid' in latest_cash_flow.index and 'Net Income' in latest_income.index:
+                    dividend_paid = abs(latest_cash_flow['Dividends Paid'])
+                    net_income = latest_income['Net Income']
+
+                    if net_income > 0:
+                        payout_ratio = dividend_paid / net_income
+                        utilities_metrics['dividend_payout_ratio'] = payout_ratio
+
+                        # Get market data
+                        market_data = financial_data.get('market_data', {})
+                        market_cap = market_data.get('market_cap')
+
+                        if market_cap and market_cap > 0:
+                            dividend_yield = dividend_paid / market_cap
+                            utilities_metrics['dividend_yield'] = dividend_yield
+
+            # Regulatory metrics - utilities are heavily regulated
+            # Allowed return on equity (ROE) is often set by regulators
+            if income_stmt is not None and balance_sheet is not None and not income_stmt.empty and not balance_sheet.empty:
+                latest_income = income_stmt.iloc[:, 0]
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                if 'Net Income' in latest_income.index and 'Total Stockholder Equity' in latest_balance.index:
+                    net_income = latest_income['Net Income']
+                    equity = latest_balance['Total Stockholder Equity']
+
+                    if equity > 0:
+                        actual_roe = net_income / equity
+                        utilities_metrics['actual_roe'] = actual_roe
+
+                        # Typical allowed ROE for utilities is 9-11%
+                        allowed_roe = 0.1  # 10% is a common regulatory approved ROE
+                        utilities_metrics['estimated_allowed_roe'] = allowed_roe
+
+                        # ROE gap (difference between actual and allowed)
+                        roe_gap = actual_roe - allowed_roe
+                        utilities_metrics['roe_gap'] = roe_gap
+
+            # Interest rate sensitivity
+            # Utilities typically have high debt levels
+            if balance_sheet is not None and not balance_sheet.empty:
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                if 'Total Debt' in latest_balance.index and 'Total Assets' in latest_balance.index:
+                    debt_to_assets = latest_balance['Total Debt'] / latest_balance['Total Assets']
+                    utilities_metrics['debt_to_assets'] = debt_to_assets
+
+                    # Interest rate sensitivity (higher debt = higher sensitivity)
+                    # Simplified measure - actual models would be more complex
+                    if debt_to_assets > 0.6:
+                        interest_rate_sensitivity = "High"
+                    elif debt_to_assets > 0.4:
+                        interest_rate_sensitivity = "Medium"
+                    else:
+                        interest_rate_sensitivity = "Low"
+
+                    utilities_metrics['interest_rate_sensitivity'] = interest_rate_sensitivity
+
+                    # Impact of 1% interest rate increase
+                    if 'Total Debt' in latest_balance.index and income_stmt is not None and 'Net Income' in income_stmt.iloc[
+                                                                                                            :,
+                                                                                                            0].index:
+                        debt = latest_balance['Total Debt']
+                        net_income = income_stmt.iloc[:, 0]['Net Income']
+
+                        # Simplified calculation - assumes all debt reprices
+                        interest_impact = debt * 0.01  # 1% of debt
+                        after_tax_impact = interest_impact * 0.75  # Assuming 25% tax rate
+
+                        if net_income > 0:
+                            percent_impact = after_tax_impact / net_income
+                            utilities_metrics['interest_rate_impact'] = percent_impact
+
+            # Rate base growth (key driver for utilities)
+            if balance_sheet is not None and balance_sheet.shape[1] >= 2:
+                if 'Property Plant and Equipment' in balance_sheet.index:
+                    current_ppe = balance_sheet.iloc[:, 0]['Property Plant and Equipment']
+                    prev_ppe = balance_sheet.iloc[:, 1]['Property Plant and Equipment']
+
+                    if prev_ppe > 0:
+                        rate_base_growth = (current_ppe / prev_ppe) - 1
+                        utilities_metrics['rate_base_growth'] = rate_base_growth
+
+            # Capex intensity
+            if cash_flow is not None and income_stmt is not None and not cash_flow.empty and not income_stmt.empty:
+                latest_cash_flow = cash_flow.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Capital Expenditure' in latest_cash_flow.index and 'Total Revenue' in latest_income.index:
+                    capex = abs(latest_cash_flow['Capital Expenditure'])
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        capex_to_revenue = capex / revenue
+                        utilities_metrics['capex_to_revenue'] = capex_to_revenue
+
+                        # Capex to Depreciation ratio
+                        if 'Depreciation & Amortization' in latest_income.index:
+                            depreciation = latest_income['Depreciation & Amortization']
+
+                            if depreciation > 0:
+                                capex_to_depreciation = capex / depreciation
+                                utilities_metrics['capex_to_depreciation'] = capex_to_depreciation
+
+                                # Classify capex strategy
+                                if capex_to_depreciation > 1.5:
+                                    utilities_metrics['capex_strategy'] = "Heavy investment/growth"
+                                elif capex_to_depreciation > 1.1:
+                                    utilities_metrics['capex_strategy'] = "Moderate investment"
+                                elif capex_to_depreciation > 0.9:
+                                    utilities_metrics['capex_strategy'] = "Maintenance capex"
+                                else:
+                                    utilities_metrics['capex_strategy'] = "Underinvestment"
+
+            # Add utilities metrics to the result
+            dcf_result['utilities_metrics'] = utilities_metrics
+
+            return dcf_result
+
+        except Exception as e:
+            logger.error(f"Error in utilities sector DCF for {ticker}: {e}")
+            return self.multi_stage_dcf_valuation(ticker, financial_data, "Utilities")
+
+    def relative_valuation(self, ticker: str, financial_data: Dict[str, Any] = None,
+                           sector: str = None, peers: List[str] = None) -> Dict[str, Any]:
+        """
+        Perform a relative valuation based on market multiples
+
+        This model values a company based on how similar companies are valued
+        in the market using various multiples like P/E, EV/EBITDA, etc.
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+            sector: Company sector for sector-specific adjustments
+            peers: List of peer company tickers (if None, will be determined automatically)
+
+        Returns:
+            Dictionary with relative valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # Determine sector if not provided
+            if sector is None:
+                company_info = financial_data.get('company_info', {})
+                sector = company_info.get('sector')
+
+            # Get market data
+            market_data = financial_data.get('market_data', {})
+            shares_outstanding = market_data.get('shares_outstanding')
+
+            # Extract key financial metrics
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            if income_stmt is None or balance_sheet is None:
+                raise ValueError("Missing required financial statements for relative valuation")
+
+            # Get latest financial data
+            latest_income = income_stmt.iloc[:, 0]
+            latest_balance = balance_sheet.iloc[:, 0]
+
+            # Calculate key metrics for this company
+            company_metrics = {}
+
+            # Get basic metrics
+            if 'Total Revenue' in latest_income.index:
+                company_metrics['revenue'] = latest_income['Total Revenue']
+
+            if 'Net Income' in latest_income.index:
+                company_metrics['net_income'] = latest_income['Net Income']
+
+                # Calculate EPS if shares outstanding available
+                if shares_outstanding and shares_outstanding > 0:
+                    company_metrics['eps'] = company_metrics['net_income'] / shares_outstanding
+
+            if 'EBITDA' in latest_income.index:
+                company_metrics['ebitda'] = latest_income['EBITDA']
+            elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
+                # Estimate EBITDA if not directly available
+                company_metrics['ebitda'] = latest_income['Operating Income'] + latest_income[
+                    'Depreciation & Amortization']
+
+            if 'Total Assets' in latest_balance.index:
+                company_metrics['total_assets'] = latest_balance['Total Assets']
+
+            if 'Total Stockholder Equity' in latest_balance.index:
+                company_metrics['book_value'] = latest_balance['Total Stockholder Equity']
+
+                # Calculate BVPS if shares outstanding available
+                if shares_outstanding and shares_outstanding > 0:
+                    company_metrics['bvps'] = company_metrics['book_value'] / shares_outstanding
+
+            # Calculate Enterprise Value
+            if market_data.get('market_cap') is not None:
+                market_cap = market_data['market_cap']
+                company_metrics['market_cap'] = market_cap
+
+                # Calculate EV
+                total_debt = latest_balance.get('Total Debt', 0)
+                cash = latest_balance.get('Cash and Cash Equivalents', 0)
+                enterprise_value = market_cap + total_debt - cash
+                company_metrics['enterprise_value'] = enterprise_value
+
+                # Calculate multiples
+                if 'revenue' in company_metrics and company_metrics['revenue'] > 0:
+                    company_metrics['ps_ratio'] = market_cap / company_metrics['revenue']
+                    company_metrics['ev_to_revenue'] = enterprise_value / company_metrics['revenue']
+
+                if 'net_income' in company_metrics and company_metrics['net_income'] > 0:
+                    company_metrics['pe_ratio'] = market_cap / company_metrics['net_income']
+
+                if 'ebitda' in company_metrics and company_metrics['ebitda'] > 0:
+                    company_metrics['ev_to_ebitda'] = enterprise_value / company_metrics['ebitda']
+
+                if 'book_value' in company_metrics and company_metrics['book_value'] > 0:
+                    company_metrics['pb_ratio'] = market_cap / company_metrics['book_value']
+
+            # Get sector multiples from benchmark data
+            sector_multiples = self._get_sector_multiples(sector)
+
+            # If peers are provided, get their multiples
+            peer_multiples = {}
+            if peers and self.data_loader:
+                peer_data = {}
+                for peer in peers:
+                    try:
+                        # Get peer data
+                        peer_financial_data = self._load_financial_data(peer)
+                        peer_data[peer] = peer_financial_data
+                    except Exception as e:
+                        logger.warning(f"Error loading data for peer {peer}: {e}")
+                        continue
+
+                # Calculate multiples for peers
+                for peer, data in peer_data.items():
+                    peer_multiples[peer] = self._calculate_multiples(data)
+
+            # Calculate valuations based on different multiples
+            valuations = {}
+
+            # P/E based valuation
+            if 'net_income' in company_metrics and company_metrics['net_income'] > 0:
+                if sector_multiples and 'median_pe' in sector_multiples:
+                    pe_value = company_metrics['net_income'] * sector_multiples['median_pe']
+                    valuations['pe_sector_median'] = pe_value / shares_outstanding if shares_outstanding else None
+
+                # Peer average P/E
+                peer_pe_values = [p.get('pe_ratio') for p in peer_multiples.values() if p.get('pe_ratio')]
+                if peer_pe_values:
+                    peer_avg_pe = sum(peer_pe_values) / len(peer_pe_values)
+                    pe_value = company_metrics['net_income'] * peer_avg_pe
+                    valuations['pe_peer_average'] = pe_value / shares_outstanding if shares_outstanding else None
+
+            # EV/EBITDA based valuation
+            if 'ebitda' in company_metrics and company_metrics['ebitda'] > 0:
+                if sector_multiples and 'median_ev_to_ebitda' in sector_multiples:
+                    ev_value = company_metrics['ebitda'] * sector_multiples['median_ev_to_ebitda']
+
+                    # Adjust for debt and cash
+                    total_debt = latest_balance.get('Total Debt', 0)
+                    cash = latest_balance.get('Cash and Cash Equivalents', 0)
+                    equity_value = ev_value - total_debt + cash
+
+                    valuations[
+                        'ev_ebitda_sector_median'] = equity_value / shares_outstanding if shares_outstanding else None
+
+                # Peer average EV/EBITDA
+                peer_ev_ebitda_values = [p.get('ev_to_ebitda') for p in peer_multiples.values() if
+                                         p.get('ev_to_ebitda')]
+                if peer_ev_ebitda_values:
+                    peer_avg_ev_ebitda = sum(peer_ev_ebitda_values) / len(peer_ev_ebitda_values)
+                    ev_value = company_metrics['ebitda'] * peer_avg_ev_ebitda
+
+                    # Adjust for debt and cash
+                    total_debt = latest_balance.get('Total Debt', 0)
+                    cash = latest_balance.get('Cash and Cash Equivalents', 0)
+                    equity_value = ev_value - total_debt + cash
+
+                    valuations[
+                        'ev_ebitda_peer_average'] = equity_value / shares_outstanding if shares_outstanding else None
+
+            # P/S based valuation
+            if 'revenue' in company_metrics and company_metrics['revenue'] > 0:
+                if sector_multiples and 'median_ps' in sector_multiples:
+                    ps_value = company_metrics['revenue'] * sector_multiples['median_ps']
+                    valuations['ps_sector_median'] = ps_value / shares_outstanding if shares_outstanding else None
+
+                # Peer average P/S
+                peer_ps_values = [p.get('ps_ratio') for p in peer_multiples.values() if p.get('ps_ratio')]
+                if peer_ps_values:
+                    peer_avg_ps = sum(peer_ps_values) / len(peer_ps_values)
+                    ps_value = company_metrics['revenue'] * peer_avg_ps
+                    valuations['ps_peer_average'] = ps_value / shares_outstanding if shares_outstanding else None
+
+            # P/B based valuation
+            if 'book_value' in company_metrics and company_metrics['book_value'] > 0:
+                if sector_multiples and 'median_pb' in sector_multiples:
+                    pb_value = company_metrics['book_value'] * sector_multiples['median_pb']
+                    valuations['pb_sector_median'] = pb_value / shares_outstanding if shares_outstanding else None
+
+                # Peer average P/B
+                peer_pb_values = [p.get('pb_ratio') for p in peer_multiples.values() if p.get('pb_ratio')]
+                if peer_pb_values:
+                    peer_avg_pb = sum(peer_pb_values) / len(peer_pb_values)
+                    pb_value = company_metrics['book_value'] * peer_avg_pb
+                    valuations['pb_peer_average'] = pb_value / shares_outstanding if shares_outstanding else None
+
+            # Calculate weighted average valuation
+            # Weights depend on sector
+            if sector == "Financials":
+                weights = {
+                    'pe_sector_median': 0.2,
+                    'pe_peer_average': 0.2,
+                    'pb_sector_median': 0.3,
+                    'pb_peer_average': 0.3,
+                    'ev_ebitda_sector_median': 0.0,
+                    'ev_ebitda_peer_average': 0.0,
+                    'ps_sector_median': 0.0,
+                    'ps_peer_average': 0.0
+                }
+            elif sector == "Technology":
+                weights = {
+                    'pe_sector_median': 0.15,
+                    'pe_peer_average': 0.15,
+                    'ev_ebitda_sector_median': 0.2,
+                    'ev_ebitda_peer_average': 0.2,
+                    'ps_sector_median': 0.15,
+                    'ps_peer_average': 0.15,
+                    'pb_sector_median': 0.0,
+                    'pb_peer_average': 0.0
+                }
+            elif sector == "Real Estate":
+                weights = {
+                    'pe_sector_median': 0.0,
+                    'pe_peer_average': 0.0,
+                    'ev_ebitda_sector_median': 0.3,
+                    'ev_ebitda_peer_average': 0.3,
+                    'ps_sector_median': 0.0,
+                    'ps_peer_average': 0.0,
+                    'pb_sector_median': 0.2,
+                    'pb_peer_average': 0.2
+                }
+            else:
+                # Default weights
+                weights = {
+                    'pe_sector_median': 0.2,
+                    'pe_peer_average': 0.2,
+                    'ev_ebitda_sector_median': 0.2,
+                    'ev_ebitda_peer_average': 0.2,
+                    'ps_sector_median': 0.1,
+                    'ps_peer_average': 0.1,
+                    'pb_sector_median': 0.0,
+                    'pb_peer_average': 0.0
+                }
+
+            # Calculate weighted average
+            weighted_sum = 0
+            weight_sum = 0
+
+            for method, weight in weights.items():
+                if method in valuations and valuations[method] is not None:
+                    weighted_sum += valuations[method] * weight
+                    weight_sum += weight
+
+            if weight_sum > 0:
+                weighted_average = weighted_sum / weight_sum
+            else:
+                weighted_average = None
+
+            # Apply margin of safety
+            params = self._get_dcf_parameters(sector)
+            safety_margin = params['default_margin_of_safety']
+            conservative_value = weighted_average * (1 - safety_margin) if weighted_average else None
+
+            return {
+                'company': ticker,
+                'method': 'relative_valuation',
+                'company_metrics': company_metrics,
+                'sector_multiples': sector_multiples,
+                'peer_multiples': peer_multiples,
+                'valuations': valuations,
+                'weighted_average': weighted_average,
+                'conservative_value': conservative_value,
+                'safety_margin': safety_margin,
+                'sector': sector,
+                'peers': peers
+            }
+
+        except Exception as e:
+            logger.error(f"Error in relative valuation for {ticker}: {e}")
+            return {
+                'company': ticker,
+                'method': 'relative_valuation',
+                'weighted_average': None,
+                'conservative_value': None,
+                'error': str(e)
+            }
+
+    def _get_sector_multiples(self, sector: str) -> Dict[str, float]:
+        """Get median multiples for a given sector from benchmark data"""
+        try:
+            # This would typically come from a database or external source
+            # For simplicity, using hardcoded values based on typical ranges
+
+            sector_multiples = {
+                "Technology": {
+                    'median_pe': 25.0,
+                    'median_ps': 5.0,
+                    'median_pb': 5.0,
+                    'median_ev_to_ebitda': 15.0
+                },
+                "Financials": {
+                    'median_pe': 12.0,
+                    'median_ps': 3.0,
+                    'median_pb': 1.2,
+                    'median_ev_to_ebitda': 10.0
+                },
+                "Healthcare": {
+                    'median_pe': 20.0,
+                    'median_ps': 4.0,
+                    'median_pb': 4.0,
+                    'median_ev_to_ebitda': 12.0
+                },
+                "Consumer Discretionary": {
+                    'median_pe': 18.0,
+                    'median_ps': 1.5,
+                    'median_pb': 3.0,
+                    'median_ev_to_ebitda': 10.0
+                },
+                "Consumer Staples": {
+                    'median_pe': 20.0,
+                    'median_ps': 2.0,
+                    'median_pb': 4.5,
+                    'median_ev_to_ebitda': 12.0
+                },
+                "Energy": {
+                    'median_pe': 10.0,
+                    'median_ps': 1.0,
+                    'median_pb': 1.5,
+                    'median_ev_to_ebitda': 6.0
+                },
+                "Industrials": {
+                    'median_pe': 16.0,
+                    'median_ps': 1.5,
+                    'median_pb': 3.0,
+                    'median_ev_to_ebitda': 9.0
+                },
+                "Materials": {
+                    'median_pe': 14.0,
+                    'median_ps': 1.3,
+                    'median_pb': 2.0,
+                    'median_ev_to_ebitda': 8.0
+                },
+                "Real Estate": {
+                    'median_pe': 15.0,
+                    'median_ps': 6.0,
+                    'median_pb': 1.8,
+                    'median_ev_to_ebitda': 18.0
+                },
+                "Communication Services": {
+                    'median_pe': 18.0,
+                    'median_ps': 3.0,
+                    'median_pb': 3.5,
+                    'median_ev_to_ebitda': 8.0
+                },
+                "Utilities": {
+                    'median_pe': 16.0,
+                    'median_ps': 2.5,
+                    'median_pb': 1.8,
+                    'median_ev_to_ebitda': 10.0
+                }
+            }
+
+            # Return multiples for the specified sector, or default if not found
+            return sector_multiples.get(sector, {
+                'median_pe': 15.0,
+                'median_ps': 2.0,
+                'median_pb': 2.5,
+                'median_ev_to_ebitda': 10.0
+            })
+
+        except Exception as e:
+            logger.error(f"Error getting sector multiples for {sector}: {e}")
+            return {}
+
+    def _calculate_multiples(self, financial_data: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate key multiples for a company based on its financial data"""
+        multiples = {}
+
+        try:
+            # Extract statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+
+            # Get market data
+            market_data = financial_data.get('market_data', {})
+            market_cap = market_data.get('market_cap')
+
+            if not income_stmt or not balance_sheet or not market_cap:
+                return multiples
+
+            # Get latest financial data
+            latest_income = income_stmt.iloc[:, 0]
+            latest_balance = balance_sheet.iloc[:, 0]
+
+            # Calculate enterprise value
+            total_debt = latest_balance.get('Total Debt', 0)
+            cash = latest_balance.get('Cash and Cash Equivalents', 0)
+            enterprise_value = market_cap + total_debt - cash
+
+            # Calculate multiples
+            if 'Total Revenue' in latest_income.index and latest_income['Total Revenue'] > 0:
+                multiples['ps_ratio'] = market_cap / latest_income['Total Revenue']
+                multiples['ev_to_revenue'] = enterprise_value / latest_income['Total Revenue']
+
+            if 'Net Income' in latest_income.index and latest_income['Net Income'] > 0:
+                multiples['pe_ratio'] = market_cap / latest_income['Net Income']
+
+            if 'EBITDA' in latest_income.index and latest_income['EBITDA'] > 0:
+                multiples['ev_to_ebitda'] = enterprise_value / latest_income['EBITDA']
+            elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
+                # Estimate EBITDA if not directly available
+                ebitda = latest_income['Operating Income'] + latest_income['Depreciation & Amortization']
+                if ebitda > 0:
+                    multiples['ev_to_ebitda'] = enterprise_value / ebitda
+
+            if 'Total Stockholder Equity' in latest_balance.index and latest_balance['Total Stockholder Equity'] > 0:
+                multiples['pb_ratio'] = market_cap / latest_balance['Total Stockholder Equity']
+
+            return multiples
+
+        except Exception as e:
+            logger.error(f"Error calculating multiples: {e}")
+            return multiples
+
+    def industrial_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Specialized DCF for industrial sector companies
+
+        Industrial companies have unique characteristics requiring adjustments to standard DCF:
+        1. Capital intensive with high fixed costs and operational leverage
+        2. Cyclical business aligned with economic cycles
+        3. High capex requirements for maintenance and growth
+        4. Focus on operational efficiency and capacity utilization
+        5. Often have significant debt levels
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with industrial sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For industrial companies, forecast-driven DCF works well
+            dcf_result = self.forecast_driven_dcf(ticker, financial_data, "Industrials")
+
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Calculate industrial-specific metrics
+            industrial_metrics = {}
+
+            # Asset utilization metrics - critical for industrial companies
+            if income_stmt is not None and balance_sheet is not None and not income_stmt.empty and not balance_sheet.empty:
+                latest_income = income_stmt.iloc[:, 0]
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                # Asset turnover
+                if 'Total Revenue' in latest_income.index and 'Total Assets' in latest_balance.index:
+                    revenue = latest_income['Total Revenue']
+                    assets = latest_balance['Total Assets']
+                    if assets > 0:
+                        asset_turnover = revenue / assets
+                        industrial_metrics['asset_turnover'] = asset_turnover
+
+                # ROIC (Return on Invested Capital) - important for industrial companies
+                if 'Operating Income' in latest_income.index:
+                    ebit = latest_income['Operating Income']
+                    # Calculate invested capital (equity + debt - cash)
+                    equity = latest_balance.get('Total Stockholder Equity', 0)
+                    debt = latest_balance.get('Total Debt', 0)
+                    cash = latest_balance.get('Cash and Cash Equivalents', 0)
+
+                    invested_capital = equity + debt - cash
+
+                    if invested_capital > 0:
+                        # Adjust for taxes (assume 25% tax rate if not available)
+                        tax_rate = 0.25
+                        if 'Income Tax Expense' in latest_income.index and 'Income Before Tax' in latest_income.index:
+                            if latest_income['Income Before Tax'] > 0:
+                                tax_rate = latest_income['Income Tax Expense'] / latest_income['Income Before Tax']
+
+                        nopat = ebit * (1 - tax_rate)
+                        roic = nopat / invested_capital
+                        industrial_metrics['roic'] = roic
+
+                # Capex efficiency - industrial companies are capital intensive
+            if cash_flow is not None and income_stmt is not None and not cash_flow.empty and not income_stmt.empty:
+                latest_cash_flow = cash_flow.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Capital Expenditure' in latest_cash_flow.index and 'Total Revenue' in latest_income.index:
+                    capex = abs(latest_cash_flow['Capital Expenditure'])
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        capex_to_revenue = capex / revenue
+                        industrial_metrics['capex_to_revenue'] = capex_to_revenue
+
+                    # Capex to Depreciation ratio (maintenance vs. growth)
+                    if 'Depreciation & Amortization' in latest_income.index:
+                        depreciation = latest_income['Depreciation & Amortization']
+
+                        if depreciation > 0:
+                            capex_to_depreciation = capex / depreciation
+                            industrial_metrics['capex_to_depreciation'] = capex_to_depreciation
+
+                            # Classify capex strategy
+                            if capex_to_depreciation > 1.5:
+                                industrial_metrics['capex_strategy'] = "Growth/expansion"
+                            elif capex_to_depreciation > 1.1:
+                                industrial_metrics['capex_strategy'] = "Balanced growth & maintenance"
+                            elif capex_to_depreciation > 0.9:
+                                industrial_metrics['capex_strategy'] = "Primarily maintenance"
+                            else:
+                                industrial_metrics['capex_strategy'] = "Underinvestment"
+
+                # Debt metrics - industrial companies often have significant debt
+            if balance_sheet is not None and income_stmt is not None and not balance_sheet.empty and not income_stmt.empty:
+                latest_balance = balance_sheet.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Total Debt' in latest_balance.index and 'EBITDA' in latest_income.index:
+                    debt = latest_balance['Total Debt']
+                    ebitda = latest_income['EBITDA']
+
+                    if ebitda > 0:
+                        debt_to_ebitda = debt / ebitda
+                        industrial_metrics['debt_to_ebitda'] = debt_to_ebitda
+
+                        # Classify debt level
+                        if debt_to_ebitda > 4.0:
+                            industrial_metrics['debt_level'] = "High"
+                        elif debt_to_ebitda > 2.5:
+                            industrial_metrics['debt_level'] = "Moderate"
+                        else:
+                            industrial_metrics['debt_level'] = "Low"
+
+                # Interest coverage ratio
+                if 'Operating Income' in latest_income.index and 'Interest Expense' in latest_income.index:
+                    ebit = latest_income['Operating Income']
+                    interest_expense = abs(latest_income['Interest Expense'])
+
+                    if interest_expense > 0:
+                        interest_coverage = ebit / interest_expense
+                        industrial_metrics['interest_coverage'] = interest_coverage
+
+                # Operational efficiency - critical for industrial companies
+            if income_stmt is not None and not income_stmt.empty:
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Gross Profit' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    gross_profit = latest_income['Gross Profit']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        gross_margin = gross_profit / revenue
+                        industrial_metrics['gross_margin'] = gross_margin
+
+                if 'Operating Income' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    operating_income = latest_income['Operating Income']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        operating_margin = operating_income / revenue
+                        industrial_metrics['operating_margin'] = operating_margin
+
+                # Add industrial metrics to the result
+            dcf_result['industrial_metrics'] = industrial_metrics
+
+            return dcf_result
+
+        except Exception as e:
+            logger.error(f"Error in industrial sector DCF for {ticker}: {e}")
+            return self.forecast_driven_dcf(ticker, financial_data, "Industrials")
+
+    def healthcare_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Specialized DCF for healthcare sector companies
+
+        Healthcare companies have unique characteristics requiring adjustments to standard DCF:
+        1. High R&D expenditures with uncertain returns and long development timelines
+        2. Patent protection creates temporary monopolies but with defined lifespans
+        3. Regulatory approvals create binary outcomes for clinical-stage companies
+        4. Different business models within healthcare (pharma, biotech, medical devices, services)
+        5. Demographic trends and public policy heavily influence growth
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with healthcare sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For healthcare companies, multi-stage DCF works well due to patent cycles
+            dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, "Healthcare")
+
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Get company info
+            company_info = financial_data.get('company_info', {})
+
+            # Calculate healthcare-specific metrics
+            healthcare_metrics = {}
+
+            # R&D intensity - critical for healthcare, especially pharma/biotech
+            if income_stmt is not None and not income_stmt.empty:
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Research and Development' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    rd_expense = latest_income['Research and Development']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        rd_to_revenue = rd_expense / revenue
+                        healthcare_metrics['rd_to_revenue'] = rd_to_revenue
+
+                        # Classify R&D intensity
+                        if rd_to_revenue > 0.20:
+                            healthcare_metrics['rd_intensity'] = "Very high (biotech/early-stage)"
+                        elif rd_to_revenue > 0.15:
+                            healthcare_metrics['rd_intensity'] = "High (pharmaceutical/research focused)"
+                        elif rd_to_revenue > 0.10:
+                            healthcare_metrics['rd_intensity'] = "Moderate (established pharma)"
+                        elif rd_to_revenue > 0.05:
+                            healthcare_metrics['rd_intensity'] = "Low (medical devices/services)"
+                        else:
+                            healthcare_metrics['rd_intensity'] = "Very low (healthcare services)"
+
+            # Growth metrics
+            if income_stmt is not None and income_stmt.shape[1] >= 3:
+                # Calculate revenue CAGR over last 3 years if available
+                if 'Total Revenue' in income_stmt.index:
+                    latest_revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), 0]
+                    oldest_revenue = income_stmt.iloc[
+                        income_stmt.index.get_loc('Total Revenue'), min(2, income_stmt.shape[1] - 1)]
+
+                    if oldest_revenue > 0:
+                        # Calculate compound annual growth rate
+                        years = min(3, income_stmt.shape[1])
+                        revenue_cagr = (latest_revenue / oldest_revenue) ** (1 / years) - 1
+                        healthcare_metrics['revenue_cagr_3yr'] = revenue_cagr
+
+            # Profitability metrics - vary widely in healthcare
+            if income_stmt is not None and not income_stmt.empty:
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Gross Profit' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    gross_profit = latest_income['Gross Profit']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        gross_margin = gross_profit / revenue
+                        healthcare_metrics['gross_margin'] = gross_margin
+
+                if 'Operating Income' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    operating_income = latest_income['Operating Income']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        operating_margin = operating_income / revenue
+                        healthcare_metrics['operating_margin'] = operating_margin
+
+                        # Early-stage biotech often has negative operating margins
+                        if operating_margin < 0:
+                            healthcare_metrics['development_stage'] = "Pre-profit (R&D phase)"
+                        elif operating_margin < 0.1:
+                            healthcare_metrics['development_stage'] = "Early commercialization"
+                        elif operating_margin < 0.2:
+                            healthcare_metrics['development_stage'] = "Established commercial"
+                        else:
+                            healthcare_metrics['development_stage'] = "Mature franchise"
+
+            # Cash runway - important for pre-profit healthcare companies
+            if cash_flow is not None and balance_sheet is not None and not cash_flow.empty and not balance_sheet.empty:
+                latest_cash_flow = cash_flow.iloc[:, 0]
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                if 'Operating Cash Flow' in latest_cash_flow.index and 'Cash and Cash Equivalents' in latest_balance.index:
+                    operating_cf = latest_cash_flow['Operating Cash Flow']
+                    cash = latest_balance['Cash and Cash Equivalents']
+
+                    # For companies with negative cash flow, calculate runway
+                    if operating_cf < 0:
+                        cash_burn_rate = abs(operating_cf)
+                        cash_runway_years = cash / cash_burn_rate
+                        healthcare_metrics['cash_runway_years'] = cash_runway_years
+
+                        if cash_runway_years < 1:
+                            healthcare_metrics['funding_risk'] = "Very high - needs immediate financing"
+                        elif cash_runway_years < 2:
+                            healthcare_metrics['funding_risk'] = "High - near-term financing likely"
+                        elif cash_runway_years < 3:
+                            healthcare_metrics['funding_risk'] = "Moderate - has time to achieve milestones"
+                        else:
+                            healthcare_metrics['funding_risk'] = "Low - well-funded"
+
+            # Add healthcare metrics to the result
+            dcf_result['healthcare_metrics'] = healthcare_metrics
+
+            return dcf_result
+
+        except Exception as e:
+            logger.error(f"Error in healthcare sector DCF for {ticker}: {e}")
+            return self.multi_stage_dcf_valuation(ticker, financial_data, "Healthcare")
+
+    def communications_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Specialized DCF for communications sector companies
+
+        Communications companies have unique characteristics requiring adjustments to standard DCF:
+        1. High fixed costs with infrastructure and network investments
+        2. Recurring revenue models with subscriber bases
+        3. High customer acquisition costs but low marginal costs
+        4. Regulatory environment that can affect pricing and competition
+        5. Technology shifts creating both opportunities and risks
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with communications sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For communications companies, multi-stage DCF works well
+            dcf_result = self.multi_stage_dcf_valuation(ticker, financial_data, "Communication Services")
+
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Calculate communications-specific metrics
+            comm_metrics = {}
+
+            # Infrastructure intensity
+            if balance_sheet is not None and income_stmt is not None and not balance_sheet.empty and not income_stmt.empty:
+                latest_balance = balance_sheet.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Property Plant and Equipment' in latest_balance.index and 'Total Revenue' in latest_income.index:
+                    ppe = latest_balance['Property Plant and Equipment']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        infrastructure_intensity = ppe / revenue
+                        comm_metrics['infrastructure_intensity'] = infrastructure_intensity
+
+                        # Classify infrastructure model
+                        if infrastructure_intensity > 1.5:
+                            comm_metrics['infrastructure_model'] = "Heavy infrastructure (telecom/cable)"
+                        elif infrastructure_intensity > 0.8:
+                            comm_metrics['infrastructure_model'] = "Moderate infrastructure"
+                        elif infrastructure_intensity > 0.4:
+                            comm_metrics['infrastructure_model'] = "Light infrastructure"
+                        else:
+                            comm_metrics['infrastructure_model'] = "Asset-light (digital/content)"
+
+            # Capex intensity
+            if cash_flow is not None and income_stmt is not None and not cash_flow.empty and not income_stmt.empty:
+                latest_cash_flow = cash_flow.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Capital Expenditure' in latest_cash_flow.index and 'Total Revenue' in latest_income.index:
+                    capex = abs(latest_cash_flow['Capital Expenditure'])
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        capex_to_revenue = capex / revenue
+                        comm_metrics['capex_to_revenue'] = capex_to_revenue
+
+            # Margin profile
+            if income_stmt is not None and not income_stmt.empty:
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'EBITDA' in latest_income.index and 'Total Revenue' in latest_income.index:
+                    ebitda = latest_income['EBITDA']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        ebitda_margin = ebitda / revenue
+                        comm_metrics['ebitda_margin'] = ebitda_margin
+
+                # If EBITDA not available, calculate it
+                elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
+                    operating_income = latest_income['Operating Income']
+                    depreciation = latest_income['Depreciation & Amortization']
+                    ebitda = operating_income + depreciation
+
+                    if 'Total Revenue' in latest_income.index:
+                        revenue = latest_income['Total Revenue']
+                        if revenue > 0:
+                            ebitda_margin = ebitda / revenue
+                            comm_metrics['ebitda_margin'] = ebitda_margin
+
+            # Return on invested capital
+            if income_stmt is not None and balance_sheet is not None and not income_stmt.empty and not balance_sheet.empty:
+                latest_income = income_stmt.iloc[:, 0]
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                if 'Operating Income' in latest_income.index:
+                    ebit = latest_income['Operating Income']
+
+                    # Calculate invested capital
+                    equity = latest_balance.get('Total Stockholder Equity', 0)
+                    debt = latest_balance.get('Total Debt', 0)
+                    cash = latest_balance.get('Cash and Cash Equivalents', 0)
+
+                    invested_capital = equity + debt - cash
+
+                    if invested_capital > 0:
+                        # Adjust for taxes
+                        tax_rate = 0.25  # Assume 25% tax rate if not available
+                        if 'Income Tax Expense' in latest_income.index and 'Income Before Tax' in latest_income.index:
+                            if latest_income['Income Before Tax'] > 0:
+                                tax_rate = latest_income['Income Tax Expense'] / latest_income['Income Before Tax']
+
+                        nopat = ebit * (1 - tax_rate)
+                        roic = nopat / invested_capital
+                        comm_metrics['roic'] = roic
+
+            # Add communications metrics to the result
+            dcf_result['communications_metrics'] = comm_metrics
+
+            return dcf_result
+
+        except Exception as e:
+            logger.error(f"Error in communications sector DCF for {ticker}: {e}")
+            return self.multi_stage_dcf_valuation(ticker, financial_data, "Communication Services")
+
+    def materials_sector_dcf(self, ticker: str, financial_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Specialized DCF for materials sector companies
+
+        Materials companies have unique characteristics requiring adjustments to standard DCF:
+        1. Highly cyclical with commodity price exposure
+        2. Capital intensive with high fixed costs
+        3. Dependent on global economic activity and industrial production
+        4. Environmental regulations create challenges and opportunities
+        5. Consolidation often drives industry structure
+
+        Args:
+            ticker: Company ticker symbol
+            financial_data: Dictionary with financial statements and market data
+
+        Returns:
+            Dictionary with materials sector DCF valuation results
+        """
+        try:
+            # Load financial data if not provided
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+
+            # For materials companies, scenario analysis works well due to cyclicality
+            dcf_result = self.scenario_analysis_dcf(ticker, financial_data, "Materials")
+
+            # Extract key financial statements
+            income_stmt = financial_data.get('income_statement')
+            balance_sheet = financial_data.get('balance_sheet')
+            cash_flow = financial_data.get('cash_flow')
+
+            # Calculate materials-specific metrics
+            materials_metrics = {}
+
+            # Margin profiles through the cycle
+            if income_stmt is not None and not income_stmt.empty:
+                years = min(income_stmt.shape[1], 5)  # Look at up to 5 years of data
+
+                if 'Gross Profit' in income_stmt.index and 'Total Revenue' in income_stmt.index:
+                    gross_margins = []
+                    for i in range(years):
+                        if i < income_stmt.shape[1]:
+                            revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), i]
+                            gross_profit = income_stmt.iloc[income_stmt.index.get_loc('Gross Profit'), i]
+
+                            if revenue > 0:
+                                gross_margin = gross_profit / revenue
+                                gross_margins.append(gross_margin)
+
+                    if gross_margins:
+                        materials_metrics['avg_gross_margin'] = sum(gross_margins) / len(gross_margins)
+                        materials_metrics['min_gross_margin'] = min(gross_margins)
+                        materials_metrics['max_gross_margin'] = max(gross_margins)
+                        materials_metrics['gross_margin_volatility'] = max(gross_margins) - min(gross_margins)
+
+                if 'Operating Income' in income_stmt.index and 'Total Revenue' in income_stmt.index:
+                    operating_margins = []
+                    for i in range(years):
+                        if i < income_stmt.shape[1]:
+                            revenue = income_stmt.iloc[income_stmt.index.get_loc('Total Revenue'), i]
+                            operating_income = income_stmt.iloc[income_stmt.index.get_loc('Operating Income'), i]
+
+                            if revenue > 0:
+                                operating_margin = operating_income / revenue
+                                operating_margins.append(operating_margin)
+
+                    if operating_margins:
+                        materials_metrics['avg_operating_margin'] = sum(operating_margins) / len(operating_margins)
+                        materials_metrics['min_operating_margin'] = min(operating_margins)
+                        materials_metrics['max_operating_margin'] = max(operating_margins)
+                        materials_metrics['operating_margin_volatility'] = max(operating_margins) - min(
+                            operating_margins)
+
+                        # Determine cyclicality based on margin volatility
+                        if materials_metrics.get('operating_margin_volatility', 0) > 0.15:
+                            materials_metrics['cyclicality'] = "Highly cyclical"
+                        elif materials_metrics.get('operating_margin_volatility', 0) > 0.10:
+                            materials_metrics['cyclicality'] = "Moderately cyclical"
+                        elif materials_metrics.get('operating_margin_volatility', 0) > 0.05:
+                            materials_metrics['cyclicality'] = "Somewhat cyclical"
+                        else:
+                            materials_metrics['cyclicality'] = "Relatively stable"
+
+            # Capital intensity
+            if balance_sheet is not None and income_stmt is not None and not balance_sheet.empty and not income_stmt.empty:
+                latest_balance = balance_sheet.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Property Plant and Equipment' in latest_balance.index and 'Total Revenue' in latest_income.index:
+                    ppe = latest_balance['Property Plant and Equipment']
+                    revenue = latest_income['Total Revenue']
+
+                    if revenue > 0:
+                        capital_intensity = ppe / revenue
+                        materials_metrics['capital_intensity'] = capital_intensity
+
+                        # Classify capital intensity
+                        if capital_intensity > 1.0:
+                            materials_metrics['capital_intensity_level'] = "Very high"
+                        elif capital_intensity > 0.6:
+                            materials_metrics['capital_intensity_level'] = "High"
+                        elif capital_intensity > 0.3:
+                            materials_metrics['capital_intensity_level'] = "Moderate"
+                        else:
+                            materials_metrics['capital_intensity_level'] = "Low"
+
+            # Return on invested capital (ROIC)
+            if income_stmt is not None and balance_sheet is not None and not income_stmt.empty and not balance_sheet.empty:
+                latest_income = income_stmt.iloc[:, 0]
+                latest_balance = balance_sheet.iloc[:, 0]
+
+                if 'Operating Income' in latest_income.index:
+                    ebit = latest_income['Operating Income']
+
+                    # Calculate invested capital
+                    equity = latest_balance.get('Total Stockholder Equity', 0)
+                    debt = latest_balance.get('Total Debt', 0)
+                    cash = latest_balance.get('Cash and Cash Equivalents', 0)
+
+                    invested_capital = equity + debt - cash
+
+                    if invested_capital > 0:
+                        # Adjust for taxes
+                        tax_rate = 0.25  # Assume 25% tax rate if not available
+                        if 'Income Tax Expense' in latest_income.index and 'Income Before Tax' in latest_income.index:
+                            if latest_income['Income Before Tax'] > 0:
+                                tax_rate = latest_income['Income Tax Expense'] / latest_income['Income Before Tax']
+
+                        nopat = ebit * (1 - tax_rate)
+                        roic = nopat / invested_capital
+                        materials_metrics['roic'] = roic
+
+                        # Calculate historical ROIC if available
+                        if income_stmt.shape[1] >= 3 and balance_sheet.shape[1] >= 3:
+                            historical_roic = []
+                            for i in range(min(3, income_stmt.shape[1])):
+                                if i < income_stmt.shape[1] and i < balance_sheet.shape[1]:
+                                    historical_ebit = income_stmt.iloc[
+                                        income_stmt.index.get_loc('Operating Income'), i]
+                                    historical_equity = balance_sheet.iloc[
+                                        balance_sheet.index.get_loc('Total Stockholder Equity'), i]
+                                    historical_debt = balance_sheet.iloc[balance_sheet.index.get_loc(
+                                        'Total Debt'), i] if 'Total Debt' in balance_sheet.index else 0
+                                    historical_cash = balance_sheet.iloc[balance_sheet.index.get_loc(
+                                        'Cash and Cash Equivalents'), i] if 'Cash and Cash Equivalents' in balance_sheet.index else 0
+
+                                    historical_invested_capital = historical_equity + historical_debt - historical_cash
+
+                                    if historical_invested_capital > 0:
+                                        historical_nopat = historical_ebit * (1 - tax_rate)
+                                        historical_roic.append(historical_nopat / historical_invested_capital)
+
+                            if historical_roic:
+                                materials_metrics['avg_roic'] = sum(historical_roic) / len(historical_roic)
+                                materials_metrics['roic_volatility'] = max(historical_roic) - min(historical_roic)
+
+            # Debt metrics
+            if balance_sheet is not None and income_stmt is not None and not balance_sheet.empty and not income_stmt.empty:
+                latest_balance = balance_sheet.iloc[:, 0]
+                latest_income = income_stmt.iloc[:, 0]
+
+                if 'Total Debt' in latest_balance.index:
+                    debt = latest_balance['Total Debt']
+
+                    if 'EBITDA' in latest_income.index:
+                        ebitda = latest_income['EBITDA']
+
+                        if ebitda > 0:
+                            debt_to_ebitda = debt / ebitda
+                            materials_metrics['debt_to_ebitda'] = debt_to_ebitda
+
+                    elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
+                        # Calculate EBITDA if not available directly
+                        operating_income = latest_income['Operating Income']
+                        depreciation = latest_income['Depreciation & Amortization']
+
+                        ebitda = operating_income + depreciation
+
+                        if ebitda > 0:
+                            debt_to_ebitda = debt / ebitda
+                            materials_metrics['debt_to_ebitda'] = debt_to_ebitda
+
+            # Add materials metrics to the result
+            dcf_result['materials_metrics'] = materials_metrics
+
+            return dcf_result
+
+        except Exception as e:
+            logger.error(f"Error in materials sector DCF for {ticker}: {e}")
+            return self.scenario_analysis_dcf(ticker, financial_data, "Materials")

@@ -2,1196 +2,589 @@ import os
 import sys
 import logging
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Union, Any
-from datetime import datetime
+from typing import Dict, List, Optional, Union, Any
 
-# Add the project root to Python path
+# Add parent directory to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, project_root)
 
-from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
-from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.valuation.sector_factor import SectorAnalyzer
+from StockAnalysisSystem.src.config import SECTOR_METRICS
 
-# Setup logging
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('communication_valuation')
+logger = logging.getLogger('communications_sector')
 
 
-class CommunicationValuation(BaseValuation):
+class CommunicationsSectorAnalyzer(SectorAnalyzer):
     """
-    Communication sector valuation model.
+    Specialized analyzer for communications sector companies.
 
-    Specialized for telecommunication companies, media corporations,
-    social networks, and entertainment companies. Includes:
-
-    - Subscriber-based valuation for telecoms and streaming services
-    - Digital advertising revenue models for media and social platforms
-    - Content library valuation for media companies
-    - User metrics integration (ARPU, churn, LTV)
+    This sector includes telecom providers, media companies, social networks,
+    entertainment companies, and other communication services businesses.
     """
 
-    def __init__(self, data_loader=None):
+    def __init__(self, sector_name: str):
+        """Initialize communications sector analyzer"""
+        super().__init__(sector_name)
+        logger.info(f"Initialized {sector_name} analyzer")
+
+    def analyze_company(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Initialize communication sector valuation model with sector-specific parameters.
+        Perform communications-specific analysis on company data
 
         Args:
-            data_loader: Optional data loader instance
-        """
-        super().__init__(data_loader)
-
-        # Sector-specific parameters
-        self.sector_params = SECTOR_DCF_PARAMETERS.get('Communication Services', {})
-
-        # Default subsector multiples for valuation
-        self.subsector_multiples = {
-            'Telecommunications': {
-                'p_e': 16,
-                'ev_ebitda': 7.5,
-                'p_s': 2.5,
-                'ev_revenue': 3.0,
-                'p_fcf': 15
-            },
-            'Media': {
-                'p_e': 18,
-                'ev_ebitda': 9,
-                'p_s': 3.5,
-                'ev_revenue': 4.0,
-                'p_fcf': 17
-            },
-            'Social Media': {
-                'p_e': 30,
-                'ev_ebitda': 20,
-                'p_s': 7,
-                'ev_revenue': 7.5,
-                'p_fcf': 25
-            },
-            'Entertainment': {
-                'p_e': 22,
-                'ev_ebitda': 12,
-                'p_s': 4,
-                'ev_revenue': 4.5,
-                'p_fcf': 20
-            }
-        }
-
-        # Default parameters for subscriber-based models
-        self.subscriber_model_params = {
-            'Telecommunications': {
-                'churn_rate': 0.15,  # 15% annual churn
-                'arpu_growth': 0.02,  # 2% annual ARPU growth
-                'subscriber_growth': 0.03,  # 3% annual subscriber growth
-                'margin': 0.40,  # 40% margin
-                'customer_acquisition_cost': 300  # $300 per new customer
-            },
-            'Media Streaming': {
-                'churn_rate': 0.25,  # 25% annual churn
-                'arpu_growth': 0.05,  # 5% annual ARPU growth
-                'subscriber_growth': 0.15,  # 15% annual subscriber growth
-                'margin': 0.35,  # 35% margin
-                'customer_acquisition_cost': 100  # $100 per new customer
-            }
-        }
-
-        # Content valuation parameters
-        self.content_valuation_params = {
-            'content_multiple': 5,  # 5x annual content revenue
-            'useful_life': 7,  # 7 years average content life
-            'decay_rate': 0.20  # 20% annual value decay for content
-        }
-
-    def get_valuation(self, ticker: str, financial_data: Optional[Dict] = None,
-                      subsector: str = 'Telecommunications',
-                      user_metrics: Optional[Dict] = None) -> Dict:
-        """
-        Perform comprehensive communication company valuation.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Pre-loaded financial data if available
-            subsector: Communication subsector (Telecom, Media, Social Media, Entertainment)
-            user_metrics: Optional subscriber/user metrics data
+            financial_data: Dictionary containing financial statements and other company data
 
         Returns:
-            Dictionary with comprehensive valuation results
+            Dictionary with analysis results specific to communications companies
         """
-        try:
-            # Load financial data if not provided
-            if financial_data is None:
-                financial_data = self._load_financial_data(ticker)
+        result = {
+            "sector": "Communication Services",
+            "industry_metrics": {},
+            "sector_specific_analysis": {},
+            "risk_factors": [],
+            "competitive_advantages": [],
+            "subscription_metrics": {},
+            "content_analysis": {}
+        }
 
-            # Get market data
-            market_data = financial_data.get('market_data', {})
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+        cash_flow = financial_data.get('cash_flow')
 
-            # Calculate valuations using different methods
-            # Traditional DCF, always applicable
-            dcf_valuation = self.standard_dcf_valuation(ticker, financial_data, subsector)
+        # Skip analysis if data is missing
+        if income_stmt is None or balance_sheet is None:
+            logger.warning("Missing essential financial statements for communications sector analysis")
+            return result
 
-            # Multiples valuation, always applicable
-            multiples_valuation = self.communication_multiples_valuation(ticker, financial_data, subsector)
+        # Get most recent financial data
+        latest_income = income_stmt.iloc[:, 0] if not income_stmt.empty else None
+        latest_balance = balance_sheet.iloc[:, 0] if not balance_sheet.empty else None
+        latest_cash_flow = cash_flow.iloc[:, 0] if cash_flow is not None and not cash_flow.empty else None
 
-            # Subscriber-based valuation for telecom and subscription businesses
-            subscriber_valuation = None
-            if subsector in ['Telecommunications', 'Media'] and user_metrics and 'subscribers' in user_metrics:
-                subscriber_valuation = self.subscriber_based_valuation(ticker, financial_data, user_metrics, subsector)
+        # Calculate communications-specific metrics
+        self._calculate_communications_metrics(result, latest_income, latest_balance, latest_cash_flow)
 
-            # Social media valuation for platforms with users/advertising
-            social_valuation = None
-            if subsector == 'Social Media' and user_metrics and 'users' in user_metrics:
-                social_valuation = self.user_based_valuation(ticker, financial_data, user_metrics)
+        # Analyze subscription metrics if applicable
+        self._analyze_subscription_metrics(result, financial_data)
 
-            # Content library valuation for media and entertainment
-            content_valuation = None
-            if subsector in ['Media', 'Entertainment'] and financial_data:
-                content_valuation = self.content_library_valuation(ticker, financial_data)
+        # Analyze content investments if applicable
+        self._analyze_content_investments(result, financial_data)
 
-            # Combine all valuations
-            all_valuations = {
-                'dcf': dcf_valuation,
-                'multiples': multiples_valuation
-            }
+        # Identify key industry risk factors
+        self._identify_risk_factors(result, financial_data)
 
-            if subscriber_valuation:
-                all_valuations['subscriber'] = subscriber_valuation
+        # Evaluate competitive advantages
+        self._evaluate_competitive_advantages(result, financial_data)
 
-            if social_valuation:
-                all_valuations['social'] = social_valuation
+        return result
 
-            if content_valuation:
-                all_valuations['content'] = content_valuation
-
-            # Create valuation summary with weighted approach
-            valuation_values = []
-
-            # Add DCF valuation (weighted based on subsector)
-            if dcf_valuation.get('value_per_share') is not None:
-                # Higher weight for telecom (more stable cash flows)
-                dcf_weight = 0.6 if subsector == 'Telecommunications' else 0.4
-                valuation_values.extend([dcf_valuation.get('value_per_share')] * int(dcf_weight * 10))
-
-            # Add multiples valuation
-            if multiples_valuation.get('value_per_share') is not None:
-                multiples_weight = 0.4
-                valuation_values.extend([multiples_valuation.get('value_per_share')] * int(multiples_weight * 10))
-
-            # Add subscriber valuation if available
-            if subscriber_valuation and subscriber_valuation.get('value_per_share') is not None:
-                # Higher weight for telecom and subscription businesses
-                sub_weight = 0.3
-                valuation_values.extend([subscriber_valuation.get('value_per_share')] * int(sub_weight * 10))
-
-            # Add social media valuation if available
-            if social_valuation and social_valuation.get('value_per_share') is not None:
-                # Higher weight for social media companies
-                social_weight = 0.4 if subsector == 'Social Media' else 0.2
-                valuation_values.extend([social_valuation.get('value_per_share')] * int(social_weight * 10))
-
-            # Add content valuation if available
-            if content_valuation and content_valuation.get('value_per_share') is not None:
-                # Higher weight for media and entertainment
-                content_weight = 0.3 if subsector in ['Media', 'Entertainment'] else 0.1
-                valuation_values.extend([content_valuation.get('value_per_share')] * int(content_weight * 10))
-
-            if not valuation_values:
-                raise ValueError(f"Could not calculate any valuation for {ticker}")
-
-            # Calculate average, min, max valuation
-            avg_valuation = sum(valuation_values) / len(valuation_values)
-            min_valuation = min(valuation_values)
-            max_valuation = max(valuation_values)
-
-            # Current price for comparison
-            current_price = market_data.get('share_price')
-
-            # Calculate potential upside/downside
-            if current_price:
-                potential_upside = (avg_valuation / current_price - 1) * 100
-            else:
-                potential_upside = None
-
-            return {
-                'company': ticker,
-                'sector': 'Communication Services',
-                'subsector': subsector,
-                'current_price': current_price,
-                'valuation_summary': {
-                    'average': avg_valuation,
-                    'min': min_valuation,
-                    'max': max_valuation,
-                    'range': max_valuation - min_valuation,
-                    'potential_upside': potential_upside
-                },
-                'valuation_methods': all_valuations,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-
-        except Exception as e:
-            logger.error(f"Error in communication valuation for {ticker}: {e}")
-            return {
-                'company': ticker,
-                'sector': 'Communication Services',
-                'subsector': subsector,
-                'error': str(e),
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-
-    def standard_dcf_valuation(self, ticker: str, financial_data: Dict,
-                               subsector: str = 'Telecommunications') -> Dict:
+    def calculate_valuation(self, financial_data: Dict[str, Any], valuation_method: str = None) -> Dict[str, Any]:
         """
-        Perform standard DCF valuation for communication sector companies.
+        Calculate company valuation using communications-specific methods
 
         Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Communication subsector
+            financial_data: Dictionary containing financial information
+            valuation_method: Specific valuation method to use (if None, use the most appropriate)
 
         Returns:
-            Dictionary with DCF valuation results
+            Dictionary with valuation results
         """
-        try:
-            # Extract financial statements
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-            cash_flow = financial_data.get('cash_flow')
+        # Default to EV/EBITDA if no method specified
+        if valuation_method is None:
+            valuation_method = "EV/EBITDA"
 
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
+        valuation_result = {
+            "sector": "Communication Services",
+            "methods": {}
+        }
 
-            if income_stmt is None or balance_sheet is None or cash_flow is None:
-                raise ValueError("Missing required financial statements for DCF calculation")
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
 
-            # Get historical free cash flow data
-            historical_fcf = self._calculate_historical_fcf(income_stmt, cash_flow)
+        # Get market data
+        market_data = financial_data.get('market_data', {})
 
-            if historical_fcf.empty:
-                raise ValueError("Unable to calculate historical free cash flow")
+        # Skip valuation if data is missing
+        if income_stmt is None or balance_sheet is None:
+            logger.warning("Missing essential financial statements for communications sector valuation")
+            return valuation_result
 
-            # Get DCF parameters with subsector adjustments
-            params = self._get_dcf_parameters(subsector)
+        # Get most recent financial data
+        latest_income = income_stmt.iloc[:, 0] if not income_stmt.empty else None
+        latest_balance = balance_sheet.iloc[:, 0] if not balance_sheet.empty else None
 
-            # Forecast period and terminal growth
-            forecast_years = params.get('forecast_years', 5)
-            terminal_growth = params.get('terminal_growth_rate', 0.02)
+        # Perform EV/EBITDA valuation
+        if valuation_method in ["EV/EBITDA", "all"]:
+            self._calculate_ev_ebitda_valuation(valuation_result, latest_income, latest_balance, market_data)
 
-            # Calculate appropriate discount rate
-            discount_rate = self._calculate_communication_discount_rate(ticker, financial_data, subsector)
+        # Perform subscriber-based valuation
+        if valuation_method in ["Subscriber", "all"]:
+            self._calculate_subscriber_valuation(valuation_result, financial_data)
 
-            # Estimate growth rate based on company stage and subsector
-            growth_rate = self._estimate_communication_growth_rate(ticker, financial_data, subsector)
+        # Perform content-based valuation
+        if valuation_method in ["Content", "all"]:
+            self._calculate_content_valuation(valuation_result, financial_data)
 
-            # Get latest FCF as starting point
-            latest_fcf = historical_fcf.iloc[0]
+        # Perform P/E valuation (common for media companies)
+        if valuation_method in ["P/E", "all"]:
+            self._calculate_pe_valuation(valuation_result, latest_income, market_data)
 
-            # Forecast future free cash flows with subsector-specific patterns
-            forecast_fcf = []
+        return valuation_result
 
-            for year in range(1, forecast_years + 1):
-                # Apply declining growth for telecom, higher sustained growth for digital
-                if subsector == 'Telecommunications':
-                    # Telecom: Stable growth declining toward terminal rate
-                    year_growth = max(growth_rate * (1 - 0.1 * (year - 1)), terminal_growth)
-                elif subsector in ['Social Media', 'Media']:
-                    # Digital media: Higher initial growth with faster convergence
-                    # to terminal rate in later years
-                    if year <= 2:
-                        year_growth = growth_rate
+    def benchmark_company(self, company_metrics: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Compare company metrics with communications sector benchmarks
+
+        Args:
+            company_metrics: Dictionary with company financial metrics
+
+        Returns:
+            Dictionary with benchmarking results
+        """
+        benchmarks = self.get_sector_benchmarks()
+        benchmark_results = {
+            "sector": "Communication Services",
+            "comparisons": {},
+            "score": 0.0,
+            "strengths": [],
+            "weaknesses": []
+        }
+
+        # Compare key communication metrics
+        key_metrics = [
+            "EBITDA Margin",
+            "ARPU",
+            "Churn Rate",
+            "Subscriber Growth",
+            "Content Cost Ratio",
+            "Customer Acquisition Cost",
+            "Debt/EBITDA"
+        ]
+
+        comparison_scores = []
+
+        for metric in key_metrics:
+            if metric in company_metrics and metric in benchmarks:
+                company_value = company_metrics[metric]
+                benchmark_value = benchmarks[metric]
+
+                # Determine if higher is better for this metric
+                higher_is_better = True
+                if metric in ["Churn Rate", "Customer Acquisition Cost", "Debt/EBITDA"]:
+                    higher_is_better = False
+
+                # Calculate percent difference from benchmark
+                if benchmark_value != 0:
+                    percent_diff = (company_value / benchmark_value - 1) * 100
+                else:
+                    percent_diff = 0
+
+                # Evaluate performance
+                if higher_is_better:
+                    if percent_diff >= 20:
+                        performance = "excellent"
+                        score = 1.0
+                        benchmark_results["strengths"].append(
+                            f"Strong {metric} ({percent_diff:.1f}% above sector median)")
+                    elif percent_diff >= 5:
+                        performance = "good"
+                        score = 0.75
+                        benchmark_results["strengths"].append(f"Above-average {metric}")
+                    elif percent_diff >= -5:
+                        performance = "average"
+                        score = 0.5
+                    elif percent_diff >= -20:
+                        performance = "below average"
+                        score = 0.25
+                        benchmark_results["weaknesses"].append(f"Below-average {metric}")
                     else:
-                        year_growth = growth_rate * (1 - 0.2 * (year - 2))
-                        year_growth = max(year_growth, terminal_growth)
+                        performance = "poor"
+                        score = 0.0
+                        benchmark_results["weaknesses"].append(
+                            f"Weak {metric} ({-percent_diff:.1f}% below sector median)")
                 else:
-                    # Standard declining growth pattern
-                    year_growth = max(growth_rate * (1 - 0.15 * (year - 1)), terminal_growth)
-
-                # Apply growth to previous year's FCF
-                if year == 1:
-                    fcf = latest_fcf * (1 + year_growth)
-                else:
-                    fcf = forecast_fcf[-1] * (1 + year_growth)
-
-                forecast_fcf.append(fcf)
-
-            # Calculate terminal value
-            terminal_value = self._calculate_terminal_value(forecast_fcf[-1], terminal_growth, discount_rate)
-
-            # Discount all future cash flows to present value
-            present_value_fcf = sum(fcf / (1 + discount_rate) ** (i + 1) for i, fcf in enumerate(forecast_fcf))
-            present_value_terminal = terminal_value / (1 + discount_rate) ** forecast_years
-
-            # Calculate enterprise value
-            enterprise_value = present_value_fcf + present_value_terminal
-
-            # Calculate equity value
-            net_debt = self._calculate_net_debt(balance_sheet)
-            equity_value = enterprise_value - net_debt
-
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = equity_value / shares_outstanding
-            else:
-                value_per_share = None
-
-            return {
-                'method': 'DCF',
-                'growth_rate': growth_rate,
-                'terminal_growth': terminal_growth,
-                'discount_rate': discount_rate,
-                'forecast_years': forecast_years,
-                'forecast_fcf': forecast_fcf,
-                'terminal_value': terminal_value,
-                'present_value_fcf': present_value_fcf,
-                'present_value_terminal': present_value_terminal,
-                'enterprise_value': enterprise_value,
-                'equity_value': equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating DCF for {ticker}: {e}")
-            return {
-                'method': 'DCF',
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def communication_multiples_valuation(self, ticker: str, financial_data: Dict,
-                                          subsector: str = 'Telecommunications') -> Dict:
-        """
-        Perform multiples-based valuation adapted for communication companies.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Communication subsector
-
-        Returns:
-            Dictionary with multiples valuation results
-        """
-        try:
-            # Extract financial statements
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-            cash_flow = financial_data.get('cash_flow')
-
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            if income_stmt is None or balance_sheet is None:
-                raise ValueError("Missing required financial statements for multiples valuation")
-
-            # Get most recent data
-            latest_income = income_stmt.iloc[:, 0]
-            latest_balance = balance_sheet.iloc[:, 0]
-            latest_cash_flow = cash_flow.iloc[:, 0] if cash_flow is not None else None
-
-            # Get relevant financials
-            metrics = {}
-
-            # Earnings
-            if 'Net Income' in latest_income.index:
-                metrics['earnings'] = latest_income.loc['Net Income']
-
-            # Revenue
-            if 'Total Revenue' in latest_income.index:
-                metrics['revenue'] = latest_income.loc['Total Revenue']
-
-            # EBITDA
-            if 'EBITDA' in latest_income.index:
-                metrics['ebitda'] = latest_income.loc['EBITDA']
-            elif 'Operating Income' in latest_income.index and 'Depreciation & Amortization' in latest_income.index:
-                metrics['ebitda'] = latest_income.loc['Operating Income'] + latest_income.loc[
-                    'Depreciation & Amortization']
-
-            # Free Cash Flow
-            if latest_cash_flow is not None:
-                if 'Free Cash Flow' in latest_cash_flow.index:
-                    metrics['fcf'] = latest_cash_flow.loc['Free Cash Flow']
-                elif 'Operating Cash Flow' in latest_cash_flow.index and 'Capital Expenditure' in latest_cash_flow.index:
-                    metrics['fcf'] = latest_cash_flow.loc['Operating Cash Flow'] - abs(
-                        latest_cash_flow.loc['Capital Expenditure'])
-
-            # Get appropriate multiples for the subsector
-            multiples = self.subsector_multiples.get(subsector, self.subsector_multiples['Telecommunications'])
-
-            # Calculate valuations using different multiples
-            valuations = {}
-
-            # P/E valuation
-            if 'earnings' in metrics and metrics['earnings'] > 0:
-                valuations['pe'] = {
-                    'multiple': multiples['p_e'],
-                    'value': metrics['earnings'] * multiples['p_e'],
-                    'description': 'Price to Earnings'
-                }
-
-            # EV/EBITDA valuation
-            if 'ebitda' in metrics and metrics['ebitda'] > 0:
-                valuations['ev_ebitda'] = {
-                    'multiple': multiples['ev_ebitda'],
-                    'value': metrics['ebitda'] * multiples['ev_ebitda'],
-                    'description': 'Enterprise Value to EBITDA'
-                }
-
-                # Adjust for debt and cash to get equity value
-                total_debt = 0
-                for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                    if debt_name in latest_balance.index:
-                        total_debt += latest_balance.loc[debt_name]
-
-                cash = 0
-                for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                    if cash_name in latest_balance.index:
-                        cash += latest_balance.loc[cash_name]
-
-                valuations['ev_ebitda']['equity_value'] = valuations['ev_ebitda']['value'] - total_debt + cash
-
-            # Revenue-based valuation (important for growth businesses)
-            if 'revenue' in metrics and metrics['revenue'] > 0:
-                valuations['ps'] = {
-                    'multiple': multiples['p_s'],
-                    'value': metrics['revenue'] * multiples['p_s'],
-                    'description': 'Price to Sales'
-                }
-
-                valuations['ev_revenue'] = {
-                    'multiple': multiples['ev_revenue'],
-                    'value': metrics['revenue'] * multiples['ev_revenue'],
-                    'description': 'Enterprise Value to Revenue'
-                }
-
-                # Adjust EV/Revenue for debt and cash
-                if 'ev_revenue' in valuations:
-                    total_debt = 0
-                    for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                        if debt_name in latest_balance.index:
-                            total_debt += latest_balance.loc[debt_name]
-
-                    cash = 0
-                    for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                        if cash_name in latest_balance.index:
-                            cash += latest_balance.loc[cash_name]
-
-                    valuations['ev_revenue']['equity_value'] = valuations['ev_revenue']['value'] - total_debt + cash
-
-            # FCF-based valuation
-            if 'fcf' in metrics and metrics['fcf'] > 0:
-                valuations['p_fcf'] = {
-                    'multiple': multiples['p_fcf'],
-                    'value': metrics['fcf'] * multiples['p_fcf'],
-                    'description': 'Price to Free Cash Flow'
-                }
-
-            # Calculate final equity value
-            equity_values = []
-
-            # PE and P/FCF already give equity value
-            if 'pe' in valuations:
-                equity_values.append(valuations['pe']['value'])
-
-            if 'p_fcf' in valuations:
-                equity_values.append(valuations['p_fcf']['value'])
-
-            # EV-based metrics need to be adjusted to equity value
-            if 'ev_ebitda' in valuations and 'equity_value' in valuations['ev_ebitda']:
-                equity_values.append(valuations['ev_ebitda']['equity_value'])
-
-            if 'ev_revenue' in valuations and 'equity_value' in valuations['ev_revenue']:
-                equity_values.append(valuations['ev_revenue']['equity_value'])
-
-            # Use PS directly if not enough equity values
-            if len(equity_values) < 2 and 'ps' in valuations:
-                equity_values.append(valuations['ps']['value'])
-
-            # Calculate average equity value
-            if equity_values:
-                avg_equity_value = sum(equity_values) / len(equity_values)
-
-                # Calculate per share value
-                if shares_outstanding and shares_outstanding > 0:
-                    value_per_share = avg_equity_value / shares_outstanding
-                else:
-                    value_per_share = None
-            else:
-                avg_equity_value = None
-                value_per_share = None
-
-            return {
-                'method': 'Communication Multiples',
-                'subsector': subsector,
-                'metrics': metrics,
-                'valuations': valuations,
-                'equity_value': avg_equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating communication multiples valuation for {ticker}: {e}")
-            return {
-                'method': 'Communication Multiples',
-                'subsector': subsector,
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def subscriber_based_valuation(self, ticker: str, financial_data: Dict,
-                                   user_metrics: Dict,
-                                   subsector: str = 'Telecommunications') -> Dict:
-        """
-        Perform valuation based on subscriber metrics and lifetime value.
-
-        Useful for telecom companies, streaming services, and subscription businesses.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            user_metrics: Dictionary with subscriber metrics
-            subsector: Communication subsector
-
-        Returns:
-            Dictionary with subscriber-based valuation results
-        """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            # Extract subscriber metrics
-            if 'subscribers' not in user_metrics:
-                raise ValueError("Subscriber count required for subscriber-based valuation")
-
-            subscribers = user_metrics.get('subscribers')
-            arpu = user_metrics.get('arpu')  # Average Revenue Per User (monthly)
-            churn_rate = user_metrics.get('churn_rate')  # Annual churn rate
-
-            # Get income statement data for ARPU calculation if not provided
-            if arpu is None and financial_data and 'income_statement' is not None:
-                income_stmt = financial_data.get('income_statement')
-                if income_stmt is not None and 'Total Revenue' in income_stmt.index:
-                    latest_revenue = income_stmt.loc['Total Revenue'].iloc[0]
-                    # Estimate monthly ARPU from annual revenue
-                    arpu = (latest_revenue / subscribers) / 12
-
-            # Use default parameters if metrics not provided
-            if arpu is None:
-                # Estimate based on subsector averages
-                arpu = 50 if subsector == 'Telecommunications' else 12  # Monthly ARPU
-
-            if churn_rate is None:
-                # Use subsector default
-                params = self.subscriber_model_params.get(subsector, self.subscriber_model_params['Telecommunications'])
-                churn_rate = params.get('churn_rate')
-
-            # Get other parameters from defaults
-            params = self.subscriber_model_params.get(subsector, self.subscriber_model_params['Telecommunications'])
-            arpu_growth = params.get('arpu_growth')
-            subscriber_growth = params.get('subscriber_growth')
-            margin = params.get('margin')
-            cac = params.get('customer_acquisition_cost')
-
-            # Calculate average subscriber lifetime (1/churn_rate)
-            avg_lifetime = 1 / churn_rate
-
-            # Calculate lifetime value (LTV) using DCF approach
-            discount_rate = self._calculate_communication_discount_rate(ticker, financial_data, subsector)
-
-            # Calculate LTV
-            ltv = 0
-            current_arpu = arpu
-
-            # Project 10 years of cash flows (or less if churn is high)
-            projection_years = min(10, int(avg_lifetime * 2))
-
-            for year in range(1, projection_years + 1):
-                # Probability of customer still being active
-                survival_prob = (1 - churn_rate) ** (year - 1)
-
-                # Annual revenue for the year (12 * monthly ARPU)
-                annual_revenue = current_arpu * 12
-
-                # Contribution margin
-                contribution = annual_revenue * margin
-
-                # Present value of year's contribution
-                pv_contribution = contribution * survival_prob / (1 + discount_rate) ** year
-
-                # Add to LTV
-                ltv += pv_contribution
-
-                # Grow ARPU for next year
-                current_arpu *= (1 + arpu_growth)
-
-            # Subtract customer acquisition cost
-            ltv -= cac
-
-            # Ensure LTV is positive
-            ltv = max(0, ltv)
-
-            # Calculate total subscriber value
-            total_subscriber_value = ltv * subscribers
-
-            # Project future subscriber growth (5-year horizon)
-            future_value = 0
-            current_subscribers = subscribers
-
-            for year in range(1, 6):
-                # New subscribers in the year
-                new_subscribers = current_subscribers * subscriber_growth
-
-                # Value of new subscribers (LTV discounted for acquisition year)
-                new_subscriber_value = new_subscribers * ltv / (1 + discount_rate) ** year
-
-                # Add to future value
-                future_value += new_subscriber_value
-
-                # Update subscriber count for next year
-                current_subscribers += new_subscribers
-
-            # Calculate enterprise value
-            enterprise_value = total_subscriber_value + future_value
-
-            # Calculate equity value by adjusting for debt and cash
-            if financial_data and 'balance_sheet' in financial_data:
-                balance_sheet = financial_data.get('balance_sheet')
-
-                # Get debt and cash
-                total_debt = 0
-                for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                    if debt_name in balance_sheet.index:
-                        total_debt += balance_sheet.loc[debt_name].iloc[0]
-
-                cash = 0
-                for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                    if cash_name in balance_sheet.index:
-                        cash += balance_sheet.loc[cash_name].iloc[0]
-
-                equity_value = enterprise_value - total_debt + cash
-            else:
-                equity_value = enterprise_value
-
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = equity_value / shares_outstanding
-            else:
-                value_per_share = None
-
-            return {
-                'method': 'Subscriber-Based',
-                'subscribers': subscribers,
-                'arpu': arpu,
-                'churn_rate': churn_rate,
-                'customer_lifetime': avg_lifetime,
-                'ltv': ltv,
-                'cac': cac,
-                'enterprise_value': enterprise_value,
-                'equity_value': equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating subscriber-based valuation for {ticker}: {e}")
-            return {
-                'method': 'Subscriber-Based',
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def user_based_valuation(self, ticker: str, financial_data: Dict,
-                             user_metrics: Dict) -> Dict:
-        """
-        Perform valuation based on user metrics for social media platforms.
-
-        Uses metrics like DAU/MAU, revenue per user, and engagement.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            user_metrics: Dictionary with user metrics
-
-        Returns:
-            Dictionary with user-based valuation results
-        """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            # Extract user metrics
-            if 'users' not in user_metrics:
-                raise ValueError("User count required for user-based valuation")
-
-            users = user_metrics.get('users')  # Total users
-            mau = user_metrics.get('mau', users)  # Monthly active users
-            dau = user_metrics.get('dau')  # Daily active users
-            arpu = user_metrics.get('arpu')  # Annual revenue per user
-
-            # Extract income statement data
-            income_stmt = financial_data.get('income_statement')
-
-            # Calculate ARPU if not provided but revenue is available
-            if arpu is None and income_stmt is not None and 'Total Revenue' in income_stmt.index:
-                latest_revenue = income_stmt.loc['Total Revenue'].iloc[0]
-                arpu = latest_revenue / mau
-            elif arpu is None:
-                # Use industry average if no data
-                arpu = 25  # $25 per user annually
-
-            # Calculate engagement ratio (DAU/MAU) if both metrics available
-            engagement_ratio = dau / mau if dau and mau else 0.5  # Default 50% engagement
-
-            # Calculate user value based on ARPU, engagement, and growth potential
-            # Higher engagement = higher value per user
-            base_user_value = arpu * 5  # Base multiplier
-
-            # Adjust for engagement
-            if engagement_ratio > 0.7:
-                # High engagement premium
-                user_value = base_user_value * 1.5
-            elif engagement_ratio > 0.5:
-                # Moderate engagement
-                user_value = base_user_value * 1.2
-            else:
-                # Lower engagement
-                user_value = base_user_value
-
-            # Calculate base platform value
-            platform_value = mau * user_value
-
-            # Calculate growth potential value
-            # If user growth rate is provided, use it
-            user_growth_rate = user_metrics.get('growth_rate', 0.1)  # Default 10% annual growth
-
-            # Project 5 years of user growth
-            future_value = 0
-            current_users = mau
-            discount_rate = self._calculate_communication_discount_rate(ticker, financial_data, 'Social Media')
-
-            for year in range(1, 6):
-                # New users in the year
-                new_users = current_users * user_growth_rate
-
-                # Value of new users (accounting for time value)
-                new_user_value = new_users * user_value / (1 + discount_rate) ** year
-
-                # Add to future value
-                future_value += new_user_value
-
-                # Update user count for next year (compounding growth)
-                current_users += new_users
-
-                # Gradually decrease growth rate for realism
-                user_growth_rate = max(user_growth_rate * 0.8, 0.05)
-
-            # Calculate enterprise value
-            enterprise_value = platform_value + future_value
-
-            # Calculate equity value by adjusting for debt and cash
-            if financial_data and 'balance_sheet' in financial_data:
-                balance_sheet = financial_data.get('balance_sheet')
-
-                # Get debt and cash
-                total_debt = 0
-                for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                    if debt_name in balance_sheet.index:
-                        total_debt += balance_sheet.loc[debt_name].iloc[0]
-
-                cash = 0
-                for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                    if cash_name in balance_sheet.index:
-                        cash += balance_sheet.loc[cash_name].iloc[0]
-
-                equity_value = enterprise_value - total_debt + cash
-            else:
-                equity_value = enterprise_value
-
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = equity_value / shares_outstanding
-            else:
-                value_per_share = None
-
-            return {
-                'method': 'User-Based (Social Media)',
-                'monthly_active_users': mau,
-                'daily_active_users': dau if dau else None,
-                'engagement_ratio': engagement_ratio,
-                'arpu': arpu,
-                'user_value': user_value,
-                'platform_value': platform_value,
-                'future_value': future_value,
-                'enterprise_value': enterprise_value,
-                'equity_value': equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating user-based valuation for {ticker}: {e}")
-            return {
-                'method': 'User-Based (Social Media)',
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def content_library_valuation(self, ticker: str, financial_data: Dict) -> Dict:
-        """
-        Value content libraries for media and entertainment companies.
-
-        This method estimates the value of a company's content catalog
-        (shows, movies, music, etc.) based on revenue generation and longevity.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-
-        Returns:
-            Dictionary with content library valuation results
-        """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            shares_outstanding = market_data.get('shares_outstanding')
-
-            # Extract income statement data
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-
-            if income_stmt is None:
-                raise ValueError("Income statement required for content library valuation")
-
-            # Get latest financial data
-            latest_income = income_stmt.iloc[:, 0]
-
-            # Estimate content revenue
-            # We need to identify revenue from content licensing, streaming, distribution
-            content_revenue = None
-
-            # Try to find content-specific revenue in segmented data
-            # This is a simplified approach - actual companies would have detailed breakdowns
-            for revenue_name in ['Content Revenue', 'Media Revenue', 'Entertainment Revenue',
-                                 'Licensing Revenue', 'Subscription Revenue']:
-                if revenue_name in latest_income.index:
-                    content_revenue = latest_income.loc[revenue_name]
-                    break
-
-            # If no specific content revenue, estimate from total revenue
-            if content_revenue is None:
-                if 'Total Revenue' in latest_income.index:
-                    # Estimate content revenue as percentage of total
-                    total_revenue = latest_income.loc['Total Revenue']
-                    # Default: 60% of revenue for media companies comes from content
-                    content_revenue = total_revenue * 0.6
-                else:
-                    raise ValueError("Could not estimate content revenue")
-
-            # Get content production/acquisition costs
-            content_costs = None
-
-            for cost_name in ['Content Costs', 'Programming Costs', 'Production Costs',
-                              'Content Acquisition']:
-                if cost_name in latest_income.index:
-                    content_costs = latest_income.loc[cost_name]
-                    break
-
-            # If content costs not found, estimate from intangible assets or COGS
-            if content_costs is None:
-                if balance_sheet is not None:
-                    latest_balance = balance_sheet.iloc[:, 0]
-
-                    for asset_name in ['Content Assets', 'Film Library', 'Intangible Assets',
-                                       'Content Rights']:
-                        if asset_name in latest_balance.index:
-                            # Use asset value as proxy for accumulated content investment
-                            content_costs = latest_balance.loc[asset_name] * 0.2  # Annual amortization
-                            break
-
-            # If still no content costs, estimate from revenue
-            if content_costs is None:
-                # Content costs typically 60-70% of content revenue for production companies
-                content_costs = content_revenue * 0.65
-
-            # Calculate content profit margin
-            content_margin = (content_revenue - content_costs) / content_revenue
-
-            # Apply valuation multiple based on catalog quality and longevity
-            # Base multiple from parameters
-            base_multiple = self.content_valuation_params.get('content_multiple', 5)
-
-            # Adjust multiple based on margin
-            if content_margin > 0.4:
-                # Premium content with high margins
-                adjusted_multiple = base_multiple * 1.3
-            elif content_margin > 0.2:
-                # Standard content
-                adjusted_multiple = base_multiple
-            else:
-                # Lower margin content
-                adjusted_multiple = base_multiple * 0.7
-
-            # Calculate base content library value
-            content_library_value = content_revenue * adjusted_multiple
-
-            # Account for future content production and catalog expansion
-            # Assuming content investment grows and generates returns over time
-            future_content_value = 0
-            growth_rate = 0.05  # 5% annual growth in content value
-            discount_rate = self._calculate_communication_discount_rate(ticker, financial_data, 'Media')
-
-            for year in range(1, 6):
-                # Future year's content value growth
-                year_value = content_library_value * growth_rate
-
-                # Discount to present value
-                pv_value = year_value / (1 + discount_rate) ** year
-
-                # Add to future content value
-                future_content_value += pv_value
-
-            # Calculate total content enterprise value
-            content_enterprise_value = content_library_value + future_content_value
-
-            # Adjust for company's other assets and liabilities to get content-based equity value
-            if balance_sheet is not None:
-                latest_balance = balance_sheet.iloc[:, 0]
-
-                # Get debt and cash
-                total_debt = 0
-                for debt_name in ['Total Debt', 'Long Term Debt', 'Short Term Debt']:
-                    if debt_name in latest_balance.index:
-                        total_debt += latest_balance.loc[debt_name]
-
-                cash = 0
-                for cash_name in ['Cash and Cash Equivalents', 'Cash and Short Term Investments']:
-                    if cash_name in latest_balance.index:
-                        cash += latest_balance.loc[cash_name]
-
-                # Adjust for non-content assets (we don't want to double-count everything)
-                # Simplified approach: add 30% of non-content assets
-                total_assets = latest_balance.loc['Total Assets'] if 'Total Assets' in latest_balance.index else 0
-                content_assets = total_assets * 0.7  # Assume 70% of assets are content-related
-                non_content_assets = total_assets - content_assets
-
-                equity_value = content_enterprise_value + (non_content_assets * 0.3) - total_debt + cash
-            else:
-                equity_value = content_enterprise_value
-
-            # Calculate per share value
-            if shares_outstanding and shares_outstanding > 0:
-                value_per_share = equity_value / shares_outstanding
-            else:
-                value_per_share = None
-
-            return {
-                'method': 'Content Library Valuation',
-                'content_revenue': content_revenue,
-                'content_costs': content_costs,
-                'content_margin': content_margin,
-                'adjusted_multiple': adjusted_multiple,
-                'content_library_value': content_library_value,
-                'future_content_value': future_content_value,
-                'content_enterprise_value': content_enterprise_value,
-                'equity_value': equity_value,
-                'value_per_share': value_per_share
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating content library valuation for {ticker}: {e}")
-            return {
-                'method': 'Content Library Valuation',
-                'error': str(e),
-                'value_per_share': None
-            }
-
-    def _calculate_communication_discount_rate(self, ticker: str, financial_data: Dict,
-                                               subsector: str) -> float:
-        """
-        Calculate appropriate discount rate for communication company based on
-        risk profile and subsector.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Communication subsector
-
-        Returns:
-            Discount rate as float
-        """
-        try:
-            # Get market data
-            market_data = financial_data.get('market_data', {})
-            beta = market_data.get('beta')
-
-            # Base discount rate from sector parameters
-            base_rate = self.sector_params.get('default_discount_rate', 0.10)
-
-            # Subsector risk premium
-            subsector_premium = {
-                'Telecommunications': -0.01,  # Lower risk due to utility-like nature
-                'Media': 0.00,  # Base case
-                'Social Media': 0.03,  # Higher risk due to disruption/competition
-                'Entertainment': 0.01  # Slightly higher risk
-            }.get(subsector, 0.00)
-
-            # Company-specific adjustments
-            company_premium = 0.00
-
-            # Beta-based adjustment if available
-            if beta is not None:
-                # Higher beta = higher risk = higher discount rate
-                if beta > 1.3:
-                    company_premium += 0.01
-                elif beta < 0.8:
-                    company_premium -= 0.01
-
-            # Adjust based on capital intensity (telecom has high capex)
-            if subsector == 'Telecommunications':
-                # Check capex intensity if cash flow available
-                cash_flow = financial_data.get('cash_flow')
-                income_stmt = financial_data.get('income_statement')
-
-                if cash_flow is not None and income_stmt is not None:
-                    latest_cf = cash_flow.iloc[:, 0]
-                    latest_income = income_stmt.iloc[:, 0]
-
-                    if 'Capital Expenditure' in latest_cf.index and 'Total Revenue' in latest_income.index:
-                        capex = abs(latest_cf.loc['Capital Expenditure'])
-                        revenue = latest_income.loc['Total Revenue']
-
-                        capex_intensity = capex / revenue
-
-                        if capex_intensity > 0.20:
-                            # Very high capex intensity
-                            company_premium += 0.01
-
-            # Adjust based on revenue stability and customer base
-            # More stable revenue = lower discount rate
-            income_stmt = financial_data.get('income_statement')
-
-            if income_stmt is not None and len(income_stmt.columns) >= 3:
-                # Check revenue volatility over time
-                if 'Total Revenue' in income_stmt.index:
-                    revenues = income_stmt.loc['Total Revenue']
-
-                    # Calculate year-over-year changes
-                    yoy_changes = []
-
-                    for i in range(len(revenues) - 1):
-                        if revenues[i + 1] > 0:  # Avoid division by zero
-                            change = abs((revenues[i] / revenues[i + 1]) - 1)
-                            yoy_changes.append(change)
-
-                    if yoy_changes:
-                        avg_volatility = sum(yoy_changes) / len(yoy_changes)
-
-                        if avg_volatility > 0.15:
-                            # High volatility
-                            company_premium += 0.01
-                        elif avg_volatility < 0.05:
-                            # Low volatility
-                            company_premium -= 0.01
-
-            # Calculate final discount rate
-            discount_rate = base_rate + subsector_premium + company_premium
-
-            # Ensure discount rate is in reasonable range
-            discount_rate = max(0.07, min(0.20, discount_rate))
-
-            return discount_rate
-
-        except Exception as e:
-            logger.warning(f"Error calculating communication discount rate for {ticker}: {e}")
-            # Return default rate from sector parameters
-            return self.sector_params.get('default_discount_rate', 0.10)
-
-    def _estimate_communication_growth_rate(self, ticker: str, financial_data: Dict,
-                                            subsector: str) -> float:
-        """
-        Estimate appropriate growth rate for communication company based on
-        historical data and subsector characteristics.
-
-        Args:
-            ticker: Company ticker symbol
-            financial_data: Financial data dictionary
-            subsector: Communication subsector
-
-        Returns:
-            Estimated growth rate as float
-        """
-        try:
-            # Get income statement for historical growth analysis
-            income_stmt = financial_data.get('income_statement')
-
-            if income_stmt is None or income_stmt.empty:
-                # Use subsector default if no data available
-                return {
-                    'Telecommunications': 0.02,  # 2% for telecom (mature)
-                    'Media': 0.04,  # 4% for traditional media
-                    'Social Media': 0.15,  # 15% for social platforms
-                    'Entertainment': 0.05  # 5% for entertainment
-                }.get(subsector, 0.04)
-
-            # Check revenue growth history
-            if 'Total Revenue' in income_stmt.index:
-                revenue = income_stmt.loc['Total Revenue']
-
-                # Calculate annual growth rates if we have at least 2 years of data
-                growth_rates = []
-
-                if len(revenue) >= 2:
-                    for i in range(len(revenue) - 1):
-                        if revenue[i + 1] > 0:  # Avoid division by zero
-                            annual_growth = (revenue[i] / revenue[i + 1]) - 1
-                            growth_rates.append(annual_growth)
-
-                if growth_rates:
-                    # Calculate weighted average (more recent years have higher weight)
-                    weights = list(range(1, len(growth_rates) + 1))
-                    weighted_growth = sum(r * w for r, w in zip(growth_rates, weights)) / sum(weights)
-
-                    # Adjust extreme values
-                    if weighted_growth > 0.25:
-                        # Cap very high growth rate and adjust down
-                        weighted_growth = 0.25 - (weighted_growth - 0.25) * 0.5
-                    elif weighted_growth < 0:
-                        # Adjust negative growth less severely as it may be temporary
-                        weighted_growth = weighted_growth * 0.5
-
-                    # Blend with subsector average for stability
-                    subsector_growth = {
-                        'Telecommunications': 0.02,
-                        'Media': 0.04,
-                        'Social Media': 0.15,
-                        'Entertainment': 0.05
-                    }.get(subsector, 0.04)
-
-                    # For telecom, history is more predictive; for social media, industry trends matter more
-                    if subsector == 'Telecommunications':
-                        blend_factor = 0.7  # 70% weight to historical performance
-                    elif subsector == 'Social Media':
-                        blend_factor = 0.4  # 40% weight to historical, 60% to industry trends
+                    # For metrics where lower is better
+                    if percent_diff <= -20:
+                        performance = "excellent"
+                        score = 1.0
+                        benchmark_results["strengths"].append(
+                            f"Strong {metric} ({-percent_diff:.1f}% below sector median)")
+                    elif percent_diff <= -5:
+                        performance = "good"
+                        score = 0.75
+                        benchmark_results["strengths"].append(f"Above-average {metric}")
+                    elif percent_diff <= 5:
+                        performance = "average"
+                        score = 0.5
+                    elif percent_diff <= 20:
+                        performance = "below average"
+                        score = 0.25
+                        benchmark_results["weaknesses"].append(f"Below-average {metric}")
                     else:
-                        blend_factor = 0.6  # 60% weight to historical
+                        performance = "poor"
+                        score = 0.0
+                        benchmark_results["weaknesses"].append(
+                            f"Weak {metric} ({percent_diff:.1f}% above sector median)")
 
-                    blended_growth = (weighted_growth * blend_factor) + (subsector_growth * (1 - blend_factor))
+                benchmark_results["comparisons"][metric] = {
+                    "company_value": company_value,
+                    "benchmark_value": benchmark_value,
+                    "percent_difference": percent_diff,
+                    "performance": performance
+                }
 
-                    return max(0.01, min(0.25, blended_growth))  # Ensure reasonable range
+                comparison_scores.append(score)
 
-            # If we can't calculate from history, use subsector default
-            return {
-                'Telecommunications': 0.02,
-                'Media': 0.04,
-                'Social Media': 0.15,
-                'Entertainment': 0.05
-            }.get(subsector, 0.04)
+        # Calculate overall score
+        if comparison_scores:
+            benchmark_results["score"] = sum(comparison_scores) / len(comparison_scores)
 
-        except Exception as e:
-            logger.warning(f"Error estimating communication growth rate for {ticker}: {e}")
-            # Return default rate based on subsector
-            return {
-                'Telecommunications': 0.02,
-                'Media': 0.04,
-                'Social Media': 0.15,
-                'Entertainment': 0.05
-            }.get(subsector, 0.04)
+        return benchmark_results
+
+    def _calculate_communications_metrics(self, result: Dict[str, Any], income: pd.Series, balance: pd.Series,
+                                          cash_flow: Optional[pd.Series]) -> None:
+        """Calculate communications-specific metrics"""
+        metrics = {}
+
+        # EBITDA Margin - key metric for communications sector
+        if 'EBITDA' in income and 'Total Revenue' in income:
+            ebitda_margin = income['EBITDA'] / income['Total Revenue']
+            metrics['EBITDA Margin'] = ebitda_margin
+        elif 'Operating Income' in income and 'Depreciation & Amortization' in income and 'Total Revenue' in income:
+            ebitda = income['Operating Income'] + income['Depreciation & Amortization']
+            ebitda_margin = ebitda / income['Total Revenue']
+            metrics['EBITDA Margin'] = ebitda_margin
+
+        # Capital Intensity
+        if 'Property Plant and Equipment' in balance and 'Total Revenue' in income:
+            capital_intensity = balance['Property Plant and Equipment'] / income['Total Revenue']
+            metrics['Capital Intensity'] = capital_intensity
+
+            # Classify network infrastructure intensity
+            if capital_intensity > 0.7:
+                metrics['Infrastructure Model'] = "Heavy infrastructure (network-focused telecom)"
+            elif capital_intensity > 0.4:
+                metrics['Infrastructure Model'] = "Medium infrastructure (hybrid telecom/media)"
+            else:
+                metrics['Infrastructure Model'] = "Light infrastructure (media/digital content)"
+
+        # Content Cost Ratio (for media companies)
+        # Note: This would typically come from footnotes or management discussion
+        # Placeholder for when that data is available
+        metrics['Content Cost Ratio'] = None
+
+        # R&D to Revenue (for tech-oriented communications companies)
+        if 'Research and Development' in income and 'Total Revenue' in income:
+            rd_to_revenue = income['Research and Development'] / income['Total Revenue']
+            metrics['R&D to Revenue'] = rd_to_revenue
+
+        # CAPEX Intensity
+        if cash_flow is not None and 'Capital Expenditure' in cash_flow and 'Total Revenue' in income:
+            capex_to_revenue = abs(cash_flow['Capital Expenditure']) / income['Total Revenue']
+            metrics['CAPEX to Revenue'] = capex_to_revenue
+
+        # Debt metrics
+        if 'Total Debt' in balance:
+            # Debt to EBITDA
+            if 'EBITDA' in income and income['EBITDA'] > 0:
+                debt_to_ebitda = balance['Total Debt'] / income['EBITDA']
+                metrics['Debt/EBITDA'] = debt_to_ebitda
+            elif 'Operating Income' in income and 'Depreciation & Amortization' in income:
+                ebitda = income['Operating Income'] + income['Depreciation & Amortization']
+                if ebitda > 0:
+                    debt_to_ebitda = balance['Total Debt'] / ebitda
+                    metrics['Debt/EBITDA'] = debt_to_ebitda
+
+        # User metrics (placeholders - these typically come from company reports, not financial statements)
+        metrics['ARPU'] = None  # Average Revenue Per User
+        metrics['Subscriber Growth'] = None
+        metrics['Churn Rate'] = None
+        metrics['Customer Acquisition Cost'] = None
+
+        result["industry_metrics"] = metrics
+
+    def _analyze_subscription_metrics(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Analyze subscription metrics for communications companies"""
+        # Note: In a production system, this would extract data from company reports
+        # or management discussions, which often contain user metrics
+
+        # For this example, we'll initialize with placeholder values
+        subscription_metrics = {
+            "Total Subscribers": None,
+            "Subscriber Growth (YoY)": None,
+            "ARPU (Average Revenue Per User)": None,
+            "Churn Rate": None,
+            "Customer Lifetime Value": None,
+            "Customer Acquisition Cost": None,
+            "LTV/CAC Ratio": None
+        }
+
+        # If we had user metrics, we could calculate:
+        # LTV = ARPU * (1 / Churn Rate)
+        # LTV/CAC Ratio = LTV / CAC
+
+        result["subscription_metrics"] = subscription_metrics
+
+    def _analyze_content_investments(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Analyze content investments for media companies"""
+        # Note: In a production system, this would extract data from company reports
+        # or management discussions about content investments and ROI
+
+        content_analysis = {
+            "Content Investment ($M)": None,
+            "Content as % of Revenue": None,
+            "Content Investment Growth (YoY)": None,
+            "Content ROI Estimate": None,
+            "Content Amortization Period": None,
+            "Content Strategy Assessment": None
+        }
+
+        result["content_analysis"] = content_analysis
+
+    def _identify_risk_factors(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Identify key industry risk factors for communications companies"""
+        risks = []
+
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+
+        if income_stmt is None or balance_sheet is None:
+            return
+
+        # Get most recent financial data
+        income = income_stmt.iloc[:, 0]
+        balance = balance_sheet.iloc[:, 0]
+
+        # Check for high debt levels (common in telecom)
+        if 'Total Debt' in balance and 'EBITDA' in income:
+            if income['EBITDA'] > 0:
+                debt_to_ebitda = balance['Total Debt'] / income['EBITDA']
+                if debt_to_ebitda > 3.5:
+                    risks.append({
+                        "factor": "High Debt Burden",
+                        "description": "Elevated debt to EBITDA levels increase financial risk and interest expense burden",
+                        "severity": "High" if debt_to_ebitda > 4.5 else "Medium"
+                    })
+
+        # Check for high capital intensity (telecom risk)
+        if 'Property Plant and Equipment' in balance and 'Total Revenue' in income:
+            capital_intensity = balance['Property Plant and Equipment'] / income['Total Revenue']
+            if capital_intensity > 0.6:
+                risks.append({
+                    "factor": "High Capital Intensity",
+                    "description": "Significant investment in infrastructure requires ongoing capital expenditure and creates high operational leverage",
+                    "severity": "Medium"
+                })
+
+        # Check for low EBITDA margin
+        if 'industry_metrics' in result and 'EBITDA Margin' in result['industry_metrics']:
+            ebitda_margin = result['industry_metrics']['EBITDA Margin']
+            if ebitda_margin < 0.25:  # Communications typically need high margins to cover infrastructure costs
+                risks.append({
+                    "factor": "Low EBITDA Margin",
+                    "description": "Below-average EBITDA margin may not support necessary capital investments",
+                    "severity": "High" if ebitda_margin < 0.15 else "Medium"
+                })
+
+        # Regulatory risk (common in communications)
+        risks.append({
+            "factor": "Regulatory Risk",
+            "description": "Communications sector faces ongoing regulatory challenges including pricing controls, access requirements, and privacy regulations",
+            "severity": "Medium"
+        })
+
+        # Technology disruption risk
+        risks.append({
+            "factor": "Technology Disruption",
+            "description": "Rapid technological changes can render existing infrastructure or content distribution models obsolete",
+            "severity": "Medium"
+        })
+
+        result["risk_factors"] = risks
+
+    def _evaluate_competitive_advantages(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Evaluate potential competitive advantages for communications companies"""
+        advantages = []
+
+        # Extract financial statements
+        income_stmt = financial_data.get('income_statement')
+        balance_sheet = financial_data.get('balance_sheet')
+
+        if income_stmt is None or balance_sheet is None:
+            return
+
+        # Get most recent financial data
+        income = income_stmt.iloc[:, 0]
+        balance = balance_sheet.iloc[:, 0]
+
+        # Check for strong EBITDA margin (network effect/scale advantage)
+        if 'industry_metrics' in result and 'EBITDA Margin' in result['industry_metrics']:
+            ebitda_margin = result['industry_metrics']['EBITDA Margin']
+            if ebitda_margin > 0.35:  # Above average for communications
+                advantages.append({
+                    "advantage": "Strong Operating Profitability",
+                    "description": "Above-average EBITDA margins indicate pricing power or cost advantages",
+                    "strength": "High" if ebitda_margin > 0.45 else "Medium"
+                })
+
+        # Network effects (placeholder - would come from qualitative assessment)
+        advantages.append({
+            "advantage": "Network Effects",
+            "description": "Communications businesses often benefit from network effects as user base grows",
+            "strength": "Medium"
+        })
+
+        # Spectrum assets (for telecom)
+        # This would typically come from footnotes or management discussion
+
+        # Content library (for media)
+        # This would typically come from footnotes or management discussion
+
+        result["competitive_advantages"] = advantages
+
+    def _calculate_ev_ebitda_valuation(self, result: Dict[str, Any], income: pd.Series, balance: pd.Series,
+                                       market_data: Dict[str, Any]) -> None:
+        """Calculate EV/EBITDA-based valuation (common for communications)"""
+        valuation = {}
+
+        # Get EBITDA
+        ebitda = None
+        if 'EBITDA' in income:
+            ebitda = income['EBITDA']
+        elif 'Operating Income' in income and 'Depreciation & Amortization' in income:
+            ebitda = income['Operating Income'] + income['Depreciation & Amortization']
+
+        # If we can't calculate EBITDA, skip this valuation method
+        if ebitda is None or ebitda <= 0:
+            valuation["error"] = "Unable to calculate EBITDA or EBITDA is negative"
+            result["methods"]["EV/EBITDA"] = valuation
+            return
+
+        # Get sector EV/EBITDA multiple
+        sector_multiple = 8.0  # Typical for communications
+        if 'sector_metrics' in self.sector_metrics and 'benchmarks' in self.sector_metrics['sector_metrics']:
+            if 'EV/EBITDA' in self.sector_metrics['sector_metrics']['benchmarks']:
+                sector_multiple = self.sector_metrics['sector_metrics']['benchmarks']['EV/EBITDA']
+
+        # Calculate enterprise value
+        enterprise_value = ebitda * sector_multiple
+
+        # Calculate equity value
+        total_debt = balance.get('Total Debt', 0)
+        cash = balance.get('Cash and Cash Equivalents', 0)
+        equity_value = enterprise_value - total_debt + cash
+
+        # Calculate per share value
+        shares_outstanding = market_data.get('shares_outstanding')
+        if shares_outstanding and shares_outstanding > 0:
+            value_per_share = equity_value / shares_outstanding
+        else:
+            value_per_share = None
+
+        # Store valuation result
+        valuation["enterprise_value"] = enterprise_value
+        valuation["equity_value"] = equity_value
+        valuation["value_per_share"] = value_per_share
+        valuation["multiple_used"] = sector_multiple
+        valuation["ebitda"] = ebitda
+
+        result["methods"]["EV/EBITDA"] = valuation
+
+    def _calculate_subscriber_valuation(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Calculate valuation based on subscriber metrics"""
+        valuation = {}
+
+        # In a real implementation, this would extract subscriber data from company reports
+        # and apply appropriate multiples based on industry benchmarks
+
+        # For this example, we'll initialize with a note
+        valuation["note"] = "Subscriber-based valuation requires user metrics data typically found in company reports"
+        valuation["key_metrics_needed"] = [
+            "Total subscribers",
+            "ARPU (Average Revenue Per User)",
+            "Churn rate",
+            "Subscriber growth rate"
+        ]
+        valuation["typical_valuation_approaches"] = [
+            "EV/Subscriber: $500-1500 per subscriber for telecom",
+            "EV/Subscriber: $150-600 per subscriber for media streaming",
+            "DCF based on subscriber lifetime value calculations"
+        ]
+
+        result["methods"]["Subscriber"] = valuation
+
+    def _calculate_content_valuation(self, result: Dict[str, Any], financial_data: Dict[str, Any]) -> None:
+        """Calculate valuation based on content assets"""
+        valuation = {}
+
+        # In a real implementation, this would analyze content libraries and their value
+        # based on data from company reports and industry benchmarks
+
+        # For this example, we'll initialize with a note
+        valuation["note"] = "Content-based valuation requires data on content assets typically found in company reports"
+        valuation["key_metrics_needed"] = [
+            "Content library size and quality",
+            "Content investment amounts",
+            "Content engagement metrics",
+            "Content monetization efficiency"
+        ]
+        valuation["typical_valuation_approaches"] = [
+            "Content library replacement cost analysis",
+            "Content ROI-based valuation",
+            "Comparable content acquisition transactions"
+        ]
+
+        result["methods"]["Content"] = valuation
+
+    def _calculate_pe_valuation(self, result: Dict[str, Any], income: pd.Series, market_data: Dict[str, Any]) -> None:
+        """Calculate P/E-based valuation (common for media companies)"""
+        valuation = {}
+
+        # Get earnings
+        net_income = None
+        if 'Net Income' in income:
+            net_income = income['Net Income']
+
+        # If we can't get net income, skip this valuation method
+        if net_income is None or net_income <= 0:
+            valuation["error"] = "Unable to calculate P/E because net income is negative or unavailable"
+            result["methods"]["P/E"] = valuation
+            return
+
+        # Get sector P/E multiple
+        sector_pe = 20.0  # Typical for communications, especially media
+        if 'sector_metrics' in self.sector_metrics and 'benchmarks' in self.sector_metrics['sector_metrics']:
+            if 'P/E' in self.sector_metrics['sector_metrics']['benchmarks']:
+                sector_pe = self.sector_metrics['sector_metrics']['benchmarks']['P/E']
+
+        # Calculate equity value
+        equity_value = net_income * sector_pe
+
+        # Calculate per share value
+        shares_outstanding = market_data.get('shares_outstanding')
+        if shares_outstanding and shares_outstanding > 0:
+            value_per_share = equity_value / shares_outstanding
+        else:
+            value_per_share = None
+
+        # Store valuation result
+        valuation["equity_value"] = equity_value
+        valuation["value_per_share"] = value_per_share
+        valuation["multiple_used"] = sector_pe
+        valuation["net_income"] = net_income
+
+        result["methods"]["P/E"] = valuation
+
+
+# Register with factory
+from StockAnalysisSystem.src.valuation.sector_factor import SectorFactory
+
+SectorFactory.register_analyzer("Communication Services", CommunicationsSectorAnalyzer)
