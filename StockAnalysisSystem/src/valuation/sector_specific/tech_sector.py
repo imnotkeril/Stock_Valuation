@@ -96,9 +96,9 @@ class TechnologySectorAnalyzer(SectorAnalyzer):
         latest_cash_flow = cash_flow.iloc[:, 0] if cash_flow is not None and not cash_flow.empty else pd.Series()
 
         # Calculate key tech metrics
-        revenue = self._get_value_with_alternatives(latest_income, ['Total Revenue', 'Revenue', 'Net Revenue'])
-        gross_profit = self._get_value_with_alternatives(latest_income, ['Gross Profit', 'Gross Income'])
-        r_and_d = self._get_value_with_alternatives(latest_income, ['Research and Development', 'R&D Expense'])
+        revenue = self._get_value_with_alternatives(latest_income, ['Total Revenue', 'Revenue', 'Net Revenue']) or 0
+        gross_profit = self._get_value_with_alternatives(latest_income, ['Gross Profit', 'Gross Income']) or 0
+        r_and_d = self._get_value_with_alternatives(latest_income, ['Research and Development', 'R&D Expense']) or 0
 
         if revenue > 0:
             # Calculate tech-specific ratios
@@ -529,11 +529,19 @@ class TechnologySectorAnalyzer(SectorAnalyzer):
 
         return results
 
+    @staticmethod
+    def _statement_to_dict(statement) -> Dict[Any, Dict[str, Any]]:
+        """Convert a statement DataFrame (rows=items, columns=periods) into {period: {item: value}}."""
+        if isinstance(statement, pd.DataFrame):
+            return {} if statement.empty else statement.to_dict()
+        return statement or {}
+
     def _assess_disruption_risk(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """Assess the risk of technological disruption"""
         # Logic to assess disruption risk based on R&D intensity, patents, etc.
         metrics = financial_data.get('metrics', {})
         income_stmt = financial_data.get('income_statement', {})
+        income_stmt = self._statement_to_dict(income_stmt)
 
         # Get the latest year data
         latest_year = list(income_stmt.keys())[0] if income_stmt else None
@@ -541,7 +549,7 @@ class TechnologySectorAnalyzer(SectorAnalyzer):
 
         # Calculate R&D intensity
         revenue = latest_income.get('Total Revenue', 0)
-        r_and_d = latest_income.get('Research & Development', 0)
+        r_and_d = latest_income.get('Research And Development', latest_income.get('Research & Development', 0)) or 0
         r_and_d_intensity = r_and_d / revenue if revenue > 0 else 0
 
         # Industry average R&D intensity
@@ -573,6 +581,7 @@ class TechnologySectorAnalyzer(SectorAnalyzer):
         # Assess market share trend, margin compression, etc.
         metrics = financial_data.get('metrics', {})
         income_stmt = financial_data.get('income_statement', {})
+        income_stmt = self._statement_to_dict(income_stmt)
 
         # Get multiple years of data for trend analysis
         years = list(income_stmt.keys())

@@ -27,9 +27,9 @@ class ManufacturingSectorAnalyzer(SectorAnalyzer):
     aerospace & defense, industrial products, and other manufacturing businesses.
     """
 
-    def __init__(self):
+    def __init__(self, sector_name: str = "Industrials"):
         """Initialize manufacturing sector analyzer"""
-        super().__init__(sector_name="Industrials")
+        super().__init__(sector_name=sector_name)
         logger.info("Initialized Manufacturing/Industrial sector analyzer")
 
     def analyze_company(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:

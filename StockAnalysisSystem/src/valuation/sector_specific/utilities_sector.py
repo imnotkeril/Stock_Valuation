@@ -27,9 +27,9 @@ class UtilitiesSectorAnalyzer(SectorAnalyzer):
     along with independent power producers.
     """
 
-    def __init__(self):
+    def __init__(self, sector_name: str = "Utilities"):
         """Initialize utilities sector analyzer"""
-        super().__init__("Utilities")
+        super().__init__(sector_name)
         logger.info("Initialized Utilities sector analyzer")
 
     def analyze_company(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:

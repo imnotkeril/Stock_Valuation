@@ -28,9 +28,9 @@ class MaterialsSectorAnalyzer(SectorAnalyzer):
     construction materials, packaging, and other materials businesses.
     """
 
-    def __init__(self):
+    def __init__(self, sector_name: str = "Materials"):
         """Initialize materials sector analyzer"""
-        super().__init__("Materials")
+        super().__init__(sector_name)
         self.key_ratios = self.get_key_ratios()
         self.preferred_valuation_methods = self.get_preferred_valuation_methods()
         logger.info(f"Initialized Materials sector analyzer with {len(self.key_ratios)} key ratios")

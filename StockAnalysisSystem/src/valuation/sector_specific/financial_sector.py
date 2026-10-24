@@ -1822,3 +1822,6 @@ class FinancialSectorAnalyzer(SectorAnalyzer):
                 'error': str(e),
                 'valuation_method': 'combined_approach'
             }
+
+SectorFactory.register_analyzer("Financials", FinancialSectorAnalyzer)
+SectorFactory.register_analyzer("Financial Services", FinancialSectorAnalyzer)

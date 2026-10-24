@@ -621,6 +621,33 @@ class EnergySectorAnalyzer(SectorAnalyzer):
             logger.error(f"Error calculating debt-adjusted cash flow multiple: {e}")
             return None
 
+    def _calculate_debt_adjusted_cf_multiple(self, financial_data: Dict[str, Any]) -> float:
+        """Calculate (Market Cap + Total Debt) / Operating Cash Flow"""
+        try:
+            cash_flow = financial_data.get('cash_flow')
+            balance_sheet = financial_data.get('balance_sheet')
+            market_data = financial_data.get('market_data', {})
+
+            if cash_flow is None or balance_sheet is None or not market_data:
+                return None
+
+            market_cap = market_data.get('market_cap')
+            if not market_cap or 'Operating Cash Flow' not in cash_flow.index:
+                return None
+
+            operating_cf = cash_flow.iloc[0]['Operating Cash Flow']
+            if not operating_cf or operating_cf <= 0:
+                return None
+
+            total_debt = 0
+            if 'Total Debt' in balance_sheet.index:
+                total_debt = balance_sheet.iloc[0]['Total Debt']
+
+            return (market_cap + total_debt) / operating_cf
+        except Exception as e:
+            logger.error(f"Error calculating debt-adjusted cash flow multiple: {e}")
+            return None
+
     def _calculate_fcf_yield(self, financial_data: Dict[str, Any]) -> float:
         """Calculate Free Cash Flow Yield (FCF / Enterprise Value)"""
         try:
