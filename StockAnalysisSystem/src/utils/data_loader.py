@@ -862,6 +862,8 @@ class DataLoader:
                 'exchange': info.get('exchange', 'N/A'),
                 'currency': info.get('currency', 'USD'),
                 'market_cap': info.get('marketCap', None),
+                'shares_outstanding': info.get('sharesOutstanding', None),
+                'current_price': info.get('currentPrice', info.get('regularMarketPrice', None)),
                 'pe_ratio': info.get('trailingPE', None),
                 'forward_pe': info.get('forwardPE', None),
                 'pb_ratio': info.get('priceToBook', None),

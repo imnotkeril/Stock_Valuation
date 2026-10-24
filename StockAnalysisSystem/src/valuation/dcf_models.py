@@ -37,6 +37,70 @@ class AdvancedDCFValuation(BaseValuation):
         super().__init__(data_loader)
         logger.info("Initialized AdvancedDCFValuation")
 
+    def _estimate_initial_growth_rate(self, historical_fcf: pd.Series, ticker: str = None,
+                                      sector: str = None) -> float:
+        """
+        Estimate initial FCF growth as the CAGR of the historical FCF series
+        (index is ordered newest first, as returned by the data loader),
+        clipped to a sane range. Falls back to a conservative default.
+        """
+        default_growth = 0.05
+        min_growth, max_growth = 0.02, 0.25
+        try:
+            values = pd.to_numeric(historical_fcf, errors='coerce').dropna().values
+            if len(values) >= 2:
+                newest, oldest = float(values[0]), float(values[-1])
+                if newest > 0 and oldest > 0:
+                    cagr = (newest / oldest) ** (1.0 / (len(values) - 1)) - 1
+                    return float(min(max(cagr, min_growth), max_growth))
+        except Exception as e:
+            logger.warning(f"Growth estimation failed for {ticker}: {e}")
+        return default_growth
+
+    def _forecast_financial_statements(self, income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame,
+                                       cash_flow: pd.DataFrame, forecast_years: int,
+                                       sector: str = None) -> Dict[str, Any]:
+        """
+        Forecast revenue and free cash flow: revenue growth fades linearly from the
+        historical CAGR to the terminal growth rate, FCF = revenue x average historical FCF margin.
+
+        Returns:
+            {'fcf': [float, ...], 'summary': pd.DataFrame(revenue, fcf_margin, fcf) per forecast year}
+        """
+        params = self._get_dcf_parameters(sector)
+        historical_fcf = self._calculate_historical_fcf(income_stmt, cash_flow)
+        if historical_fcf.empty:
+            raise ValueError("Unable to calculate historical free cash flow")
+
+        revenue_row = next((r for r in ('Total Revenue', 'Revenue', 'Operating Revenue')
+                            if r in income_stmt.index), None)
+        if revenue_row is None:
+            raise ValueError("Revenue not found in income statement")
+
+        revenue = pd.to_numeric(income_stmt.loc[revenue_row], errors='coerce').dropna()
+        common = revenue.index.intersection(historical_fcf.index)
+        if len(common) == 0 or revenue.iloc[0] <= 0:
+            raise ValueError("Cannot align revenue and free cash flow history")
+
+        margin = float((historical_fcf[common] / revenue[common]).replace([np.inf, -np.inf], np.nan).dropna().mean())
+        if not np.isfinite(margin):
+            raise ValueError("Cannot estimate free cash flow margin")
+
+        start_growth = self._estimate_initial_growth_rate(revenue, None, sector)
+        end_growth = params['terminal_growth_rate']
+
+        rows, fcfs = [], []
+        current_revenue = float(revenue.iloc[0])
+        for year in range(1, forecast_years + 1):
+            growth = start_growth + (end_growth - start_growth) * (year - 1) / max(forecast_years - 1, 1)
+            current_revenue *= 1 + growth
+            fcf = current_revenue * margin
+            fcfs.append(fcf)
+            rows.append({'year': year, 'revenue_growth': growth, 'revenue': current_revenue,
+                         'fcf_margin': margin, 'fcf': fcf})
+
+        return {'fcf': fcfs, 'summary': pd.DataFrame(rows).set_index('year')}
+
     def multi_stage_dcf_valuation(self, ticker: str, financial_data: Dict[str, Any] = None,
                                   sector: str = None) -> Dict[str, Any]:
         """
@@ -109,7 +173,8 @@ class AdvancedDCFValuation(BaseValuation):
                 # Linear decline in growth rate from initial to steady
                 growth_rate = initial_growth_rate - ((initial_growth_rate - steady_growth_rate) *
                                                      year / transition_years)
-                fcf = high_growth_fcf[-1] * (1 + growth_rate) ** year
+                previous = transition_fcf[-1] if transition_fcf else high_growth_fcf[-1]
+                fcf = previous * (1 + growth_rate)
                 transition_fcf.append(fcf)
 
             # Calculate terminal value
@@ -1325,7 +1390,8 @@ class SectorSpecificDCF(AdvancedDCFValuation):
                 # Linear decline in growth rate
                 growth_rate = initial_growth_rate - ((initial_growth_rate - steady_growth_rate) *
                                                      year / transition_years)
-                fcf = high_growth_fcf[-1] * (1 + growth_rate) ** year
+                previous = transition_fcf[-1] if transition_fcf else high_growth_fcf[-1]
+                fcf = previous * (1 + growth_rate)
                 transition_fcf.append(fcf)
 
             # Calculate terminal value
