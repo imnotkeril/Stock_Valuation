@@ -534,6 +534,50 @@ class BaseValuation:
                 result.setdefault('error', f"Implausible result ({value / price:.2f}x the share price)")
         return result
 
+    #: Legacy / alternative subsector spellings accepted by _resolve_subsector.
+    SUBSECTOR_ALIASES: Dict[str, str] = {}
+
+    def _resolve_subsector(self, ticker: str, financial_data: Dict[str, Any], subsector: Optional[str],
+                           notes: List[str]) -> Optional[str]:
+        """Validate ``subsector`` (aliases allowed); detect it when missing or unknown."""
+        if subsector:
+            key = self.SUBSECTOR_ALIASES.get(str(subsector).lower(), str(subsector).lower())
+            if key in self.SUBSECTORS:
+                return key
+            notes.append(f"Unknown subsector '{subsector}'; using the detected subsector instead.")
+        detected = self.detect_subsector(ticker, financial_data, self._company_info(financial_data))
+        return detected if detected in self.SUBSECTORS else next(iter(self.SUBSECTORS), None)
+
+    def _run_sector_valuation(self, ticker: str, financial_data: Optional[Dict[str, Any]],
+                              subsector: Optional[str], sector: Optional[str], kwargs: Dict[str, Any],
+                              prepare: Callable[..., Any]) -> Dict[str, Any]:
+        """
+        Shared ``get_valuation`` flow for sector models.
+
+        ``prepare(financial_data, subsector, overrides, notes)`` returns
+        ``(runners, assumptions)``; runners map method keys to callables.
+        Never raises: total failures become ``build_error_result``.
+        """
+        sector = sector or self.SECTOR
+        try:
+            if financial_data is None:
+                financial_data = self._load_financial_data(ticker)
+            self._require_statements(financial_data)
+            notes: List[str] = []
+            subsector = self._resolve_subsector(ticker, financial_data, subsector, notes)
+            overrides = self._parameter_overrides(subsector, kwargs)
+            runners, assumptions = prepare(financial_data, subsector, overrides, notes)
+            methods = self._run_methods(runners, financial_data, subsector, kwargs.get('methods'), notes)
+            return self.build_valuation_result(
+                ticker, financial_data, methods,
+                weights=kwargs.get('weights') or self.get_method_weights(subsector),
+                sector=sector, subsector=subsector,
+                assumptions={**assumptions, 'user_overrides': overrides}, notes=notes,
+            )
+        except Exception as e:
+            logger.error(f"{self.__class__.__name__} valuation failed for {ticker}: {e}")
+            return self.build_error_result(ticker, e, sector=sector, subsector=subsector)
+
     def _method_error(self, label: str, error: Any, ticker: Optional[str] = None) -> Dict[str, Any]:
         """Standard per-method failure dict."""
         logger.info(f"{label} not available for {ticker}: {error}")

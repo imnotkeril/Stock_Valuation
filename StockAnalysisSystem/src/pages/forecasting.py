@@ -1,2093 +1,1049 @@
-import os
-import sys
+"""
+Forecasting page.
+
+Entry point: :func:`run_forecasting_page` (no arguments).
+
+Tabs:
+
+* **Price Forecast** - ``TimeSeriesForecaster.forecast_price`` for each
+  selected model (ARIMA, exponential smoothing, linear trend, random walk,
+  machine learning and Prophet when installed), the weighted ensemble
+  (``create_ensemble_forecast``), a backtest (``evaluate_models``) and
+  Monte-Carlo probabilities (``probability_of_price_increase`` /
+  ``probability_of_price_change``).
+* **Financial Metrics** - statement line items and margins forecast with
+  ``forecast_financial_metric`` / ``create_ensemble_financial_forecast``.
+* **Scenarios** - bear/base/bull projections of revenue, earnings and the
+  implied share price, with a probability-weighted target.
+* **Economic Indicators** - FRED macro series (needs network access and
+  ``pandas-datareader``) forecast with ARIMA/ML/ensemble and VAR.
+
+Results are stored in ``st.session_state`` when the run buttons are pressed
+and rendered from there, so they survive reruns triggered by other widgets.
+Model failures are logged and reported as friendly messages.
+"""
+
+from __future__ import annotations
+
+import importlib.util
 import logging
-import pandas as pd
-import numpy as np
-import streamlit as st
+import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
-# Add the project root to Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# Import project modules
-from StockAnalysisSystem.src.config import UI_SETTINGS, COLORS, VIZ_SETTINGS
+from StockAnalysisSystem.src.config import COLORS
+from StockAnalysisSystem.src.navigation import get_active_ticker
+from StockAnalysisSystem.src.pages import forecast_charts as charts
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
-from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
-from StockAnalysisSystem.src.models.forecasting.time_series import TimeSeriesForecaster
-from StockAnalysisSystem.src.models.forecasting.ml_models import MLForecaster
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from StockAnalysisSystem.src.utils.export import to_csv_bytes
+from StockAnalysisSystem.src.utils.financial_data import (
+    build_financial_data,
+    cagr,
+    format_large_number,
+    get_latest,
+    get_series,
+    safe_divide,
+    to_float,
 )
-logger = logging.getLogger('forecasting')
-
-
-def run_forecasting_page():
-    """Main function to run the forecasting page"""
-    st.title("Financial Forecasting")
-    st.markdown("Forecast stock prices, financial metrics, and economic indicators to support investment decisions.")
-
-    # Initialize data loader and visualizer
-    data_loader = DataLoader()
-    visualizer = FinancialVisualizer(theme="dark")
-    time_series_forecaster = TimeSeriesForecaster()
-    ml_forecaster = MLForecaster()
-
-    # Sidebar for inputs
-    with st.sidebar:
-        st.header("Forecasting Parameters")
-
-        # What to forecast
-        st.subheader("Select Data to Forecast")
-        forecast_options = {
-            "Stock Price": "Forecast future stock prices",
-            "Financial Metrics": "Forecast financial metrics like revenue, EPS, etc.",
-            "Economic Indicators": "Forecast economic indicators like GDP, inflation, etc."
-        }
-
-        forecast_type = st.selectbox(
-            "What would you like to forecast?",
-            options=list(forecast_options.keys())
-        )
-
-        st.info(forecast_options[forecast_type])
-
-        # Specify forecasting parameters based on selection
-        if forecast_type == "Stock Price":
-            # Stock selection
-            ticker = st.text_input("Enter ticker symbol:", "AAPL").upper()
-
-            # Historical data period
-            hist_period_options = {
-                "1 Year": 365,
-                "2 Years": 2 * 365,
-                "3 Years": 3 * 365,
-                "5 Years": 5 * 365,
-                "10 Years": 10 * 365
-            }
-
-            historical_period = st.selectbox(
-                "Historical data period:",
-                options=list(hist_period_options.keys()),
-                index=2  # Default to 3 years
-            )
-
-            days_of_history = hist_period_options[historical_period]
-
-            # Forecast horizon
-            forecast_horizon_options = {
-                "1 Month": 30,
-                "3 Months": 90,
-                "6 Months": 180,
-                "1 Year": 365
-            }
-
-            forecast_horizon = st.selectbox(
-                "Forecast horizon:",
-                options=list(forecast_horizon_options.keys()),
-                index=1  # Default to 3 months
-            )
-
-            days_to_forecast = forecast_horizon_options[forecast_horizon]
-
-            # Forecast frequency
-            forecast_frequency = st.selectbox(
-                "Forecast frequency:",
-                options=["Daily", "Weekly", "Monthly"],
-                index=0  # Default to daily
-            )
-
-            # Forecast models
-            st.subheader("Forecasting Models")
-
-            use_arima = st.checkbox("ARIMA", value=True)
-            use_exponential = st.checkbox("Exponential Smoothing", value=True)
-            use_prophet = st.checkbox("Prophet", value=True)
-            use_lstm = st.checkbox("LSTM Neural Network", value=False)
-
-            st.markdown("---")
-
-            # Advanced settings
-            with st.expander("Advanced Settings", expanded=False):
-                # Confidence interval
-                confidence_interval = st.slider(
-                    "Confidence Interval (%):",
-                    min_value=50,
-                    max_value=99,
-                    value=95,
-                    step=5
-                )
-
-                # ARIMA parameters (if selected)
-                if use_arima:
-                    st.subheader("ARIMA Parameters")
-
-                    auto_arima = st.checkbox("Auto-select ARIMA parameters", value=True)
-
-                    if not auto_arima:
-                        p_param = st.slider("p (AR order):", 0, 10, 2)
-                        d_param = st.slider("d (Differencing):", 0, 3, 1)
-                        q_param = st.slider("q (MA order):", 0, 10, 2)
-                    else:
-                        p_param, d_param, q_param = None, None, None
-
-                # Prophet parameters (if selected)
-                if use_prophet:
-                    st.subheader("Prophet Parameters")
-
-                    include_seasonality = st.checkbox("Include seasonality", value=True)
-                    include_holidays = st.checkbox("Include holidays", value=True)
-
-                # LSTM parameters (if selected)
-                if use_lstm:
-                    st.subheader("LSTM Parameters")
-
-                    lookback_period = st.slider("Lookback Period (days):", 7, 90, 30)
-                    lstm_epochs = st.slider("Training Epochs:", 10, 500, 100)
-                    lstm_batch_size = st.slider("Batch Size:", 8, 128, 32)
-
-            # Events to include
-            with st.expander("Include Events", expanded=False):
-                include_earnings = st.checkbox("Earnings Announcements", value=True)
-                include_dividends = st.checkbox("Dividend Payments", value=True)
-                include_splits = st.checkbox("Stock Splits", value=True)
-
-        elif forecast_type == "Financial Metrics":
-            # Company selection
-            ticker = st.text_input("Enter ticker symbol:", "AAPL").upper()
-
-            # Metric selection
-            financial_metrics = [
-                "Revenue",
-                "EBITDA",
-                "Net Income",
-                "EPS",
-                "Operating Margin",
-                "Net Margin",
-                "ROE",
-                "Free Cash Flow"
-            ]
-
-            selected_metrics = st.multiselect(
-                "Select metrics to forecast:",
-                options=financial_metrics,
-                default=["Revenue", "EPS"]
-            )
-
-            # Forecast horizon
-            forecast_periods = st.slider(
-                "Number of periods to forecast:",
-                min_value=1,
-                max_value=12,
-                value=4
-            )
-
-            # Forecast frequency
-            forecast_frequency = st.selectbox(
-                "Forecast frequency:",
-                options=["Quarterly", "Annual"],
-                index=0  # Default to quarterly
-            )
-
-            # Forecast models
-            st.subheader("Forecasting Models")
-
-            use_linear = st.checkbox("Linear Trend", value=True)
-            use_arima = st.checkbox("ARIMA", value=True)
-            use_ml = st.checkbox("Machine Learning (XGBoost)", value=True)
-
-            # Include additional factors
-            with st.expander("Include Additional Factors", expanded=False):
-                include_sector = st.checkbox("Sector Performance", value=True)
-                include_macro = st.checkbox("Macroeconomic Indicators", value=True)
-                include_sentiment = st.checkbox("Market Sentiment", value=False)
-
-        elif forecast_type == "Economic Indicators":
-            # Indicator selection
-            economic_indicators = [
-                "GDP Growth",
-                "Inflation (CPI)",
-                "Unemployment Rate",
-                "Federal Funds Rate",
-                "10-Year Treasury Yield",
-                "Consumer Sentiment",
-                "Retail Sales",
-                "Housing Starts"
-            ]
-
-            selected_indicators = st.multiselect(
-                "Select indicators to forecast:",
-                options=economic_indicators,
-                default=["GDP Growth", "Inflation (CPI)"]
-            )
-
-            # Forecast horizon
-            forecast_periods = st.slider(
-                "Number of periods to forecast:",
-                min_value=1,
-                max_value=8,
-                value=4
-            )
-
-            # Forecast frequency
-            forecast_frequency = st.selectbox(
-                "Forecast frequency:",
-                options=["Quarterly", "Annual"],
-                index=0  # Default to quarterly
-            )
-
-            # Forecast models
-            st.subheader("Forecasting Models")
-
-            use_arima = st.checkbox("ARIMA", value=True)
-            use_var = st.checkbox("Vector Autoregression (VAR)", value=True)
-            use_ml = st.checkbox("Machine Learning", value=True)
-
-        # Run forecast button
-        forecast_button = st.button("Run Forecast", type="primary")
-
-    # Main content area
-    if forecast_type == "Stock Price" and forecast_button:
-        with st.spinner(f"Forecasting {ticker} price for the next {forecast_horizon}..."):
-            try:
-                # Load historical data
-                end_date = datetime.now().strftime('%Y-%m-%d')
-                start_date = (datetime.now() - timedelta(days=days_of_history)).strftime('%Y-%m-%d')
-
-                # Get historical prices
-                price_data = data_loader.get_historical_prices(ticker, start_date, end_date)
-
-                if price_data.empty:
-                    st.error(f"Could not load historical price data for {ticker}.")
-                    return
-
-                # Get company info
-                company_info = data_loader.get_company_info(ticker)
-                company_name = company_info.get('name', ticker) if company_info else ticker
-
-                # Prepare forecasting parameters
-                forecast_params = {
-                    "frequency": forecast_frequency,
-                    "periods": days_to_forecast,
-                    "confidence_interval": confidence_interval / 100
-                }
-
-                # ARIMA-specific parameters
-                if use_arima:
-                    forecast_params["arima_params"] = {
-                        "auto": auto_arima,
-                        "p": p_param,
-                        "d": d_param,
-                        "q": q_param
-                    }
-
-                # Prophet-specific parameters
-                if use_prophet:
-                    forecast_params["prophet_params"] = {
-                        "seasonality": include_seasonality,
-                        "holidays": include_holidays
-                    }
-
-                # LSTM-specific parameters
-                if use_lstm:
-                    forecast_params["lstm_params"] = {
-                        "lookback": lookback_period,
-                        "epochs": lstm_epochs,
-                        "batch_size": lstm_batch_size
-                    }
-
-                # Create list of models to use
-                models_to_use = []
-                if use_arima:
-                    models_to_use.append("arima")
-                if use_exponential:
-                    models_to_use.append("ets")
-                if use_prophet:
-                    models_to_use.append("prophet")
-                if use_lstm:
-                    models_to_use.append("lstm")
-
-                forecast_params["models"] = models_to_use
-
-                # Generate forecasts
-                forecasts = time_series_forecaster.forecast_price(
-                    price_data,
-                    **forecast_params
-                )
-
-                if not forecasts:
-                    st.error("Failed to generate forecasts. Please check your parameters and try again.")
-                    return
-
-                # Display results header
-                st.header(f"Price Forecast for {company_name} ({ticker})")
-                st.subheader(f"Forecast Horizon: {forecast_horizon}")
-
-                # Create tabs for different views
-                tabs = st.tabs(["Forecast Chart", "Model Comparison", "Forecast Statistics", "Model Details"])
-
-                # Tab 1: Forecast Chart
-                with tabs[0]:
-                    st.subheader("Price Forecast")
-
-                    # Create ensemble forecast
-                    ensemble_forecast = time_series_forecaster.create_ensemble_forecast(forecasts)
-
-                    # Plot forecast
-                    fig = visualizer.plot_price_forecast(
-                        price_data,
-                        ensemble_forecast,
-                        ticker,
-                        company_name=company_name,
-                        title=f"{ticker} Price Forecast - Next {forecast_horizon}",
-                        height=600
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Display key metrics
-                    current_price = price_data['Close'].iloc[-1]
-                    forecast_price = ensemble_forecast['mean'].iloc[-1] if not ensemble_forecast.empty else None
-                    forecast_change = ((forecast_price / current_price) - 1) * 100 if forecast_price else None
-
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        st.metric(
-                            "Current Price",
-                            f"${current_price:.2f}"
-                        )
-
-                    with col2:
-                        st.metric(
-                            f"Forecast ({forecast_horizon})",
-                            f"${forecast_price:.2f}" if forecast_price else "N/A",
-                            f"{forecast_change:.2f}%" if forecast_change else None,
-                            delta_color="normal"
-                        )
-
-                    with col3:
-                        high_estimate = ensemble_forecast['upper'].iloc[-1] if not ensemble_forecast.empty else None
-                        low_estimate = ensemble_forecast['lower'].iloc[-1] if not ensemble_forecast.empty else None
-
-                        st.metric(
-                            f"Range ({confidence_interval}% CI)",
-                            f"${low_estimate:.2f} - ${high_estimate:.2f}" if low_estimate and high_estimate else "N/A"
-                        )
-
-                    # Add forecast interpretation
-                    if forecast_price and forecast_change:
-                        if forecast_change > 10:
-                            sentiment = "strongly bullish"
-                            color = COLORS["primary"]  # Green
-                        elif forecast_change > 5:
-                            sentiment = "moderately bullish"
-                            color = COLORS["success"]  # Light green
-                        elif forecast_change > 0:
-                            sentiment = "slightly bullish"
-                            color = COLORS["warning"]  # Yellow
-                        elif forecast_change > -5:
-                            sentiment = "slightly bearish"
-                            color = COLORS["warning"]  # Yellow
-                        elif forecast_change > -10:
-                            sentiment = "moderately bearish"
-                            color = COLORS["accent"]  # Light red
-                        else:
-                            sentiment = "strongly bearish"
-                            color = COLORS["danger"]  # Red
-
-                        st.markdown(
-                            f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                            f"<h4 style='color: #121212; text-align: center;'>Forecast Outlook: {sentiment.capitalize()}</h4>"
-                            f"<p style='color: #121212; text-align: center;'>The model ensemble predicts a {forecast_change:.2f}% "
-                            f"change in {ticker} price over the next {forecast_horizon}.</p>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-
-                # Tab 2: Model Comparison
-                with tabs[1]:
-                    st.subheader("Model Comparison")
-
-                    # Plot all models on one chart
-                    fig = visualizer.plot_model_comparison(
-                        price_data,
-                        forecasts,
-                        ticker,
-                        title=f"{ticker} Price Forecast - Model Comparison",
-                        height=600
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Display model performance metrics
-                    st.subheader("Model Performance")
-
-                    # Calculate performance metrics
-                    performance_metrics = time_series_forecaster.evaluate_models(
-                        price_data,
-                        models_to_use
-                    )
-
-                    if performance_metrics:
-                        # Create DataFrame for display
-                        metrics_df = pd.DataFrame(performance_metrics)
-
-                        # Format metrics for display
-                        display_df = metrics_df.copy()
-
-                        # Format numbers for better readability
-                        for col in display_df.columns:
-                            if col != "Model":
-                                display_df[col] = display_df[col].apply(
-                                    lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else x)
-
-                        # Add styling to highlight best model
-                        if len(metrics_df) > 1:
-                            # Find best model (lowest RMSE)
-                            best_model_idx = metrics_df['RMSE'].idxmin()
-
-                            def highlight_best(s):
-                                """Highlight the best model row"""
-                                is_best = [i == best_model_idx for i in range(len(s))]
-                                return ['background-color: #74f174; color: #121212' if v else '' for v in is_best]
-
-                            # Apply styling
-                            styled_df = display_df.style.apply(highlight_best, axis=0)
-
-                            st.dataframe(styled_df, use_container_width=True)
-                        else:
-                            st.dataframe(display_df, use_container_width=True)
-                    else:
-                        st.warning("Performance metrics not available.")
-
-                    # Tab 3: Forecast Statistics
-                with tabs[2]:
-                    st.subheader("Forecast Statistics")
-
-                    # Display summary statistics for the ensemble forecast
-                    if ensemble_forecast is not None and not ensemble_forecast.empty:
-                        # Calculate statistics
-                        current_price = price_data['Close'].iloc[-1]
-                        forecast_price = ensemble_forecast['mean'].iloc[-1]
-                        forecast_change = ((forecast_price / current_price) - 1) * 100
-                        min_forecast = ensemble_forecast['lower'].min()
-                        max_forecast = ensemble_forecast['upper'].max()
-                        range_width = max_forecast - min_forecast
-                        range_percent = (range_width / current_price) * 100
-
-                        # Create a DataFrame for statistics
-                        stats_data = [
-                            {"Statistic": "Current Price", "Value": f"${current_price:.2f}"},
-                            {"Statistic": f"Forecast Price ({forecast_horizon})", "Value": f"${forecast_price:.2f}"},
-                            {"Statistic": "Forecast Change", "Value": f"{forecast_change:.2f}%"},
-                            {"Statistic": "Minimum Forecast", "Value": f"${min_forecast:.2f}"},
-                            {"Statistic": "Maximum Forecast", "Value": f"${max_forecast:.2f}"},
-                            {"Statistic": "Forecast Range", "Value": f"${range_width:.2f} ({range_percent:.2f}%)"},
-                            {"Statistic": "Confidence Interval", "Value": f"{confidence_interval}%"},
-                            {"Statistic": "Forecast Models Used", "Value": ", ".join(models_to_use)}
-                        ]
-
-                        stats_df = pd.DataFrame(stats_data)
-                        st.dataframe(stats_df, use_container_width=True)
-
-                        # Show probability distribution
-                        st.subheader("Forecast Probability Distribution")
-
-                        fig = visualizer.plot_forecast_distribution(
-                            ensemble_forecast,
-                            current_price=current_price,
-                            title=f"{ticker} Price Forecast Distribution",
-                            height=400
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-
-                        # Add probability insights
-                        prob_up = time_series_forecaster.probability_of_price_increase(ensemble_forecast)
-                        prob_up_5 = time_series_forecaster.probability_of_price_change(ensemble_forecast, 0.05)
-                        prob_down_5 = time_series_forecaster.probability_of_price_change(ensemble_forecast, -0.05)
-
-                        st.markdown("### Probability Analysis")
-
-                        col1, col2, col3 = st.columns(3)
-
-                        with col1:
-                            st.metric("Probability of Price Increase", f"{prob_up * 100:.1f}%")
-
-                        with col2:
-                            st.metric("Probability of >5% Increase", f"{prob_up_5 * 100:.1f}%")
-
-                        with col3:
-                            st.metric("Probability of >5% Decrease", f"{prob_down_5 * 100:.1f}%")
-                    else:
-                        st.warning("Forecast statistics not available.")
-
-                    # Tab 4: Model Details
-                with tabs[3]:
-                    st.subheader("Model Details")
-
-                    # Create tabs for each model
-                    if forecasts:
-                        model_tabs = st.tabs([m.upper() for m in models_to_use])
-
-                        for i, model in enumerate(models_to_use):
-                            with model_tabs[i]:
-                                if model in forecasts:
-                                    model_forecast = forecasts[model]
-
-                                    # Display model description
-                                    model_descriptions = {
-                                        "arima": """
-                                                            **ARIMA (AutoRegressive Integrated Moving Average)** is a statistical model for time series forecasting.
-                                                            It combines three components:
-                                                            - AR (AutoRegressive): Uses the relationship between an observation and a number of lagged observations.
-                                                            - I (Integrated): Applies differencing to make the time series stationary.
-                                                            - MA (Moving Average): Uses the dependency between an observation and residual errors from a moving average model.
-
-                                                            ARIMA is particularly useful for stock prices as it can capture trends and some patterns in the data.
-                                                            """,
-                                        "ets": """
-                                                            **Exponential Smoothing (ETS)** is a time series forecasting method that gives more weight to recent observations.
-                                                            It uses weighted averages where the weights decrease exponentially as observations get older.
-
-                                                            ETS can handle data with trends and seasonal patterns, making it useful for stock price prediction.
-                                                            This model is generally good at capturing short to medium-term patterns.
-                                                            """,
-                                        "prophet": """
-                                                            **Prophet** is a forecasting model developed by Facebook that is designed for time series with strong seasonal effects.
-                                                            It uses a decomposable time series model with three main components:
-                                                            - Trend: Models non-periodic changes
-                                                            - Seasonality: Models periodic changes (daily, weekly, yearly)
-                                                            - Holidays: Accounts for holiday effects
-
-                                                            Prophet is robust to missing data, shifts in trends, and typically handles outliers well.
-                                                            """,
-                                        "lstm": """
-                                                            **LSTM (Long Short-Term Memory)** is a type of recurrent neural network capable of learning long-term dependencies.
-                                                            Unlike other forecasting methods, LSTM can:
-                                                            - Remember patterns over long sequences
-                                                            - Capture complex non-linear relationships
-                                                            - Learn from a large amount of historical data
-
-                                                            LSTMs are particularly powerful for financial time series that may have complex patterns not easily captured by traditional statistical methods.
-                                                            """
-                                    }
-
-                                    st.markdown(model_descriptions.get(model, "No description available."))
-
-                                    # Display model parameters
-                                    st.subheader("Model Parameters")
-
-                                    if model == "arima" and "parameters" in model_forecast:
-                                        arima_params = model_forecast["parameters"]
-                                        st.write(f"- p (AR order): {arima_params.get('p', 'Auto')}")
-                                        st.write(f"- d (Differencing): {arima_params.get('d', 'Auto')}")
-                                        st.write(f"- q (MA order): {arima_params.get('q', 'Auto')}")
-
-                                    elif model == "prophet" and "parameters" in model_forecast:
-                                        prophet_params = model_forecast["parameters"]
-                                        st.write(f"- Seasonality: {prophet_params.get('seasonality', True)}")
-                                        st.write(f"- Change points: {prophet_params.get('n_changepoints', 25)}")
-                                        st.write(f"- Included holidays: {prophet_params.get('holidays', False)}")
-
-                                    elif model == "lstm" and "parameters" in model_forecast:
-                                        lstm_params = model_forecast["parameters"]
-                                        st.write(f"- Lookback period: {lstm_params.get('lookback', 30)} days")
-                                        st.write(f"- Epochs: {lstm_params.get('epochs', 100)}")
-                                        st.write(f"- Batch size: {lstm_params.get('batch_size', 32)}")
-                                        st.write(f"- Layers: {lstm_params.get('layers', [50, 50])}")
-
-                                    # Plot individual model forecast
-                                    st.subheader("Model Forecast")
-
-                                    if "forecast" in model_forecast:
-                                        model_data = model_forecast["forecast"]
-
-                                        fig = visualizer.plot_individual_forecast(
-                                            price_data,
-                                            model_data,
-                                            ticker,
-                                            model_name=model.upper(),
-                                            title=f"{ticker} - {model.upper()} Forecast",
-                                            height=400
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-                                    else:
-                                        st.warning(f"No forecast data available for {model.upper()} model.")
-                                else:
-                                    st.warning(f"{model.upper()} model did not produce a valid forecast.")
-
-                except Exception as e:
-                st.error(f"An error occurred during forecasting: {str(e)}")
-                logger.error(f"Error in stock price forecasting: {str(e)}")
-
-            elif forecast_type == "Financial Metrics" and forecast_button:
-            with st.spinner(f"Forecasting financial metrics for {ticker}..."):
-                try:
-                    # Get company info
-                    company_info = data_loader.get_company_info(ticker)
-                    company_name = company_info.get('name', ticker) if company_info else ticker
-
-                    # Load financial statements
-                    income_stmt = data_loader.get_financial_statements(ticker, 'income', forecast_frequency.lower())
-                    balance_sheet = data_loader.get_financial_statements(ticker, 'balance', forecast_frequency.lower())
-                    cash_flow = data_loader.get_financial_statements(ticker, 'cash', forecast_frequency.lower())
-
-                    if income_stmt.empty and balance_sheet.empty and cash_flow.empty:
-                        st.error(f"Could not load financial statement data for {ticker}.")
-                        return
-
-                    # Prepare financial data for forecasting
-                    financial_data = {}
-
-                    # Map selected metrics to financial statements
-                    statement_mapping = {
-                        "Revenue": {"statement": "income", "field": "Total Revenue"},
-                        "EBITDA": {"statement": "income", "field": "EBITDA"},
-                        "Net Income": {"statement": "income", "field": "Net Income"},
-                        "EPS": {"statement": "income", "field": "Diluted EPS"},
-                        "Operating Margin": {"statement": "calculated",
-                                             "fields": ["Operating Income", "Total Revenue"]},
-                        "Net Margin": {"statement": "calculated", "fields": ["Net Income", "Total Revenue"]},
-                        "ROE": {"statement": "calculated", "fields": ["Net Income", "Total Stockholder Equity"]},
-                        "Free Cash Flow": {"statement": "cash", "field": "Free Cash Flow"}
-                    }
-
-                    # Extract data for selected metrics
-                    for metric in selected_metrics:
-                        if metric in statement_mapping:
-                            mapping = statement_mapping[metric]
-
-                            if mapping["statement"] == "income":
-                                if not income_stmt.empty and mapping["field"] in income_stmt.index:
-                                    financial_data[metric] = income_stmt.loc[mapping["field"]]
-
-                            elif mapping["statement"] == "cash":
-                                if not cash_flow.empty and mapping["field"] in cash_flow.index:
-                                    financial_data[metric] = cash_flow.loc[mapping["field"]]
-
-                            elif mapping["statement"] == "calculated":
-                                # Handle calculated ratios
-                                if metric == "Operating Margin" and not income_stmt.empty:
-                                    if all(field in income_stmt.index for field in mapping["fields"]):
-                                        financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / \
-                                                                 income_stmt.loc[mapping["fields"][1]]
-
-                                elif metric == "Net Margin" and not income_stmt.empty:
-                                    if all(field in income_stmt.index for field in mapping["fields"]):
-                                        financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / \
-                                                                 income_stmt.loc[mapping["fields"][1]]
-
-                                elif metric == "ROE" and not income_stmt.empty and not balance_sheet.empty:
-                                    if mapping["fields"][0] in income_stmt.index and mapping["fields"][
-                                        1] in balance_sheet.index:
-                                        financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / \
-                                                                 balance_sheet.loc[mapping["fields"][1]]
-
-                    # Check if we have data to forecast
-                    if not financial_data:
-                        st.error("Could not extract financial metric data for forecasting.")
-                        return
-
-                    # Convert financial data to DataFrames
-                    financial_dfs = {metric: pd.DataFrame(data) for metric, data in financial_data.items()}
-
-                    # Additional forecasting parameters
-                    forecast_params = {
-                        "frequency": forecast_frequency.lower(),
-                        "periods": forecast_periods
-                    }
-
-                    # Create list of models to use
-                    models_to_use = []
-                    if use_linear:
-                        models_to_use.append("linear")
-                    if use_arima:
-                        models_to_use.append("arima")
-                    if use_ml:
-                        models_to_use.append("xgboost")
-
-                    forecast_params["models"] = models_to_use
-
-                    # Additional factors
-                    if include_sector:
-                        forecast_params["include_sector"] = True
-                        forecast_params["sector"] = company_info.get('sector')
-
-                    if include_macro:
-                        forecast_params["include_macro"] = True
-
-                    if include_sentiment:
-                        forecast_params["include_sentiment"] = True
-
-                    # Generate forecasts for each metric
-                    forecasts = {}
-                    for metric, data in financial_dfs.items():
-                        metric_forecast = time_series_forecaster.forecast_financial_metric(
-                            data,
-                            metric,
-                            **forecast_params
-                        )
-
-                        if metric_forecast:
-                            forecasts[metric] = metric_forecast
-
-                    if not forecasts:
-                        st.error("Failed to generate forecasts. Please check your parameters and try again.")
-                        return
-
-                    # Display results header
-                    st.header(f"Financial Metrics Forecast for {company_name} ({ticker})")
-                    st.subheader(f"Forecast: Next {forecast_periods} {forecast_frequency} Periods")
-
-                    # Create tabs for each metric
-                    metric_tabs = st.tabs(selected_metrics)
-
-                    for i, metric in enumerate(selected_metrics):
-                        with metric_tabs[i]:
-                            if metric in forecasts:
-                                # Display metric forecast
-                                st.subheader(f"{metric} Forecast")
-
-                                # Get historical and forecast data
-                                historical_data = financial_dfs[metric]
-                                forecast_data = forecasts[metric]
-
-                                # Create ensemble forecast if multiple models
-                                if len(models_to_use) > 1 and all(model in forecast_data for model in models_to_use):
-                                    ensemble_forecast = time_series_forecaster.create_ensemble_financial_forecast(
-                                        forecast_data)
-                                else:
-                                    # Use the first available model
-                                    for model in models_to_use:
-                                        if model in forecast_data:
-                                            ensemble_forecast = forecast_data[model]
-                                            break
-                                    else:
-                                        ensemble_forecast = None
-
-                                if ensemble_forecast is not None:
-                                    # Plot forecast
-                                    fig = visualizer.plot_financial_metric_forecast(
-                                        historical_data,
-                                        ensemble_forecast,
-                                        metric,
-                                        title=f"{ticker} - {metric} Forecast",
-                                        frequency=forecast_frequency,
-                                        height=500
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-
-                                    # Display key statistics
-                                    if not historical_data.empty and not ensemble_forecast.empty:
-                                        latest_value = historical_data.iloc[:, 0].iloc[-1]
-                                        forecast_end = ensemble_forecast['mean'].iloc[-1]
-                                        forecast_change = ((forecast_end / latest_value) - 1) * 100
-
-                                        col1, col2, col3 = st.columns(3)
-
-                                        with col1:
-                                            st.metric(
-                                                "Latest Value",
-                                                f"${latest_value:.2f}M" if metric in ["Revenue", "EBITDA", "Net Income",
-                                                                                      "Free Cash Flow"] else
-                                                f"${latest_value:.2f}" if metric == "EPS" else
-                                                f"{latest_value * 100:.2f}%" if metric in ["Operating Margin",
-                                                                                           "Net Margin", "ROE"] else
-                                                f"{latest_value:.2f}"
-                                            )
-
-                                        with col2:
-                                            st.metric(
-                                                f"Forecast (Period {forecast_periods})",
-                                                f"${forecast_end:.2f}M" if metric in ["Revenue", "EBITDA", "Net Income",
-                                                                                      "Free Cash Flow"] else
-                                                f"${forecast_end:.2f}" if metric == "EPS" else
-                                                f"{forecast_end * 100:.2f}%" if metric in ["Operating Margin",
-                                                                                           "Net Margin", "ROE"] else
-                                                f"{forecast_end:.2f}",
-                                                f"{forecast_change:.2f}%",
-                                                delta_color="normal"
-                                            )
-
-                                        with col3:
-                                            # Forecast range
-                                            high_estimate = ensemble_forecast['upper'].iloc[-1]
-                                            low_estimate = ensemble_forecast['lower'].iloc[-1]
-
-                                            if metric in ["Revenue", "EBITDA", "Net Income", "Free Cash Flow"]:
-                                                range_str = f"${low_estimate:.2f}M - ${high_estimate:.2f}M"
-                                            elif metric == "EPS":
-                                                range_str = f"${low_estimate:.2f} - ${high_estimate:.2f}"
-                                            elif metric in ["Operating Margin", "Net Margin", "ROE"]:
-                                                range_str = f"{low_estimate * 100:.2f}% - {high_estimate * 100:.2f}%"
-                                            else:
-                                                range_str = f"{low_estimate:.2f} - {high_estimate:.2f}"
-
-                                            st.metric(
-                                                "Forecast Range",
-                                                range_str
-                                            )
-
-                                    # Add forecast interpretation
-                                    if forecast_change is not None:
-                                        if forecast_change > 20:
-                                            sentiment = "strong growth"
-                                            color = COLORS["primary"]  # Green
-                                        elif forecast_change > 10:
-                                            sentiment = "moderate growth"
-                                            color = COLORS["success"]  # Light green
-                                        elif forecast_change > 0:
-                                            sentiment = "slight growth"
-                                            color = COLORS["warning"]  # Yellow
-                                        elif forecast_change > -10:
-                                            sentiment = "slight decline"
-                                            color = COLORS["warning"]  # Yellow
-                                        elif forecast_change > -20:
-                                            sentiment = "moderate decline"
-                                            color = COLORS["accent"]  # Light red
-                                        else:
-                                            sentiment = "significant decline"
-                                            color = COLORS["danger"]  # Red
-
-                                        st.markdown(
-                                            f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                                            f"<h4 style='color: #121212; text-align: center;'>Forecast: {sentiment.capitalize()}</h4>"
-                                            f"<p style='color: #121212; text-align: center;'>Models predict a {forecast_change:.2f}% "
-                                            f"change in {metric} over the next {forecast_periods} {forecast_frequency.lower()} periods.</p>"
-                                            f"</div>",
-                                            unsafe_allow_html=True
-                                        )
-
-                                    # Show model comparison if multiple models
-                                    if len(models_to_use) > 1 and all(
-                                            model in forecast_data for model in models_to_use):
-                                        st.subheader("Model Comparison")
-
-                                        fig = visualizer.plot_financial_model_comparison(
-                                            historical_data,
-                                            forecast_data,
-                                            metric,
-                                            title=f"{ticker} - {metric} Forecast Model Comparison",
-                                            height=400
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-
-                                        # Performance metrics
-                                        st.subheader("Model Performance")
-
-                                        metrics_data = []
-                                        for model in models_to_use:
-                                            if model in forecast_data and "metrics" in forecast_data[model]:
-                                                model_metrics = forecast_data[model]["metrics"]
-                                                metrics_data.append({
-                                                    "Model": model.upper(),
-                                                    "RMSE": model_metrics.get("rmse", "N/A"),
-                                                    "MAE": model_metrics.get("mae", "N/A"),
-                                                    "MAPE": model_metrics.get("mape", "N/A")
-                                                })
-
-                                        if metrics_data:
-                                            metrics_df = pd.DataFrame(metrics_data)
-                                            st.dataframe(metrics_df, use_container_width=True)
-                                else:
-                                    st.warning(f"No forecast generated for {metric}.")
-                            else:
-                                st.warning(f"No forecast data available for {metric}.")
-
-                    # Overall financial outlook
-                    st.header("Overall Financial Outlook")
-
-                    # Analyze trends across metrics
-                    trends = {}
-                    for metric, forecast in forecasts.items():
-                        # Get the first available model's forecast
-                        for model in models_to_use:
-                            if model in forecast:
-                                forecast_data = forecast[model]
-                                if "forecast" in forecast_data:
-                                    last_historical = financial_dfs[metric].iloc[:, 0].iloc[-1]
-                                    last_forecast = forecast_data["forecast"]['mean'].iloc[-1]
-                                    change_pct = ((last_forecast / last_historical) - 1) * 100
-                                    trends[metric] = change_pct
-                                    break
-
-                    # Create a summary of financial trends
-                    if trends:
-                        trends_df = pd.DataFrame(
-                            [{"Metric": k, "Forecasted Change (%)": f"{v:.2f}%"} for k, v in trends.items()])
-
-                        # Sort by forecasted change
-                        trends_df = trends_df.sort_values("Forecasted Change (%)", ascending=False)
-
-                        st.dataframe(trends_df, use_container_width=True)
-
-                        # Generate a financial outlook summary
-                        revenue_trend = trends.get("Revenue")
-                        profit_trend = trends.get("Net Income") or trends.get("EPS")
-                        margin_trend = trends.get("Operating Margin") or trends.get("Net Margin")
-
-                        if revenue_trend is not None and profit_trend is not None:
-                            if revenue_trend > 10 and profit_trend > 15:
-                                outlook = "Strong Growth"
-                                color = COLORS["primary"]  # Green
-                                description = f"The company is projected to experience strong growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                            elif revenue_trend > 5 and profit_trend > 5:
-                                outlook = "Moderate Growth"
-                                color = COLORS["success"]  # Light green
-                                description = f"The company is projected to experience moderate growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                            elif revenue_trend > 0 and profit_trend > 0:
-                                outlook = "Stable Growth"
-                                color = COLORS["warning"]  # Yellow
-                                description = f"The company is projected to maintain stable growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                            elif revenue_trend < 0 and profit_trend < 0:
-                                outlook = "Contraction"
-                                color = COLORS["accent"]  # Light red
-                                description = f"The company is projected to experience contraction with revenue declining by {-revenue_trend:.1f}% and profits by {-profit_trend:.1f}%."
-                            else:
-                                outlook = "Mixed"
-                                color = COLORS["warning"]  # Yellow
-                                description = f"The company is projected to show mixed performance with revenue changing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-
-                            if margin_trend is not None:
-                                if margin_trend > 0:
-                                    description += f" Margins are expected to improve by {margin_trend:.1f}%, indicating enhanced operational efficiency."
-                                else:
-                                    description += f" Margins are expected to decrease by {-margin_trend:.1f}%, suggesting potential cost pressures."
-
-                            st.markdown(
-                                f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                                f"<h4 style='color: #121212; text-align: center;'>Financial Outlook: {outlook}</h4>"
-                                f"<p style='color: #121212; text-align: center;'>{description}</p>"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
-
-                except Exception as e:
-                    st.error(f"An error occurred during financial metric forecasting: {str(e)}")
-                    logger.error(f"Error in financial metric forecasting: {str(e)}")
-
-        elif forecast_type == "Economic Indicators" and forecast_button:
-        with st.spinner(f"Forecasting economic indicators..."):
-            try:
-                # Get economic indicator data
-                indicators_data = {}
-
-                # Map selected indicators to their sources/codes
-                indicator_mapping = {
-                    "GDP Growth": "GDP",
-                    "Inflation (CPI)": "CPIAUCSL",
-                    "Unemployment Rate": "UNRATE",
-                    "Federal Funds Rate": "FEDFUNDS",
-                    "10-Year Treasury Yield": "DGS10",
-                    "Consumer Sentiment": "UMCSENT",
-                    "Retail Sales": "RSXFS",
-                    "Housing Starts": "HOUST"
-                }
-
-                # Load data for selected indicators
-                for indicator in selected_indicators:
-                    if indicator in indicator_mapping:
-                        try:
-                            indicator_code = indicator_mapping[indicator]
-
-                            # Get indicator data
-                            indicator_data = data_loader.get_macro_indicators([indicator_code])
-
-                            if indicator_code in indicator_data and not indicator_data[indicator_code].empty:
-                                indicators_data[indicator] = indicator_data[indicator_code]
-                        except Exception as e:
-                            logger.error(f"Error loading data for {indicator}: {str(e)}")
-
-                if not indicators_data:
-                    st.error("Could not load economic indicator data. Please try again later.")
-                    return
-
-                # Prepare forecasting parameters
-                forecast_params = {
-                    "frequency": forecast_frequency.lower(),
-                    "periods": forecast_periods
-                }
-
-                # Create list of models to use
-                models_to_use = []
-                if use_arima:
-                    models_to_use.append("arima")
-                if use_var and len(selected_indicators) > 1:
-                    models_to_use.append("var")
-                if use_ml:
-                    models_to_use.append("ml")
-
-                forecast_params["models"] = models_to_use
-
-                # Generate forecasts
-                forecasts = {}
-                if use_var and len(selected_indicators) > 1:
-                    # If VAR is selected, perform multivariate forecasting
-                    var_forecast = time_series_forecaster.forecast_economic_indicators_var(
-                        indicators_data,
-                        **forecast_params
-                    )
-
-                    if var_forecast:
-                        for indicator in selected_indicators:
-                            if indicator in var_forecast:
-                                forecasts[indicator] = {"var": var_forecast[indicator]}
-
-                # Perform individual forecasts for each indicator
-                for indicator, data in indicators_data.items():
-                    if indicator not in forecasts:
-                        forecasts[indicator] = {}
-
-                    if use_arima:
-                        try:
-                            arima_forecast = time_series_forecaster.forecast_economic_indicator_arima(
-                                data,
-                                indicator,
-                                **forecast_params
-                            )
-
-                            if arima_forecast:
-                                forecasts[indicator]["arima"] = arima_forecast
-                        except Exception as e:
-                            logger.error(f"Error in ARIMA forecast for {indicator}: {str(e)}")
-
-                    if use_ml:
-                        try:
-                            ml_forecast = time_series_forecaster.forecast_economic_indicator_ml(
-                                data,
-                                indicator,
-                                **forecast_params
-                            )
-
-                            if ml_forecast:
-                                forecasts[indicator]["ml"] = ml_forecast
-                        except Exception as e:
-                            logger.error(f"Error in ML forecast for {indicator}: {str(e)}")
-
-                if not any(forecasts.values()):
-                    st.error("Failed to generate forecasts. Please check your parameters and try again.")
-                    return
-
-                    # Display results header
-                    st.header("Economic Indicators Forecast")
-                    st.subheader(f"Forecast: Next {forecast_periods} {forecast_frequency} Periods")
-
-                    # Create tabs for each indicator
-                    indicator_tabs = st.tabs(selected_indicators)
-
-                    for i, indicator in enumerate(selected_indicators):
-                        with indicator_tabs[i]:
-                            if indicator in forecasts and forecasts[indicator]:
-                                # Display indicator forecast
-                                st.subheader(f"{indicator} Forecast")
-
-                                # Get historical data
-                                historical_data = indicators_data[indicator]
-
-                                # Create ensemble forecast from available models
-                                available_models = list(forecasts[indicator].keys())
-
-                                if len(available_models) > 1:
-                                    # Create ensemble from multiple models
-                                    models_data = {model: forecasts[indicator][model] for model in available_models}
-                                    ensemble_forecast = time_series_forecaster.create_ensemble_indicator_forecast(
-                                        models_data)
-                                else:
-                                    # Use the only available model
-                                    model = available_models[0]
-                                    ensemble_forecast = forecasts[indicator][model]
-
-                                if ensemble_forecast is not None:
-                                    # Plot forecast
-                                    fig = visualizer.plot_economic_indicator_forecast(
-                                        historical_data,
-                                        ensemble_forecast,
-                                        indicator,
-                                        title=f"{indicator} Forecast",
-                                        frequency=forecast_frequency,
-                                        height=500
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-
-                                    # Display key statistics
-                                    if not historical_data.empty and ensemble_forecast is not None:
-                                        latest_value = historical_data.iloc[-1, 0]
-                                        forecast_end = ensemble_forecast['mean'].iloc[-1]
-
-                                        # Different metrics have different ways to calculate change
-                                        if indicator in ["GDP Growth", "Inflation (CPI)"]:
-                                            # These are already percentage change metrics
-                                            forecast_change = forecast_end - latest_value
-                                        else:
-                                            # Calculate percentage change
-                                            forecast_change = ((forecast_end / latest_value) - 1) * 100
-
-                                        col1, col2, col3 = st.columns(3)
-
-                                        with col1:
-                                            st.metric(
-                                                "Latest Value",
-                                                f"{latest_value:.2f}%" if indicator in ["GDP Growth", "Inflation (CPI)",
-                                                                                        "Unemployment Rate",
-                                                                                        "Federal Funds Rate",
-                                                                                        "10-Year Treasury Yield"] else
-                                                f"{latest_value:.2f}"
-                                            )
-
-                                        with col2:
-                                            st.metric(
-                                                f"Forecast (Period {forecast_periods})",
-                                                f"{forecast_end:.2f}%" if indicator in ["GDP Growth", "Inflation (CPI)",
-                                                                                        "Unemployment Rate",
-                                                                                        "Federal Funds Rate",
-                                                                                        "10-Year Treasury Yield"] else
-                                                f"{forecast_end:.2f}",
-                                                f"{forecast_change:.2f}%" if indicator not in ["GDP Growth",
-                                                                                               "Inflation (CPI)"] else
-                                                f"{forecast_change:.2f} pp",
-                                                # percentage points for already-percentage metrics
-                                                delta_color="normal"
-                                            )
-
-                                        with col3:
-                                            # Forecast range
-                                            high_estimate = ensemble_forecast['upper'].iloc[-1]
-                                            low_estimate = ensemble_forecast['lower'].iloc[-1]
-
-                                            range_str = (f"{low_estimate:.2f}% - {high_estimate:.2f}%"
-                                                         if indicator in ["GDP Growth", "Inflation (CPI)",
-                                                                          "Unemployment Rate", "Federal Funds Rate",
-                                                                          "10-Year Treasury Yield"]
-                                                         else f"{low_estimate:.2f} - {high_estimate:.2f}")
-
-                                            st.metric(
-                                                "Forecast Range",
-                                                range_str
-                                            )
-
-                                    # Add forecast interpretation
-                                    if forecast_change is not None:
-                                        interpretation = ""
-                                        sentiment = ""
-                                        color = ""
-
-                                        # Different interpretations for different indicators
-                                        if indicator == "GDP Growth":
-                                            if forecast_end > 3:
-                                                sentiment = "strong growth"
-                                                color = COLORS["primary"]  # Green
-                                            elif forecast_end > 2:
-                                                sentiment = "solid growth"
-                                                color = COLORS["success"]  # Light green
-                                            elif forecast_end > 0:
-                                                sentiment = "modest growth"
-                                                color = COLORS["warning"]  # Yellow
-                                            elif forecast_end > -1:
-                                                sentiment = "stagnation"
-                                                color = COLORS["warning"]  # Yellow
-                                            elif forecast_end > -3:
-                                                sentiment = "mild contraction"
-                                                color = COLORS["accent"]  # Light red
-                                            else:
-                                                sentiment = "recession"
-                                                color = COLORS["danger"]  # Red
-
-                                            interpretation = f"The model predicts {forecast_end:.2f}% GDP growth."
-
-                                        elif indicator == "Inflation (CPI)":
-                                            if forecast_end > 5:
-                                                sentiment = "high inflation"
-                                                color = COLORS["danger"]  # Red
-                                            elif forecast_end > 3:
-                                                sentiment = "elevated inflation"
-                                                color = COLORS["accent"]  # Light red
-                                            elif forecast_end > 2:
-                                                sentiment = "moderate inflation"
-                                                color = COLORS["warning"]  # Yellow
-                                            elif forecast_end > 0:
-                                                sentiment = "low inflation"
-                                                color = COLORS["success"]  # Light green
-                                            else:
-                                                sentiment = "deflation"
-                                                color = COLORS["danger"]  # Red
-
-                                            interpretation = f"The model predicts {forecast_end:.2f}% inflation."
-
-                                        elif indicator == "Unemployment Rate":
-                                            if forecast_end > 8:
-                                                sentiment = "high unemployment"
-                                                color = COLORS["danger"]  # Red
-                                            elif forecast_end > 6:
-                                                sentiment = "elevated unemployment"
-                                                color = COLORS["accent"]  # Light red
-                                            elif forecast_end > 4:
-                                                sentiment = "moderate unemployment"
-                                                color = COLORS["warning"]  # Yellow
-                                            else:
-                                                sentiment = "low unemployment"
-                                                color = COLORS["primary"]  # Green
-
-                                            interpretation = f"The model predicts {forecast_end:.2f}% unemployment rate."
-
-                                        else:
-                                            # Generic interpretation for other indicators
-                                            if forecast_change > 20:
-                                                sentiment = "significant increase"
-                                                color = COLORS["primary"]  # Green or red depending on context
-                                            elif forecast_change > 10:
-                                                sentiment = "moderate increase"
-                                                color = COLORS["success"]  # Light green
-                                            elif forecast_change > 0:
-                                                sentiment = "slight increase"
-                                                color = COLORS["warning"]  # Yellow
-                                            elif forecast_change > -10:
-                                                sentiment = "slight decrease"
-                                                color = COLORS["warning"]  # Yellow
-                                            elif forecast_change > -20:
-                                                sentiment = "moderate decrease"
-                                                color = COLORS["accent"]  # Light red
-                                            else:
-                                                sentiment = "significant decrease"
-                                                color = COLORS["danger"]  # Red
-
-                                            interpretation = f"The model predicts a {forecast_change:.2f}% change over the next {forecast_periods} {forecast_frequency.lower()} periods."
-
-                                        st.markdown(
-                                            f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                                            f"<h4 style='color: #121212; text-align: center;'>Forecast: {sentiment.capitalize()}</h4>"
-                                            f"<p style='color: #121212; text-align: center;'>{interpretation}</p>"
-                                            f"</div>",
-                                            unsafe_allow_html=True
-                                        )
-
-                                    # Show model comparison if multiple models
-                                    if len(available_models) > 1:
-                                        st.subheader("Model Comparison")
-
-                                        models_data = {model: forecasts[indicator][model] for model in available_models}
-
-                                        fig = visualizer.plot_indicator_model_comparison(
-                                            historical_data,
-                                            models_data,
-                                            indicator,
-                                            title=f"{indicator} Forecast Model Comparison",
-                                            height=400
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-                                else:
-                                    st.warning(f"No forecast generated for {indicator}.")
-                            else:
-                                st.warning(f"No forecast data available for {indicator}.")
-
-                    # Overall economic outlook
-                    st.header("Overall Economic Outlook")
-
-                    # Analyze trends across indicators
-                    trends = {}
-                    for indicator, forecast_models in forecasts.items():
-                        if forecast_models:
-                            # Use the first available model
-                            model = list(forecast_models.keys())[0]
-                            forecast_data = forecast_models[model]
-
-                            if forecast_data is not None:
-                                last_historical = indicators_data[indicator].iloc[-1, 0]
-                                last_forecast = forecast_data['mean'].iloc[-1]
-
-                                if indicator in ["GDP Growth", "Inflation (CPI)"]:
-                                    # These are already percentage change metrics
-                                    change = last_forecast - last_historical
-                                else:
-                                    # Calculate percentage change
-                                    change = ((last_forecast / last_historical) - 1) * 100
-
-                                trends[indicator] = (last_forecast, change)
-
-                    # Create a summary of economic trends
-                    if trends:
-                        summary_data = []
-
-                        for indicator, (forecast_value, change) in trends.items():
-                            if indicator in ["GDP Growth", "Inflation (CPI)", "Unemployment Rate", "Federal Funds Rate",
-                                             "10-Year Treasury Yield"]:
-                                value_str = f"{forecast_value:.2f}%"
-                            else:
-                                value_str = f"{forecast_value:.2f}"
-
-                            if indicator in ["GDP Growth", "Inflation (CPI)"]:
-                                change_str = f"{change:.2f} pp"  # percentage points
-                            else:
-                                change_str = f"{change:.2f}%"
-
-                            summary_data.append({
-                                "Indicator": indicator,
-                                "Forecasted Value": value_str,
-                                "Change": change_str
-                            })
-
-                        summary_df = pd.DataFrame(summary_data)
-                        st.dataframe(summary_df, use_container_width=True)
-
-                        # Generate an economic outlook summary
-                        gdp_forecast = trends.get("GDP Growth", (None, None))[0]
-                        inflation_forecast = trends.get("Inflation (CPI)", (None, None))[0]
-                        unemployment_forecast = trends.get("Unemployment Rate", (None, None))[0]
-
-                        # Determine economic scenario
-                        if gdp_forecast is not None and inflation_forecast is not None:
-                            if gdp_forecast > 3 and inflation_forecast < 3:
-                                scenario = "Strong Growth, Low Inflation"
-                                color = COLORS["primary"]  # Green
-                                description = f"The economy is projected to experience strong growth ({gdp_forecast:.1f}%) with low inflation ({inflation_forecast:.1f}%)."
-                            elif gdp_forecast > 2 and inflation_forecast < 4:
-                                scenario = "Moderate Growth, Controlled Inflation"
-                                color = COLORS["success"]  # Light green
-                                description = f"The economy is projected to grow at a moderate pace ({gdp_forecast:.1f}%) with controlled inflation ({inflation_forecast:.1f}%)."
-                            elif gdp_forecast > 0 and inflation_forecast < 6:
-                                scenario = "Modest Growth, Elevated Inflation"
-                                color = COLORS["warning"]  # Yellow
-                                description = f"The economy is projected to grow modestly ({gdp_forecast:.1f}%) with somewhat elevated inflation ({inflation_forecast:.1f}%)."
-                            elif gdp_forecast > 0 and inflation_forecast >= 6:
-                                scenario = "Stagflation Risk"
-                                color = COLORS["accent"]  # Light red
-                                description = f"The economy is showing signs of stagflation with modest growth ({gdp_forecast:.1f}%) but high inflation ({inflation_forecast:.1f}%)."
-                            elif gdp_forecast <= 0 and inflation_forecast > 4:
-                                scenario = "Recession with Inflation"
-                                color = COLORS["danger"]  # Red
-                                description = f"The economy is projected to contract ({gdp_forecast:.1f}%) while experiencing high inflation ({inflation_forecast:.1f}%)."
-                            elif gdp_forecast <= 0 and inflation_forecast <= 2:
-                                scenario = "Recession with Low Inflation"
-                                color = COLORS["danger"]  # Red
-                                description = f"The economy is projected to contract ({gdp_forecast:.1f}%) with low inflation ({inflation_forecast:.1f}%)."
-                            else:
-                                scenario = "Mixed Economic Signals"
-                                color = COLORS["warning"]  # Yellow
-                                description = f"The economy is showing mixed signals with {gdp_forecast:.1f}% growth and {inflation_forecast:.1f}% inflation."
-
-                            if unemployment_forecast is not None:
-                                description += f" Unemployment is projected to be {unemployment_forecast:.1f}%."
-
-                            st.markdown(
-                                f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                                f"<h4 style='color: #121212; text-align: center;'>Economic Outlook: {scenario}</h4>"
-                                f"<p style='color: #121212; text-align: center;'>{description}</p>"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
-
-                            # Add investment implications
-                            st.subheader("Investment Implications")
-
-                            if scenario == "Strong Growth, Low Inflation" or scenario == "Moderate Growth, Controlled Inflation":
-                                st.markdown("""
-                                            **Favorable environment for:**
-                                            - Equities, particularly growth stocks
-                                            - Cyclical sectors (Technology, Consumer Discretionary, Industrials)
-                                            - High-yield corporate bonds
-
-                                            **Less favorable for:**
-                                            - Defensive sectors (Utilities, Consumer Staples)
-                                            - Long-term government bonds
-                                            - Gold and other safe-haven assets
-                                            """)
-                            elif scenario == "Modest Growth, Elevated Inflation":
-                                st.markdown("""
-                                            **Favorable environment for:**
-                                            - Value stocks over growth stocks
-                                            - Sectors with pricing power (Energy, Materials, Financials)
-                                            - Inflation-protected securities (TIPS)
-                                            - Real assets (commodities, real estate)
-
-                                            **Less favorable for:**
-                                            - Long-duration assets (growth stocks, long-term bonds)
-                                            - Companies with low pricing power
-                                            """)
-                            elif scenario == "Stagflation Risk":
-                                st.markdown("""
-                                            **Favorable environment for:**
-                                            - Commodities and real assets
-                                            - Energy sector
-                                            - Gold and precious metals
-                                            - Short-duration TIPS
-
-                                            **Less favorable for:**
-                                            - Most equities, especially growth stocks
-                                            - Fixed income securities
-                                            - Cyclical consumer sectors
-                                            """)
-                            elif "Recession" in scenario:
-                                st.markdown("""
-                                            **Favorable environment for:**
-                                            - Defensive sectors (Utilities, Consumer Staples, Healthcare)
-                                            - Quality companies with strong balance sheets
-                                            - Government bonds
-                                            - Cash and cash equivalents
-
-                                            **Less favorable for:**
-                                            - Cyclical sectors
-                                            - Small cap stocks
-                                            - High-yield bonds
-                                            - Companies with high debt levels
-                                            """)
-                            else:
-                                st.markdown("""
-                                            **Consider a balanced approach:**
-                                            - Diversification across asset classes
-                                            - Quality companies with strong balance sheets
-                                            - Mix of growth and value stocks
-                                            - Combination of cyclical and defensive sectors
-                                            - Laddered bond portfolio
-                                            """)
-
-                except Exception as e:
-                st.error(f"An error occurred during economic indicator forecasting: {str(e)}")
-                logger.error(f"Error in economic indicator forecasting: {str(e)}")
-
-        # For direct execution
-        if __name__ == "__main__":
-            run_forecasting_page()
-            performance_metrics = time_series_forecaster.evaluate_models(
-                price_data,
-                models_to_use
-            )
-
-            if performance_metrics:
-                # Create DataFrame for display
-                metrics_df = pd.DataFrame(performance_metrics)
-
-                # Format metrics for display
-                display_df = metrics_df.copy()
-
-                # Format numbers for better readability
-                for col in display_df.columns:
-                    if col != "Model":
-                        display_df[col] = display_df[col].apply(
-                            lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else x)
-
-                # Add styling to highlight best model
-                if len(metrics_df) > 1:
-                    # Find best model (lowest RMSE)
-                    best_model_idx = metrics_df['RMSE'].idxmin()
-
-                    def highlight_best(s):
-                        """Highlight the best model row"""
-                        is_best = [i == best_model_idx for i in range(len(s))]
-                        return ['background-color: #74f174; color: #121212' if v else '' for v in is_best]
-
-                    # Apply styling
-                    styled_df = display_df.style.apply(highlight_best, axis=0)
-
-                    st.dataframe(styled_df, use_container_width=True)
-                else:
-                    st.dataframe(display_df, use_container_width=True)
+
+try:
+    from StockAnalysisSystem.src.models.forecasting.time_series import TimeSeriesForecaster
+except Exception:  # pragma: no cover - the page degrades gracefully
+    logging.getLogger(__name__).exception("TimeSeriesForecaster could not be imported")
+    TimeSeriesForecaster = None  # type: ignore[assignment,misc]
+
+logger = logging.getLogger(__name__)
+
+KEY_PREFIX = "fc"
+PRICE_RESULT_KEY = "fc_price_result"
+METRIC_RESULT_KEY = "fc_metric_result"
+MACRO_RESULT_KEY = "fc_macro_result"
+DEFAULT_TICKER = "AAPL"
+
+PROPHET_AVAILABLE = importlib.util.find_spec("prophet") is not None
+
+#: Price models offered (key -> label); Prophet only when installed
+PRICE_MODELS: Dict[str, str] = {
+    "arima": "ARIMA",
+    "ets": "Exponential Smoothing",
+    "linear": "Linear Trend",
+    "random_walk": "Random Walk (drift)",
+    "ml": "Machine Learning",
+}
+if PROPHET_AVAILABLE:
+    PRICE_MODELS["prophet"] = "Prophet"
+
+METRIC_MODELS: Dict[str, str] = {
+    "linear": "Linear Trend",
+    "cagr": "CAGR",
+    "ets": "Exponential Smoothing",
+    "arima": "ARIMA",
+}
+
+MACRO_MODELS: Dict[str, str] = {"arima": "ARIMA", "ml": "Machine Learning", "ensemble": "Ensemble"}
+
+MODEL_LABELS: Dict[str, str] = {**PRICE_MODELS, **METRIC_MODELS, "ensemble": "Ensemble", "auto": "Auto",
+                                "prophet": "Prophet", "var": "VAR"}
+
+MODEL_DESCRIPTIONS: Dict[str, str] = {
+    "arima": "Autoregressive integrated moving average: captures short-term autocorrelation in price changes.",
+    "ets": "Exponential smoothing: weights recent observations more heavily and extrapolates the trend.",
+    "linear": "Linear trend: least-squares trend line extended into the future.",
+    "random_walk": "Random walk with drift: the statistical baseline for efficient markets.",
+    "ml": "Machine learning regression on lagged returns and technical features.",
+    "prophet": "Prophet: additive trend + seasonality model (optional dependency).",
+}
+
+#: Label -> years of price history
+HISTORY_OPTIONS: Dict[str, int] = {"1 year": 1, "2 years": 2, "3 years": 3, "5 years": 5}
+#: Label -> trading days
+HORIZON_OPTIONS: Dict[str, int] = {"1 month": 21, "3 months": 63, "6 months": 126, "1 year": 252}
+CONFIDENCE_OPTIONS = [80, 90, 95, 99]
+
+#: Financial metrics: label -> (statement, canonical item) or ("ratio", numerator spec, denominator spec)
+FINANCIAL_METRICS: Dict[str, Dict[str, Any]] = {
+    "Revenue": {"statement": "income_statement", "item": "revenue", "kind": "money"},
+    "Gross Profit": {"statement": "income_statement", "item": "gross_profit", "kind": "money"},
+    "Operating Income": {"statement": "income_statement", "item": "operating_income", "kind": "money"},
+    "Net Income": {"statement": "income_statement", "item": "net_income", "kind": "money"},
+    "EBITDA": {"statement": "income_statement", "item": "ebitda", "kind": "money"},
+    "Diluted EPS": {"statement": "income_statement", "item": "diluted_eps", "kind": "price"},
+    "Operating Cash Flow": {"statement": "cash_flow", "item": "operating_cash_flow", "kind": "money"},
+    "Free Cash Flow": {"statement": "cash_flow", "item": "free_cash_flow", "kind": "money"},
+    "Gross Margin": {"ratio": (("income_statement", "gross_profit"), ("income_statement", "revenue")),
+                     "kind": "pct"},
+    "Operating Margin": {"ratio": (("income_statement", "operating_income"), ("income_statement", "revenue")),
+                         "kind": "pct"},
+    "Net Margin": {"ratio": (("income_statement", "net_income"), ("income_statement", "revenue")), "kind": "pct"},
+    "Return on Equity": {"ratio": (("income_statement", "net_income"), ("balance_sheet", "total_equity")),
+                         "kind": "pct"},
+}
+
+SCENARIOS = ("Bear", "Base", "Bull")
+SCENARIO_COLORS = {"Bear": COLORS["accent"], "Base": COLORS["info"], "Bull": COLORS["primary"]}
+
+#: Macro indicator key (DataLoader.INDICATOR_CODES) -> label
+MACRO_INDICATORS: Dict[str, str] = {
+    "INFLATION": "Consumer Price Index (CPI)",
+    "UNEMPLOYMENT": "Unemployment Rate",
+    "INTEREST_RATE": "Federal Funds Rate",
+    "TREASURY_10Y": "10-Year Treasury Yield",
+    "GDP": "Gross Domestic Product",
+    "RETAIL_SALES": "Retail Sales",
+    "INDUSTRIAL_PRODUCTION": "Industrial Production",
+    "HOUSE_PRICE_INDEX": "Case-Shiller Home Price Index",
+    "CONSUMER_SENTIMENT": "Consumer Sentiment",
+}
+
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,14}$")
+
+
+# ---------------------------------------------------------------------------
+# Resources and data access
+# ---------------------------------------------------------------------------
+class _NoData(Exception):
+    """Raised inside cached loaders so empty results are not cached."""
+
+
+@st.cache_resource(show_spinner=False)
+def _get_data_loader() -> DataLoader:
+    return DataLoader()
+
+
+def _create_forecaster() -> Optional[Any]:
+    """TimeSeriesForecaster instance (``None`` when the module is unavailable)."""
+    if TimeSeriesForecaster is None:
+        return None
+    try:
+        return TimeSeriesForecaster(_get_data_loader())
+    except TypeError:
+        return TimeSeriesForecaster()
+    except Exception:
+        logger.exception("TimeSeriesForecaster could not be created")
+        return None
+
+
+def _get_forecaster() -> Optional[Any]:
+    if "_fc_forecaster" not in st.session_state:
+        st.session_state["_fc_forecaster"] = _create_forecaster()
+    return st.session_state["_fc_forecaster"]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
+    prices = _get_data_loader().get_historical_prices(ticker, start, end)
+    if prices is None or prices.empty or "Close" not in prices.columns:
+        raise _NoData(ticker)
+    return prices
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_statement(ticker: str, statement_type: str, period: str) -> pd.DataFrame:
+    frame = _get_data_loader().get_financial_statements(ticker, statement_type, period)
+    if frame is None or frame.empty:
+        raise _NoData(ticker)
+    return frame
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_info(ticker: str) -> Dict[str, Any]:
+    info = _get_data_loader().get_company_info(ticker)
+    if not info:
+        raise _NoData(ticker)
+    return dict(info)
+
+
+def _guarded(loader: Callable[..., Any], empty: Any, *args: Any) -> Any:
+    try:
+        return loader(*args)
+    except _NoData:
+        return empty
+    except Exception:
+        logger.exception("Data loading failed: %s%s", getattr(loader, "__name__", loader), args)
+        return empty
+
+
+def load_prices(ticker: str, years: int) -> pd.DataFrame:
+    end = datetime.now()
+    start = end - timedelta(days=int(365.25 * years))
+    return _guarded(_cached_prices, pd.DataFrame(), ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+
+def load_company_info(ticker: str) -> Dict[str, Any]:
+    return _guarded(_cached_info, {}, ticker)
+
+
+def load_financial_data(ticker: str, period: str = "annual") -> Dict[str, Any]:
+    """Canonical financial data bundle (statements may be empty frames)."""
+    statements = {key: _guarded(_cached_statement, pd.DataFrame(), ticker, stype, period)
+                  for key, stype in (("income_statement", "income"), ("balance_sheet", "balance"),
+                                     ("cash_flow", "cash"))}
+    info = load_company_info(ticker)
+    prices = load_prices(ticker, 1)
+    return build_financial_data(company_info=info, price_data=prices, **statements)
+
+
+def _safe_call(func: Optional[Callable[..., Any]], *args: Any, **kwargs: Any) -> Any:
+    """Call a model method; log and return ``None`` on any failure."""
+    if func is None:
+        return None
+    try:
+        return func(*args, **kwargs)
+    except Exception:
+        logger.exception("Forecast call %s failed", getattr(func, "__name__", func))
+        return None
+
+
+def _method(obj: Any, name: str) -> Optional[Callable[..., Any]]:
+    method = getattr(obj, name, None) if obj is not None else None
+    return method if callable(method) else None
+
+
+def _valid_forecast(result: Any) -> bool:
+    return isinstance(result, Mapping) and not charts.as_series(result.get("forecast")).empty
+
+
+def _error_text(result: Any, default: str = "no forecast produced") -> str:
+    if isinstance(result, Mapping) and result.get("error"):
+        return str(result["error"])
+    return default
+
+
+def _label(model: Any) -> str:
+    return MODEL_LABELS.get(str(model), str(model).replace("_", " ").title())
+
+
+def _clean_ticker(raw: Any) -> str:
+    return str(raw or "").strip().upper()
+
+
+def _fmt(value: Any, kind: str = "number") -> str:
+    number = to_float(value)
+    if number is None:
+        return "N/A"
+    if kind == "money":
+        return format_large_number(number)
+    if kind == "price":
+        return f"${number:,.2f}"
+    if kind == "pct":
+        return f"{number * 100:.1f}%"
+    if kind == "pct_points":
+        return f"{number:+.1f}%"
+    if kind == "multiple":
+        return f"{number:.1f}x"
+    return f"{number:,.2f}"
+
+
+# ---------------------------------------------------------------------------
+# Price forecasting
+# ---------------------------------------------------------------------------
+def _close(prices: pd.DataFrame) -> pd.Series:
+    if prices is None or prices.empty or "Close" not in prices.columns:
+        return pd.Series(dtype=float)
+    return charts.as_series(prices["Close"])
+
+
+def _average_forecast(forecasts: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
+    """Equal-weight average of model forecasts (used when the ensemble call is unavailable)."""
+    frames = {key: charts.forecast_parts(result) for key, result in forecasts.items()}
+    means = pd.DataFrame({k: v[0].reset_index(drop=True) for k, v in frames.items()})
+    if means.empty:
+        return {}
+    index = next(iter(frames.values()))[0].index[: len(means)]
+    result = {"model": "ensemble", "forecast": pd.Series(means.mean(axis=1).values, index=index),
+              "weights": {k: 1 / len(frames) for k in frames}, "components": {k: v[0] for k, v in frames.items()}}
+    lowers = pd.DataFrame({k: v[1].reset_index(drop=True) for k, v in frames.items() if not v[1].empty})
+    uppers = pd.DataFrame({k: v[2].reset_index(drop=True) for k, v in frames.items() if not v[2].empty})
+    if not lowers.empty and not uppers.empty:
+        result["lower"] = pd.Series(lowers.mean(axis=1).values[: len(index)], index=index[: len(lowers)])
+        result["upper"] = pd.Series(uppers.mean(axis=1).values[: len(index)], index=index[: len(uppers)])
+    return result
+
+
+def run_price_forecast(forecaster: Any, prices: pd.DataFrame, models: List[str], horizon: int,
+                       confidence: float, target_change_pct: float = 10.0) -> Dict[str, Any]:
+    """
+    Run every selected price model plus ensemble, backtest and probabilities.
+
+    Returns a result dict with ``forecasts`` ({model: F}), ``errors``
+    ({model: message}), ``ensemble`` (F or ``{}``), ``evaluation``
+    (DataFrame or ``None``), ``prob_up`` (float or ``None``) and
+    ``prob_change`` (dict or ``None``). Never raises.
+    """
+    result: Dict[str, Any] = {"forecasts": {}, "errors": {}, "ensemble": {}, "evaluation": None,
+                              "prob_up": None, "prob_change": None, "history": _close(prices)}
+    forecast_price = _method(forecaster, "forecast_price")
+    if forecast_price is None:
+        result["error"] = ("The price forecasting engine (TimeSeriesForecaster.forecast_price) is not available "
+                           "in this installation.")
+        return result
+    for model in models:
+        output = _safe_call(forecast_price, prices, horizon=horizon, model=model, confidence=confidence)
+        if _valid_forecast(output):
+            result["forecasts"][model] = output
+        else:
+            result["errors"][model] = _error_text(output)
+    if not result["forecasts"]:
+        result["error"] = "None of the selected models produced a forecast."
+        return result
+
+    if len(result["forecasts"]) == 1:
+        result["ensemble"] = next(iter(result["forecasts"].values()))
+    else:
+        ensemble = _safe_call(_method(forecaster, "create_ensemble_forecast"), prices, horizon=horizon,
+                              models=list(result["forecasts"]), confidence=confidence)
+        result["ensemble"] = ensemble if _valid_forecast(ensemble) else _average_forecast(result["forecasts"])
+
+    evaluation = _safe_call(_method(forecaster, "evaluate_models"), prices, models=list(result["forecasts"]),
+                            test_size=min(max(horizon, 10), 60))
+    if isinstance(evaluation, pd.DataFrame) and not evaluation.empty:
+        result["evaluation"] = evaluation
+    prob_up = _safe_call(_method(forecaster, "probability_of_price_increase"), prices, horizon=horizon)
+    result["prob_up"] = to_float(prob_up)
+    prob_change = _safe_call(_method(forecaster, "probability_of_price_change"), prices, horizon=horizon,
+                             target_change_pct=target_change_pct)
+    result["prob_change"] = prob_change if isinstance(prob_change, Mapping) and not prob_change.get("error") else None
+    hist = (result["ensemble"] or {}).get("history")
+    if not charts.as_series(hist).empty:
+        result["history"] = charts.as_series(hist)
+    return result
+
+
+def price_forecast_table(result: Mapping[str, Any]) -> pd.DataFrame:
+    """Forecast values per model plus ensemble and bounds, indexed by date."""
+    columns: Dict[str, pd.Series] = {}
+    for model, output in (result.get("forecasts") or {}).items():
+        columns[_label(model)] = charts.as_series(output.get("forecast"))
+    forecast, lower, upper = charts.forecast_parts(result.get("ensemble") or {})
+    if not forecast.empty and len(result.get("forecasts") or {}) > 1:
+        columns["Ensemble"] = forecast
+    if not lower.empty:
+        columns["Lower"] = lower
+    if not upper.empty:
+        columns["Upper"] = upper
+    if not columns:
+        return pd.DataFrame()
+    frame = pd.DataFrame(columns)
+    frame.index.name = "Date"
+    return frame
+
+
+def _render_price_tab(ticker: str) -> None:
+    st.subheader("Share price forecast")
+    forecaster = _get_forecaster()
+    if _method(forecaster, "forecast_price") is None:
+        st.info("Price forecasting models are not available in this installation "
+                "(TimeSeriesForecaster.forecast_price is missing).")
+        _render_price_result()
+        return
+
+    col1, col2, col3 = st.columns(3)
+    history_label = col1.selectbox("Price history", list(HISTORY_OPTIONS), index=1, key="fc_price_history")
+    horizon_label = col2.selectbox("Forecast horizon", list(HORIZON_OPTIONS), index=1, key="fc_price_horizon")
+    confidence = col3.select_slider("Confidence level (%)", options=CONFIDENCE_OPTIONS, value=95,
+                                    key="fc_price_confidence")
+    models = st.multiselect("Models", options=list(PRICE_MODELS), default=["arima", "ets", "linear"],
+                            format_func=_label, key="fc_price_models",
+                            help="Several models are blended into a weighted ensemble.")
+    if not PROPHET_AVAILABLE:
+        st.caption("Prophet is optional and not installed; install `prophet` to enable it.")
+    target = st.number_input("Probability target move (%)", min_value=1.0, max_value=100.0, value=10.0, step=1.0,
+                             key="fc_price_target",
+                             help="Probability of the price ending above +x% / below -x% at the horizon.")
+    params = {"ticker": ticker, "history": history_label, "horizon": horizon_label, "confidence": confidence,
+              "models": list(models), "target": float(target)}
+
+    if st.button("Run price forecast", type="primary", key="fc_price_run", disabled=not models or not ticker):
+        with st.spinner(f"Forecasting {ticker} ..."):
+            prices = load_prices(ticker, HISTORY_OPTIONS[history_label])
+            if prices.empty:
+                st.session_state[PRICE_RESULT_KEY] = {"params": params, "ticker": ticker,
+                                                      "error": f"No price history is available for {ticker}."}
             else:
-                st.warning("Performance metrics not available.")
+                info = load_company_info(ticker)
+                output = run_price_forecast(forecaster, prices, list(models), HORIZON_OPTIONS[horizon_label],
+                                            confidence / 100.0, float(target))
+                output.update({"params": params, "ticker": ticker, "company_name": info.get("name") or ticker})
+                st.session_state[PRICE_RESULT_KEY] = output
+    _render_price_result(params)
 
-            # Tab 3: Forecast Statistics
-        with tabs[2]:
-            st.subheader("Forecast Statistics")
 
-            # Display summary statistics for the ensemble forecast
-            if ensemble_forecast is not None and not ensemble_forecast.empty:
-                # Calculate statistics
-                current_price = price_data['Close'].iloc[-1]
-                forecast_price = ensemble_forecast['mean'].iloc[-1]
-                forecast_change = ((forecast_price / current_price) - 1) * 100
-                min_forecast = ensemble_forecast['lower'].min()
-                max_forecast = ensemble_forecast['upper'].max()
-                range_width = max_forecast - min_forecast
-                range_percent = (range_width / current_price) * 100
+def _render_price_result(current_params: Optional[Mapping[str, Any]] = None) -> None:
+    result = st.session_state.get(PRICE_RESULT_KEY)
+    if not result:
+        st.caption("Choose the settings above and click **Run price forecast**.")
+        return
+    params = result.get("params") or {}
+    if current_params is not None and dict(current_params) != dict(params):
+        st.info(f"Showing the last forecast ({params.get('ticker')}, {params.get('horizon')}). "
+                "Click **Run price forecast** to update it with the current settings.")
+    if result.get("error"):
+        st.warning(result["error"])
+        for model, message in (result.get("errors") or {}).items():
+            st.caption(f"{_label(model)}: {message}")
+        return
 
-                # Create a DataFrame for statistics
-                stats_data = [
-                    {"Statistic": "Current Price", "Value": f"${current_price:.2f}"},
-                    {"Statistic": f"Forecast Price ({forecast_horizon})", "Value": f"${forecast_price:.2f}"},
-                    {"Statistic": "Forecast Change", "Value": f"{forecast_change:.2f}%"},
-                    {"Statistic": "Minimum Forecast", "Value": f"${min_forecast:.2f}"},
-                    {"Statistic": "Maximum Forecast", "Value": f"${max_forecast:.2f}"},
-                    {"Statistic": "Forecast Range", "Value": f"${range_width:.2f} ({range_percent:.2f}%)"},
-                    {"Statistic": "Confidence Interval", "Value": f"{confidence_interval}%"},
-                    {"Statistic": "Forecast Models Used", "Value": ", ".join(models_to_use)}
-                ]
+    ticker = result.get("ticker", "")
+    history = charts.as_series(result.get("history"))
+    ensemble = result.get("ensemble") or {}
+    forecast, lower, upper = charts.forecast_parts(ensemble)
+    current = float(history.iloc[-1]) if not history.empty else None
+    target = float(forecast.iloc[-1]) if not forecast.empty else None
+    change = (target / current - 1) if current and target is not None else None
 
-                stats_df = pd.DataFrame(stats_data)
-                st.dataframe(stats_df, use_container_width=True)
+    st.markdown(f"#### {result.get('company_name', ticker)} ({ticker})")
+    if not history.empty:
+        st.caption(f"{len(history)} closes up to {pd.Timestamp(history.index[-1]):%Y-%m-%d} | horizon "
+                   f"{params.get('horizon')} | {params.get('confidence')}% confidence")
+    cols = st.columns(4)
+    cols[0].metric("Last close", _fmt(current, "price"))
+    cols[1].metric(f"Forecast ({params.get('horizon')})", _fmt(target, "price"),
+                   delta=f"{change * 100:+.1f}%" if change is not None else None)
+    cols[2].metric("Forecast range", f"{_fmt(lower.iloc[-1], 'price')} - {_fmt(upper.iloc[-1], 'price')}"
+                   if not lower.empty and not upper.empty else "N/A")
+    cols[3].metric("P(price up)", _fmt(result.get("prob_up"), "pct"))
+    if change is not None:
+        message = (f"The {'ensemble' if len(result['forecasts']) > 1 else _label(next(iter(result['forecasts'])))} "
+                   f"projects a {change * 100:+.1f}% move over {params.get('horizon')}. Statistical price forecasts "
+                   "are highly uncertain - treat them as one input among many.")
+        if change > 0.05:
+            st.success(message)
+        elif change < -0.05:
+            st.error(message)
+        else:
+            st.info(message)
+    if result.get("errors"):
+        st.warning("Some models failed: " + "; ".join(f"{_label(m)} ({e})" for m, e in result["errors"].items()))
 
-                # Show probability distribution
-                st.subheader("Forecast Probability Distribution")
+    view_forecast, view_models, view_prob, view_data = st.tabs(
+        ["Forecast", "Model comparison", "Probabilities", "Data"])
+    with view_forecast:
+        components = result["forecasts"] if len(result["forecasts"]) > 1 else None
+        st.plotly_chart(charts.forecast_chart(history, components, ensemble, title=f"{ticker} price forecast",
+                                              history_points=504, labels=MODEL_LABELS),
+                        key="fc_price_chart")
+    with view_models:
+        st.plotly_chart(charts.forecast_chart(history, result["forecasts"], None if len(result["forecasts"]) > 1
+                                              else ensemble, title="Model forecasts", history_points=252,
+                                              labels=MODEL_LABELS, band_label="Ensemble interval"),
+                        key="fc_price_models_chart")
+        evaluation = result.get("evaluation")
+        if isinstance(evaluation, pd.DataFrame) and not evaluation.empty:
+            st.markdown("**Backtest** (models refit on history excluding the last test window)")
+            display = evaluation.copy()
+            if "model" in display:
+                display["model"] = display["model"].map(_label)
+            st.dataframe(display, hide_index=True, key="fc_price_eval_table")
+            metric = "mape" if "mape" in evaluation.columns else ("rmse" if "rmse" in evaluation.columns else "mae")
+            st.plotly_chart(charts.evaluation_chart(evaluation, metric=metric, labels=MODEL_LABELS,
+                                                    title=f"Backtest {metric.upper()} (lower is better)"),
+                            key="fc_price_eval_chart")
+        else:
+            st.caption("Backtest results are not available.")
+        weights = ensemble.get("weights") if isinstance(ensemble, Mapping) else None
+        if weights and len(result["forecasts"]) > 1:
+            st.plotly_chart(charts.weights_chart(weights, labels=MODEL_LABELS), key="fc_price_weights_chart")
+        with st.expander("About the models"):
+            for model in result["forecasts"]:
+                st.markdown(f"**{_label(model)}** - {MODEL_DESCRIPTIONS.get(model, '')}")
+    with view_prob:
+        prob_change = result.get("prob_change") or {}
+        cols = st.columns(3)
+        cols[0].metric("P(price higher)", _fmt(result.get("prob_up"), "pct"))
+        cols[1].metric(f"P(> +{params.get('target', 10):.0f}%)", _fmt(prob_change.get("prob_above"), "pct"))
+        cols[2].metric(f"P(< -{params.get('target', 10):.0f}%)", _fmt(prob_change.get("prob_below"), "pct"))
+        if prob_change:
+            st.plotly_chart(charts.distribution_chart(prob_change.get("percentiles"), current_price=current,
+                                                      expected_price=prob_change.get("expected_price")),
+                            key="fc_price_dist_chart")
+            st.caption("Monte-Carlo simulation of log returns calibrated on the selected history.")
+        else:
+            st.caption("Probability simulation is not available.")
+    with view_data:
+        table = price_forecast_table(result)
+        if table.empty:
+            st.caption("No forecast data.")
+        else:
+            st.dataframe(table.style.format("{:,.2f}"), key="fc_price_table")
+            st.download_button("Download forecast (CSV)", data=to_csv_bytes(table),
+                               file_name=f"{ticker}_price_forecast.csv", mime="text/csv",
+                               key="fc_price_download", on_click="ignore")
 
-                fig = visualizer.plot_forecast_distribution(
-                    ensemble_forecast,
-                    current_price=current_price,
-                    title=f"{ticker} Price Forecast Distribution",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
 
-                # Add probability insights
-                prob_up = time_series_forecaster.probability_of_price_increase(ensemble_forecast)
-                prob_up_5 = time_series_forecaster.probability_of_price_change(ensemble_forecast, 0.05)
-                prob_down_5 = time_series_forecaster.probability_of_price_change(ensemble_forecast, -0.05)
+# ---------------------------------------------------------------------------
+# Financial metric forecasting
+# ---------------------------------------------------------------------------
+def metric_history(financial_data: Mapping[str, Any], metric: str) -> pd.Series:
+    """Chronological (oldest first) series for a :data:`FINANCIAL_METRICS` entry."""
+    spec = FINANCIAL_METRICS[metric]
+    if "ratio" in spec:
+        (num_stmt, num_item), (den_stmt, den_item) = spec["ratio"]
+        numerator = get_series(financial_data.get(num_stmt), num_item, ascending=True)
+        denominator = get_series(financial_data.get(den_stmt), den_item, ascending=True)
+        common = numerator.index.intersection(denominator.index)
+        if len(common) == 0:
+            return pd.Series(dtype=float)
+        denominator = denominator.loc[common].where(denominator.loc[common] != 0)
+        series = (numerator.loc[common] / denominator).replace([np.inf, -np.inf], np.nan).dropna()
+    else:
+        series = get_series(financial_data.get(spec["statement"]), spec["item"], ascending=True)
+    try:
+        series.index = pd.to_datetime(series.index)
+    except (TypeError, ValueError):
+        pass
+    series.name = metric
+    return series.astype(float)
 
-                st.markdown("### Probability Analysis")
 
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.metric("Probability of Price Increase", f"{prob_up * 100:.1f}%")
-
-                with col2:
-                    st.metric("Probability of >5% Increase", f"{prob_up_5 * 100:.1f}%")
-
-                with col3:
-                    st.metric("Probability of >5% Decrease", f"{prob_down_5 * 100:.1f}%")
+def run_metric_forecast(forecaster: Any, financial_data: Mapping[str, Any], metrics: List[str], periods: int,
+                        models: List[str]) -> Dict[str, Any]:
+    """Forecast each metric with every model plus an ensemble. Never raises."""
+    single = _method(forecaster, "forecast_financial_metric")
+    ensemble_fn = _method(forecaster, "create_ensemble_financial_forecast")
+    output: Dict[str, Any] = {"metrics": {}}
+    if single is None and ensemble_fn is None:
+        output["error"] = ("The financial forecasting engine (TimeSeriesForecaster.forecast_financial_metric) is "
+                           "not available in this installation.")
+        return output
+    for metric in metrics:
+        history = metric_history(financial_data, metric)
+        entry: Dict[str, Any] = {"history": history, "forecasts": {}, "errors": {}, "ensemble": {}}
+        if len(history) < 2:
+            entry["error"] = "Not enough reported periods to forecast (at least two are needed)."
+            output["metrics"][metric] = entry
+            continue
+        for model in models:
+            result = _safe_call(single, history, periods=periods, model=model)
+            if _valid_forecast(result):
+                entry["forecasts"][model] = result
             else:
-                st.warning("Forecast statistics not available.")
+                entry["errors"][model] = _error_text(result)
+        if len(entry["forecasts"]) > 1:
+            ensemble = _safe_call(ensemble_fn, history, periods=periods, models=list(entry["forecasts"]))
+            entry["ensemble"] = ensemble if _valid_forecast(ensemble) else _average_forecast(entry["forecasts"])
+        elif entry["forecasts"]:
+            entry["ensemble"] = next(iter(entry["forecasts"].values()))
+        else:
+            entry["error"] = "No model produced a forecast for this metric."
+        output["metrics"][metric] = entry
+    return output
 
-            # Tab 4: Model Details
-        with tabs[3]:
-            st.subheader("Model Details")
 
-            # Create tabs for each model
-            if forecasts:
-                model_tabs = st.tabs([m.upper() for m in models_to_use])
+def metric_summary_table(result: Mapping[str, Any]) -> pd.DataFrame:
+    """One row per metric: last reported value, final forecast and implied growth."""
+    rows = []
+    for metric, entry in (result.get("metrics") or {}).items():
+        history = charts.as_series(entry.get("history"))
+        forecast, _, _ = charts.forecast_parts(entry.get("ensemble") or {})
+        kind = FINANCIAL_METRICS.get(metric, {}).get("kind", "number")
+        last = float(history.iloc[-1]) if not history.empty else None
+        final = float(forecast.iloc[-1]) if not forecast.empty else None
+        if kind == "pct":
+            change = f"{(final - last) * 100:+.1f} pp" if last is not None and final is not None else "N/A"
+        else:
+            periods = len(forecast)
+            annual = (final / last) ** (1 / periods) - 1 \
+                if last is not None and final is not None and last > 0 and final > 0 and periods else None
+            change = f"{annual * 100:+.1f}% / period" if annual is not None else "N/A"
+        rows.append({"Metric": metric, "Last reported": _fmt(last, kind),
+                     "Forecast (final period)": _fmt(final, kind), "Implied change": change,
+                     "Status": entry.get("error") or "OK"})
+    return pd.DataFrame(rows)
 
-                for i, model in enumerate(models_to_use):
-                    with model_tabs[i]:
-                        if model in forecasts:
-                            model_forecast = forecasts[model]
 
-                            # Display model description
-                            model_descriptions = {
-                                "arima": """
-                                                        **ARIMA (AutoRegressive Integrated Moving Average)** is a statistical model for time series forecasting.
-                                                        It combines three components:
-                                                        - AR (AutoRegressive): Uses the relationship between an observation and a number of lagged observations.
-                                                        - I (Integrated): Applies differencing to make the time series stationary.
-                                                        - MA (Moving Average): Uses the dependency between an observation and residual errors from a moving average model.
+def metric_forecast_frame(result: Mapping[str, Any]) -> pd.DataFrame:
+    """Long table of history and forecasts for CSV export."""
+    rows = []
+    for metric, entry in (result.get("metrics") or {}).items():
+        for date, value in charts.as_series(entry.get("history")).items():
+            rows.append({"metric": metric, "date": date, "type": "reported", "model": "", "value": value})
+        sources = dict(entry.get("forecasts") or {})
+        if len(sources) > 1 and entry.get("ensemble"):
+            sources["ensemble"] = entry["ensemble"]
+        for model, forecast in sources.items():
+            values, lower, upper = charts.forecast_parts(forecast)
+            for date, value in values.items():
+                rows.append({"metric": metric, "date": date, "type": "forecast", "model": model, "value": value,
+                             "lower": lower.get(date), "upper": upper.get(date)})
+    return pd.DataFrame(rows)
 
-                                                        ARIMA is particularly useful for stock prices as it can capture trends and some patterns in the data.
-                                                        """,
-                                "ets": """
-                                                        **Exponential Smoothing (ETS)** is a time series forecasting method that gives more weight to recent observations.
-                                                        It uses weighted averages where the weights decrease exponentially as observations get older.
 
-                                                        ETS can handle data with trends and seasonal patterns, making it useful for stock price prediction.
-                                                        This model is generally good at capturing short to medium-term patterns.
-                                                        """,
-                                "prophet": """
-                                                        **Prophet** is a forecasting model developed by Facebook that is designed for time series with strong seasonal effects.
-                                                        It uses a decomposable time series model with three main components:
-                                                        - Trend: Models non-periodic changes
-                                                        - Seasonality: Models periodic changes (daily, weekly, yearly)
-                                                        - Holidays: Accounts for holiday effects
+def _render_metrics_tab(ticker: str) -> None:
+    st.subheader("Financial metric forecast")
+    forecaster = _get_forecaster()
+    if _method(forecaster, "forecast_financial_metric") is None:
+        st.info("Financial metric forecasting is not available in this installation "
+                "(TimeSeriesForecaster.forecast_financial_metric is missing).")
+        _render_metric_result()
+        return
+    metrics = st.multiselect("Metrics", options=list(FINANCIAL_METRICS), default=["Revenue", "Net Income",
+                                                                                 "Diluted EPS"],
+                             key="fc_metric_items")
+    col1, col2, col3 = st.columns(3)
+    frequency = col1.selectbox("Statements", ["Annual", "Quarterly"], key="fc_metric_frequency")
+    periods = col2.slider("Periods to forecast", min_value=1, max_value=8, value=3, key="fc_metric_periods")
+    models = col3.multiselect("Models", options=list(METRIC_MODELS), default=["linear", "cagr", "ets"],
+                              format_func=_label, key="fc_metric_models")
+    params = {"ticker": ticker, "metrics": list(metrics), "frequency": frequency, "periods": periods,
+              "models": list(models)}
+    if st.button("Run metric forecast", type="primary", key="fc_metric_run",
+                 disabled=not metrics or not models or not ticker):
+        with st.spinner(f"Forecasting {ticker} fundamentals ..."):
+            financial_data = load_financial_data(ticker, frequency.lower())
+            if all(financial_data[k].empty for k in ("income_statement", "balance_sheet", "cash_flow")):
+                output = {"error": f"No financial statements are available for {ticker}."}
+            else:
+                output = run_metric_forecast(forecaster, financial_data, list(metrics), int(periods), list(models))
+            output.update({"params": params, "ticker": ticker})
+            st.session_state[METRIC_RESULT_KEY] = output
+    _render_metric_result(params)
 
-                                                        Prophet is robust to missing data, shifts in trends, and typically handles outliers well.
-                                                        """,
-                                "lstm": """
-                                                        **LSTM (Long Short-Term Memory)** is a type of recurrent neural network capable of learning long-term dependencies.
-                                                        Unlike other forecasting methods, LSTM can:
-                                                        - Remember patterns over long sequences
-                                                        - Capture complex non-linear relationships
-                                                        - Learn from a large amount of historical data
 
-                                                        LSTMs are particularly powerful for financial time series that may have complex patterns not easily captured by traditional statistical methods.
-                                                        """
-                            }
+def _render_metric_result(current_params: Optional[Mapping[str, Any]] = None) -> None:
+    result = st.session_state.get(METRIC_RESULT_KEY)
+    if not result:
+        st.caption("Choose metrics and models, then click **Run metric forecast**.")
+        return
+    params = result.get("params") or {}
+    if current_params is not None and dict(current_params) != dict(params):
+        st.info(f"Showing the last metric forecast ({params.get('ticker')}). Click **Run metric forecast** to "
+                "update it with the current settings.")
+    if result.get("error"):
+        st.warning(result["error"])
+        return
+    ticker = result.get("ticker", "")
+    summary = metric_summary_table(result)
+    if not summary.empty:
+        st.dataframe(summary, hide_index=True, key="fc_metric_summary")
+    entries = result.get("metrics") or {}
+    if entries:
+        tabs = st.tabs(list(entries))
+        for tab, (metric, entry) in zip(tabs, entries.items()):
+            with tab:
+                if entry.get("error") and not entry.get("forecasts"):
+                    st.info(entry["error"])
+                kind = FINANCIAL_METRICS.get(metric, {}).get("kind", "number")
+                scale = 100.0 if kind == "pct" else 1.0
+                history = charts.as_series(entry.get("history")) * scale
+                forecasts = {m: _scaled(f, scale) for m, f in (entry.get("forecasts") or {}).items()}
+                ensemble = _scaled(entry.get("ensemble") or {}, scale) if len(forecasts) > 1 else None
+                st.plotly_chart(charts.forecast_chart(history, forecasts, ensemble, title=f"{ticker} {metric}",
+                                                      yaxis_title="%" if kind == "pct" else metric,
+                                                      labels=MODEL_LABELS),
+                                key=f"fc_metric_chart_{_slug(metric)}")
+                for model, message in (entry.get("errors") or {}).items():
+                    st.caption(f"{_label(model)}: {message}")
+    frame = metric_forecast_frame(result)
+    if not frame.empty:
+        st.download_button("Download metric forecasts (CSV)", data=to_csv_bytes(frame),
+                           file_name=f"{ticker}_metric_forecast.csv", mime="text/csv", key="fc_metric_download",
+                           on_click="ignore")
 
-                            st.markdown(model_descriptions.get(model, "No description available."))
 
-                            # Display model parameters
-                            st.subheader("Model Parameters")
+def _scaled(result: Mapping[str, Any], scale: float) -> Dict[str, Any]:
+    if scale == 1.0 or not isinstance(result, Mapping):
+        return dict(result or {})
+    scaled = dict(result)
+    for key in ("forecast", "lower", "upper"):
+        series = charts.as_series(result.get(key))
+        if not series.empty:
+            scaled[key] = series * scale
+    return scaled
 
-                            if model == "arima" and "parameters" in model_forecast:
-                                arima_params = model_forecast["parameters"]
-                                st.write(f"- p (AR order): {arima_params.get('p', 'Auto')}")
-                                st.write(f"- d (Differencing): {arima_params.get('d', 'Auto')}")
-                                st.write(f"- q (MA order): {arima_params.get('q', 'Auto')}")
 
-                            elif model == "prophet" and "parameters" in model_forecast:
-                                prophet_params = model_forecast["parameters"]
-                                st.write(f"- Seasonality: {prophet_params.get('seasonality', True)}")
-                                st.write(f"- Change points: {prophet_params.get('n_changepoints', 25)}")
-                                st.write(f"- Included holidays: {prophet_params.get('holidays', False)}")
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
-                            elif model == "lstm" and "parameters" in model_forecast:
-                                lstm_params = model_forecast["parameters"]
-                                st.write(f"- Lookback period: {lstm_params.get('lookback', 30)} days")
-                                st.write(f"- Epochs: {lstm_params.get('epochs', 100)}")
-                                st.write(f"- Batch size: {lstm_params.get('batch_size', 32)}")
-                                st.write(f"- Layers: {lstm_params.get('layers', [50, 50])}")
 
-                            # Plot individual model forecast
-                            st.subheader("Model Forecast")
+# ---------------------------------------------------------------------------
+# Scenario analysis
+# ---------------------------------------------------------------------------
+def scenario_base(financial_data: Mapping[str, Any]) -> Dict[str, Optional[float]]:
+    """Inputs for the scenario model derived from the latest annual statements."""
+    income = financial_data.get("income_statement")
+    market = financial_data.get("market_data") or {}
+    revenue_history = get_series(income, "revenue", ascending=True)
+    revenue = get_latest(income, "revenue")
+    net_income = get_latest(income, "net_income")
+    shares = get_latest(income, "diluted_shares") or to_float(market.get("shares_outstanding"))
+    price = to_float(market.get("share_price"))
+    eps = safe_divide(net_income, shares)
+    growth = cagr(revenue_history) if len(revenue_history) >= 2 else None
+    return {
+        "revenue": revenue,
+        "net_income": net_income,
+        "net_margin": safe_divide(net_income, revenue),
+        "shares": shares,
+        "price": price,
+        "eps": eps,
+        "pe": safe_divide(price, eps) if eps and eps > 0 else None,
+        "revenue_cagr": growth,
+        "revenue_history": revenue_history,
+    }
 
-                            if "forecast" in model_forecast:
-                                model_data = model_forecast["forecast"]
 
-                                fig = visualizer.plot_individual_forecast(
-                                    price_data,
-                                    model_data,
-                                    ticker,
-                                    model_name=model.upper(),
-                                    title=f"{ticker} - {model.upper()} Forecast",
-                                    height=400
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning(f"No forecast data available for {model.upper()} model.")
-                        else:
-                            st.warning(f"{model.upper()} model did not produce a valid forecast.")
+def default_assumptions(base: Mapping[str, Any]) -> Dict[str, Dict[str, float]]:
+    """Bear/base/bull assumptions (growth/margin in percent, P/E multiple, probability in percent)."""
+    growth = to_float(base.get("revenue_cagr"))
+    growth = 5.0 if growth is None else float(np.clip(growth * 100, -10.0, 30.0))
+    margin = to_float(base.get("net_margin"))
+    margin = 10.0 if margin is None else float(np.clip(margin * 100, -50.0, 60.0))
+    pe = to_float(base.get("pe"))
+    pe = 18.0 if pe is None else float(np.clip(pe, 5.0, 60.0))
+    return {
+        "Bear": {"growth": round(growth - 5.0, 1), "margin": round(margin - 2.0, 1), "pe": round(pe * 0.8, 1),
+                 "probability": 25.0},
+        "Base": {"growth": round(growth, 1), "margin": round(margin, 1), "pe": round(pe, 1), "probability": 50.0},
+        "Bull": {"growth": round(growth + 5.0, 1), "margin": round(margin + 2.0, 1), "pe": round(pe * 1.2, 1),
+                 "probability": 25.0},
+    }
 
-        except Exception as e:
-        st.error(f"An error occurred during forecasting: {str(e)}")
-        logger.error(f"Error in stock price forecasting: {str(e)}")
 
-    elif forecast_type == "Financial Metrics" and forecast_button:
-        with st.spinner(f"Forecasting financial metrics for {ticker}..."):
+def compute_scenarios(base: Mapping[str, Any], assumptions: Mapping[str, Mapping[str, float]],
+                      years: int) -> Dict[str, Any]:
+    """
+    Project revenue, earnings and the implied share price for each scenario.
+
+    Args:
+        base: Output of :func:`scenario_base`.
+        assumptions: ``{scenario: {"growth": %, "margin": %, "pe": x, "probability": %}}``.
+        years: Projection horizon in years.
+
+    Returns:
+        ``{"table": DataFrame (one row per scenario), "paths": {scenario: Series of revenue by year},
+        "weighted_price": float | None, "weighted_upside": float | None, "probability_total": float}``.
+    """
+    revenue = to_float(base.get("revenue"))
+    shares = to_float(base.get("shares"))
+    price = to_float(base.get("price"))
+    if revenue is None or revenue <= 0 or not shares:
+        return {"table": pd.DataFrame(), "paths": {}, "weighted_price": None, "weighted_upside": None,
+                "probability_total": 0.0, "error": "Revenue and share count are required for scenario analysis."}
+    history = base.get("revenue_history")
+    last_year = pd.Timestamp(history.index[-1]).year if isinstance(history, pd.Series) and not history.empty \
+        else datetime.now().year - 1
+    probability_total = sum(max(to_float(a.get("probability"), 0.0), 0.0) for a in assumptions.values())
+    rows, paths = [], {}
+    for name, assumption in assumptions.items():
+        growth = to_float(assumption.get("growth"), 0.0) / 100
+        margin = to_float(assumption.get("margin"), 0.0) / 100
+        multiple = max(to_float(assumption.get("pe"), 0.0), 0.0)
+        probability = max(to_float(assumption.get("probability"), 0.0), 0.0)
+        growth = max(growth, -0.99)
+        path = pd.Series([revenue * (1 + growth) ** year for year in range(0, years + 1)],
+                         index=[last_year + year for year in range(0, years + 1)], name=name)
+        final_revenue = float(path.iloc[-1])
+        net_income = final_revenue * margin
+        eps = net_income / shares
+        implied = max(eps * multiple, 0.0)
+        upside = safe_divide(implied, price) - 1 if price and safe_divide(implied, price) is not None else None
+        annualised = ((implied / price) ** (1 / years) - 1) if price and implied > 0 and years > 0 else None
+        rows.append({"Scenario": name, "Probability": probability / probability_total if probability_total else None,
+                     "Revenue Growth": growth, "Net Margin": margin, "Exit P/E": multiple,
+                     f"Revenue (Y{years})": final_revenue, "Net Income": net_income, "EPS": eps,
+                     "Implied Price": implied, "Upside": upside, "Annualised Return": annualised})
+        paths[name] = path
+    table = pd.DataFrame(rows).set_index("Scenario")
+    weighted_price = None
+    if probability_total > 0:
+        weighted_price = float((table["Implied Price"] * table["Probability"]).sum())
+    weighted_upside = (weighted_price / price - 1) if weighted_price is not None and price else None
+    return {"table": table, "paths": paths, "weighted_price": weighted_price, "weighted_upside": weighted_upside,
+            "probability_total": probability_total}
+
+
+def _render_scenario_tab(ticker: str) -> None:
+    st.subheader("Scenario analysis")
+    st.caption("Project revenue and earnings under bear, base and bull assumptions and translate them into an "
+               "implied share price with an exit P/E multiple. Results update as you edit the assumptions.")
+    if not ticker:
+        st.info("Enter a ticker to build scenarios.")
+        return
+    with st.spinner("Loading financial statements ..."):
+        financial_data = load_financial_data(ticker, "annual")
+    base = scenario_base(financial_data)
+    if base["revenue"] is None or not base["shares"]:
+        st.info(f"Scenario analysis needs reported revenue and a share count, which are not available for {ticker}.")
+        return
+
+    cols = st.columns(4)
+    cols[0].metric("Revenue (latest FY)", _fmt(base["revenue"], "money"))
+    cols[1].metric("Net margin", _fmt(base["net_margin"], "pct"))
+    cols[2].metric("EPS", _fmt(base["eps"], "price"))
+    cols[3].metric("Share price / P/E", f"{_fmt(base['price'], 'price')} / {_fmt(base['pe'], 'multiple')}")
+    reference = _metric_reference_growth(ticker)
+    if reference is not None:
+        st.caption(f"Model-implied revenue growth from the Financial Metrics tab: {reference * 100:+.1f}% per period.")
+
+    years = st.slider("Projection horizon (years)", min_value=1, max_value=10, value=3, key="fc_scn_years")
+    defaults = default_assumptions(base)
+    assumptions: Dict[str, Dict[str, float]] = {}
+    columns = st.columns(len(SCENARIOS))
+    for column, scenario in zip(columns, SCENARIOS):
+        values = defaults[scenario]
+        prefix = f"fc_scn_{_slug(ticker)}_{scenario.lower()}"
+        with column:
+            st.markdown(f"**{scenario} case**")
+            assumptions[scenario] = {
+                "growth": st.number_input("Revenue growth (%/yr)", min_value=-50.0, max_value=100.0,
+                                          value=values["growth"], step=0.5, key=f"{prefix}_growth"),
+                "margin": st.number_input("Net margin (%)", min_value=-100.0, max_value=100.0,
+                                          value=values["margin"], step=0.5, key=f"{prefix}_margin"),
+                "pe": st.number_input("Exit P/E (x)", min_value=0.0, max_value=200.0, value=values["pe"],
+                                      step=0.5, key=f"{prefix}_pe"),
+                "probability": st.number_input("Probability (%)", min_value=0.0, max_value=100.0,
+                                               value=values["probability"], step=5.0, key=f"{prefix}_prob"),
+            }
+    outcome = compute_scenarios(base, assumptions, int(years))
+    if outcome.get("error"):
+        st.info(outcome["error"])
+        return
+    if abs(outcome["probability_total"] - 100.0) > 0.01:
+        if outcome["probability_total"] <= 0:
+            st.warning("Assign a probability to at least one scenario to compute a weighted target.")
+        else:
+            st.caption(f"Probabilities sum to {outcome['probability_total']:.0f}% and were normalised to 100%.")
+
+    cols = st.columns(3)
+    cols[0].metric("Probability-weighted price", _fmt(outcome["weighted_price"], "price"),
+                   delta=f"{outcome['weighted_upside'] * 100:+.1f}%" if outcome["weighted_upside"] is not None
+                   else None)
+    table = outcome["table"]
+    cols[1].metric("Bear / Bull price", f"{_fmt(table.loc['Bear', 'Implied Price'], 'price')} / "
+                                        f"{_fmt(table.loc['Bull', 'Implied Price'], 'price')}")
+    cols[2].metric("Base-case annualised return", _fmt(table.loc["Base", "Annualised Return"], "pct"))
+
+    display = pd.DataFrame(index=table.index)
+    formats = {"Probability": "pct", "Revenue Growth": "pct", "Net Margin": "pct", "Exit P/E": "multiple",
+               f"Revenue (Y{years})": "money", "Net Income": "money", "EPS": "price", "Implied Price": "price",
+               "Upside": "pct", "Annualised Return": "pct"}
+    for column, kind in formats.items():
+        display[column] = [_fmt(v, kind) for v in table[column]]
+    st.dataframe(display, key="fc_scn_table")
+
+    chart_left, chart_right = st.columns(2)
+    with chart_left:
+        history = base["revenue_history"].copy()
+        history.index = [pd.Timestamp(i).year for i in history.index]
+        st.plotly_chart(charts.scenario_paths_chart(outcome["paths"], history, title="Revenue projection",
+                                                    yaxis_title="Revenue", colors=SCENARIO_COLORS),
+                        key="fc_scn_paths_chart")
+    with chart_right:
+        st.plotly_chart(charts.scenario_price_chart(table["Implied Price"].to_dict(), base["price"],
+                                                    outcome["weighted_price"], colors=SCENARIO_COLORS),
+                        key="fc_scn_price_chart")
+    st.download_button("Download scenarios (CSV)", data=to_csv_bytes(table), file_name=f"{ticker}_scenarios.csv",
+                       mime="text/csv", key="fc_scn_download", on_click="ignore")
+
+
+def _metric_reference_growth(ticker: str) -> Optional[float]:
+    """Per-period revenue growth implied by a stored metric forecast for ``ticker`` (if any)."""
+    result = st.session_state.get(METRIC_RESULT_KEY) or {}
+    if result.get("ticker") != ticker:
+        return None
+    entry = (result.get("metrics") or {}).get("Revenue") or {}
+    history = charts.as_series(entry.get("history"))
+    forecast, _, _ = charts.forecast_parts(entry.get("ensemble") or {})
+    if history.empty or forecast.empty or history.iloc[-1] <= 0 or forecast.iloc[-1] <= 0:
+        return None
+    return (forecast.iloc[-1] / history.iloc[-1]) ** (1 / len(forecast)) - 1
+
+
+# ---------------------------------------------------------------------------
+# Economic indicators
+# ---------------------------------------------------------------------------
+def _macro_series(frame: Any) -> pd.Series:
+    if isinstance(frame, pd.Series):
+        series = frame
+    elif isinstance(frame, pd.DataFrame) and not frame.empty:
+        series = frame.iloc[:, 0]
+    else:
+        return pd.Series(dtype=float)
+    series = pd.to_numeric(series, errors="coerce").dropna()
+    try:
+        series.index = pd.to_datetime(series.index)
+    except (TypeError, ValueError):
+        return pd.Series(dtype=float)
+    return series.sort_index().astype(float)
+
+
+def run_macro_forecast(forecaster: Any, data: Mapping[str, Any], horizon: int, models: List[str],
+                       use_var: bool) -> Dict[str, Any]:
+    """Forecast every non-empty macro series; optional VAR across them. Never raises."""
+    output: Dict[str, Any] = {"indicators": {}, "var": None, "missing": []}
+    model_methods = {"arima": "forecast_economic_indicator_arima", "ml": "forecast_economic_indicator_ml",
+                     "ensemble": "create_ensemble_indicator_forecast"}
+    for key, frame in data.items():
+        series = _macro_series(frame)
+        if len(series) < 8:
+            output["missing"].append(key)
+            continue
+        entry: Dict[str, Any] = {"history": series, "forecasts": {}, "errors": {}}
+        for model in models:
+            method = _method(forecaster, model_methods.get(model, ""))
+            if method is None:
+                entry["errors"][model] = "not available"
+                continue
+            result = _safe_call(method, series, horizon=horizon)
+            if _valid_forecast(result):
+                entry["forecasts"][model] = result
+            else:
+                entry["errors"][model] = _error_text(result)
+        output["indicators"][key] = entry
+    if use_var and len(output["indicators"]) >= 2:
+        frame = pd.DataFrame({k: v["history"] for k, v in output["indicators"].items()})
+        frame = frame.resample("ME").last().ffill().dropna()
+        var_fn = _method(forecaster, "forecast_economic_indicators_var")
+        if var_fn is not None and len(frame) >= 12:
+            result = _safe_call(var_fn, frame, horizon=horizon)
+            if isinstance(result, Mapping) and result.get("forecasts") and not result.get("error"):
+                output["var"] = {"result": result, "history": frame}
+    return output
+
+
+def _render_macro_tab() -> None:
+    st.subheader("Economic indicators")
+    datareader = importlib.util.find_spec("pandas_datareader") is not None
+    loader = _get_data_loader()
+    if not datareader or getattr(loader, "offline", False):
+        st.info("Macro-economic data is downloaded from FRED and needs network access plus the optional "
+                "`pandas-datareader` package. "
+                + ("The package is not installed. " if not datareader else "")
+                + ("Offline mode is enabled. " if getattr(loader, "offline", False) else "")
+                + "You can still try to load the data below.")
+    forecaster = _get_forecaster()
+    available = [k for k in MACRO_INDICATORS if k in getattr(DataLoader, "INDICATOR_CODES", MACRO_INDICATORS)]
+    indicators = st.multiselect("Indicators", options=available, default=available[:2],
+                                format_func=lambda k: MACRO_INDICATORS.get(k, k), key="fc_macro_indicators")
+    col1, col2, col3 = st.columns(3)
+    years = col1.slider("History (years)", min_value=3, max_value=30, value=10, key="fc_macro_years")
+    horizon = col2.slider("Horizon (periods)", min_value=3, max_value=24, value=12, key="fc_macro_horizon")
+    models = col3.multiselect("Models", options=list(MACRO_MODELS), default=["arima", "ensemble"],
+                              format_func=lambda k: MACRO_MODELS[k], key="fc_macro_models")
+    use_var = st.checkbox("Joint VAR forecast (two or more indicators)", value=True, key="fc_macro_var")
+    if st.button("Load data and forecast", key="fc_macro_run", disabled=not indicators or not models):
+        with st.spinner("Loading macro-economic data ..."):
+            start = (datetime.now() - timedelta(days=int(365.25 * years))).strftime("%Y-%m-%d")
             try:
-                # Get company info
-                company_info = data_loader.get_company_info(ticker)
-                company_name = company_info.get('name', ticker) if company_info else ticker
+                data = loader.get_macro_indicators(list(indicators), start_date=start) or {}
+            except Exception:
+                logger.exception("Macro indicator loading failed")
+                data = {}
+            output = run_macro_forecast(forecaster, data, int(horizon), list(models), bool(use_var)) \
+                if forecaster is not None else {"indicators": {}, "missing": list(indicators), "var": None}
+            output["params"] = {"indicators": list(indicators), "years": years, "horizon": horizon,
+                                "models": list(models)}
+            output["requested"] = list(indicators)
+            st.session_state[MACRO_RESULT_KEY] = output
+    result = st.session_state.get(MACRO_RESULT_KEY)
+    if not result:
+        return
+    if not result.get("indicators"):
+        st.info("No macro-economic data could be loaded for the selected indicators. Check the network connection "
+                "and that `pandas-datareader` is installed.")
+        return
+    if result.get("missing"):
+        st.caption("No data for: " + ", ".join(MACRO_INDICATORS.get(k, k) for k in result["missing"]))
+    labels = {**MODEL_LABELS, **MACRO_MODELS}
+    for key, entry in result["indicators"].items():
+        forecasts = entry.get("forecasts") or {}
+        ensemble = forecasts.get("ensemble")
+        components = {k: v for k, v in forecasts.items() if k != "ensemble"} if ensemble else forecasts
+        st.plotly_chart(charts.forecast_chart(entry["history"], components, ensemble,
+                                              title=MACRO_INDICATORS.get(key, key), yaxis_title="", labels=labels),
+                        key=f"fc_macro_chart_{_slug(key)}")
+        for model, message in (entry.get("errors") or {}).items():
+            st.caption(f"{labels.get(model, model)}: {message}")
+    if result.get("var"):
+        st.plotly_chart(charts.var_forecast_chart(result["var"]["history"], result["var"]["result"],
+                                                  labels=MACRO_INDICATORS, title="Vector autoregression (VAR)"),
+                        key="fc_macro_var_chart")
 
-                # Load financial statements
-                income_stmt = data_loader.get_financial_statements(ticker, 'income', forecast_frequency.lower())
-                balance_sheet = data_loader.get_financial_statements(ticker, 'balance', forecast_frequency.lower())
-                cash_flow = data_loader.get_financial_statements(ticker, 'cash', forecast_frequency.lower())
 
-                if income_stmt.empty and balance_sheet.empty and cash_flow.empty:
-                    st.error(f"Could not load financial statement data for {ticker}.")
-                    return
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+def _ticker_input() -> str:
+    active = get_active_ticker()
+    if "fc_ticker" not in st.session_state:
+        st.session_state["fc_ticker"] = active or DEFAULT_TICKER
+        st.session_state["_fc_last_active"] = active
+    elif active and st.session_state.get("_fc_last_active") != active:
+        # A different company was selected elsewhere in the app: follow it.
+        st.session_state["fc_ticker"] = active
+        st.session_state["_fc_last_active"] = active
+    raw = st.text_input("Ticker symbol", key="fc_ticker", max_chars=15,
+                        help="Defaults to the company selected in Company Analysis.")
+    ticker = _clean_ticker(raw)
+    if ticker and not _TICKER_PATTERN.match(ticker):
+        st.warning(f"'{raw}' does not look like a valid ticker symbol.")
+        return ""
+    return ticker
 
-                # Prepare financial data for forecasting
-                financial_data = {}
 
-                # Map selected metrics to financial statements
-                statement_mapping = {
-                    "Revenue": {"statement": "income", "field": "Total Revenue"},
-                    "EBITDA": {"statement": "income", "field": "EBITDA"},
-                    "Net Income": {"statement": "income", "field": "Net Income"},
-                    "EPS": {"statement": "income", "field": "Diluted EPS"},
-                    "Operating Margin": {"statement": "calculated", "fields": ["Operating Income", "Total Revenue"]},
-                    "Net Margin": {"statement": "calculated", "fields": ["Net Income", "Total Revenue"]},
-                    "ROE": {"statement": "calculated", "fields": ["Net Income", "Total Stockholder Equity"]},
-                    "Free Cash Flow": {"statement": "cash", "field": "Free Cash Flow"}
-                }
-
-                # Extract data for selected metrics
-                for metric in selected_metrics:
-                    if metric in statement_mapping:
-                        mapping = statement_mapping[metric]
-
-                        if mapping["statement"] == "income":
-                            if not income_stmt.empty and mapping["field"] in income_stmt.index:
-                                financial_data[metric] = income_stmt.loc[mapping["field"]]
-
-                        elif mapping["statement"] == "cash":
-                            if not cash_flow.empty and mapping["field"] in cash_flow.index:
-                                financial_data[metric] = cash_flow.loc[mapping["field"]]
-
-                        elif mapping["statement"] == "calculated":
-                            # Handle calculated ratios
-                            if metric == "Operating Margin" and not income_stmt.empty:
-                                if all(field in income_stmt.index for field in mapping["fields"]):
-                                    financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / income_stmt.loc[
-                                        mapping["fields"][1]]
-
-                            elif metric == "Net Margin" and not income_stmt.empty:
-                                if all(field in income_stmt.index for field in mapping["fields"]):
-                                    financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / income_stmt.loc[
-                                        mapping["fields"][1]]
-
-                            elif metric == "ROE" and not income_stmt.empty and not balance_sheet.empty:
-                                if mapping["fields"][0] in income_stmt.index and mapping["fields"][
-                                    1] in balance_sheet.index:
-                                    financial_data[metric] = income_stmt.loc[mapping["fields"][0]] / balance_sheet.loc[
-                                        mapping["fields"][1]]
-
-                # Check if we have data to forecast
-                if not financial_data:
-                    st.error("Could not extract financial metric data for forecasting.")
-                    return
-
-                # Convert financial data to DataFrames
-                financial_dfs = {metric: pd.DataFrame(data) for metric, data in financial_data.items()}
-
-                # Additional forecasting parameters
-                forecast_params = {
-                    "frequency": forecast_frequency.lower(),
-                    "periods": forecast_periods
-                }
-
-                # Create list of models to use
-                models_to_use = []
-                if use_linear:
-                    models_to_use.append("linear")
-                if use_arima:
-                    models_to_use.append("arima")
-                if use_ml:
-                    models_to_use.append("xgboost")
-
-                forecast_params["models"] = models_to_use
-
-                # Additional factors
-                if include_sector:
-                    forecast_params["include_sector"] = True
-                    forecast_params["sector"] = company_info.get('sector')
-
-                if include_macro:
-                    forecast_params["include_macro"] = True
-
-                if include_sentiment:
-                    forecast_params["include_sentiment"] = True
-
-                # Generate forecasts for each metric
-                forecasts = {}
-                for metric, data in financial_dfs.items():
-                    metric_forecast = time_series_forecaster.forecast_financial_metric(
-                        data,
-                        metric,
-                        **forecast_params
-                    )
-
-                    if metric_forecast:
-                        forecasts[metric] = metric_forecast
-
-                if not forecasts:
-                    st.error("Failed to generate forecasts. Please check your parameters and try again.")
-                    return
-
-                # Display results header
-                st.header(f"Financial Metrics Forecast for {company_name} ({ticker})")
-                st.subheader(f"Forecast: Next {forecast_periods} {forecast_frequency} Periods")
-
-                # Create tabs for each metric
-                metric_tabs = st.tabs(selected_metrics)
-
-                for i, metric in enumerate(selected_metrics):
-                    with metric_tabs[i]:
-                        if metric in forecasts:
-                            # Display metric forecast
-                            st.subheader(f"{metric} Forecast")
-
-                            # Get historical and forecast data
-                            historical_data = financial_dfs[metric]
-                            forecast_data = forecasts[metric]
-
-                            # Create ensemble forecast if multiple models
-                            if len(models_to_use) > 1 and all(model in forecast_data for model in models_to_use):
-                                ensemble_forecast = time_series_forecaster.create_ensemble_financial_forecast(
-                                    forecast_data)
-                            else:
-                                # Use the first available model
-                                for model in models_to_use:
-                                    if model in forecast_data:
-                                        ensemble_forecast = forecast_data[model]
-                                        break
-                                else:
-                                    ensemble_forecast = None
-
-                            if ensemble_forecast is not None:
-                                # Plot forecast
-                                fig = visualizer.plot_financial_metric_forecast(
-                                    historical_data,
-                                    ensemble_forecast,
-                                    metric,
-                                    title=f"{ticker} - {metric} Forecast",
-                                    frequency=forecast_frequency,
-                                    height=500
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-
-                                # Display key statistics
-                                if not historical_data.empty and not ensemble_forecast.empty:
-                                    latest_value = historical_data.iloc[:, 0].iloc[-1]
-                                    forecast_end = ensemble_forecast['mean'].iloc[-1]
-                                    forecast_change = ((forecast_end / latest_value) - 1) * 100
-
-                                    col1, col2, col3 = st.columns(3)
-
-                                    with col1:
-                                        st.metric(
-                                            "Latest Value",
-                                            f"${latest_value:.2f}M" if metric in ["Revenue", "EBITDA", "Net Income",
-                                                                                  "Free Cash Flow"] else
-                                            f"${latest_value:.2f}" if metric == "EPS" else
-                                            f"{latest_value * 100:.2f}%" if metric in ["Operating Margin", "Net Margin",
-                                                                                       "ROE"] else
-                                            f"{latest_value:.2f}"
-                                        )
-
-                                    with col2:
-                                        st.metric(
-                                            f"Forecast (Period {forecast_periods})",
-                                            f"${forecast_end:.2f}M" if metric in ["Revenue", "EBITDA", "Net Income",
-                                                                                  "Free Cash Flow"] else
-                                            f"${forecast_end:.2f}" if metric == "EPS" else
-                                            f"{forecast_end * 100:.2f}%" if metric in ["Operating Margin", "Net Margin",
-                                                                                       "ROE"] else
-                                            f"{forecast_end:.2f}",
-                                            f"{forecast_change:.2f}%",
-                                            delta_color="normal"
-                                        )
-
-                                    with col3:
-                                        # Forecast range
-                                        high_estimate = ensemble_forecast['upper'].iloc[-1]
-                                        low_estimate = ensemble_forecast['lower'].iloc[-1]
-
-                                        if metric in ["Revenue", "EBITDA", "Net Income", "Free Cash Flow"]:
-                                            range_str = f"${low_estimate:.2f}M - ${high_estimate:.2f}M"
-                                        elif metric == "EPS":
-                                            range_str = f"${low_estimate:.2f} - ${high_estimate:.2f}"
-                                        elif metric in ["Operating Margin", "Net Margin", "ROE"]:
-                                            range_str = f"{low_estimate * 100:.2f}% - {high_estimate * 100:.2f}%"
-                                        else:
-                                            range_str = f"{low_estimate:.2f} - {high_estimate:.2f}"
-
-                                        st.metric(
-                                            "Forecast Range",
-                                            range_str
-                                        )
-
-                                # Add forecast interpretation
-                                if forecast_change is not None:
-                                    if forecast_change > 20:
-                                        sentiment = "strong growth"
-                                        color = COLORS["primary"]  # Green
-                                    elif forecast_change > 10:
-                                        sentiment = "moderate growth"
-                                        color = COLORS["success"]  # Light green
-                                    elif forecast_change > 0:
-                                        sentiment = "slight growth"
-                                        color = COLORS["warning"]  # Yellow
-                                    elif forecast_change > -10:
-                                        sentiment = "slight decline"
-                                        color = COLORS["warning"]  # Yellow
-                                    elif forecast_change > -20:
-                                        sentiment = "moderate decline"
-                                        color = COLORS["accent"]  # Light red
-                                    else:
-                                        sentiment = "significant decline"
-                                        color = COLORS["danger"]  # Red
-
-                                    st.markdown(
-                                        f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                                        f"<h4 style='color: #121212; text-align: center;'>Forecast: {sentiment.capitalize()}</h4>"
-                                        f"<p style='color: #121212; text-align: center;'>Models predict a {forecast_change:.2f}% "
-                                        f"change in {metric} over the next {forecast_periods} {forecast_frequency.lower()} periods.</p>"
-                                        f"</div>",
-                                        unsafe_allow_html=True
-                                    )
-
-                                # Show model comparison if multiple models
-                                if len(models_to_use) > 1 and all(model in forecast_data for model in models_to_use):
-                                    st.subheader("Model Comparison")
-
-                                    fig = visualizer.plot_financial_model_comparison(
-                                        historical_data,
-                                        forecast_data,
-                                        metric,
-                                        title=f"{ticker} - {metric} Forecast Model Comparison",
-                                        height=400
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-
-                                    # Performance metrics
-                                    st.subheader("Model Performance")
-
-                                    metrics_data = []
-                                    for model in models_to_use:
-                                        if model in forecast_data and "metrics" in forecast_data[model]:
-                                            model_metrics = forecast_data[model]["metrics"]
-                                            metrics_data.append({
-                                                "Model": model.upper(),
-                                                "RMSE": model_metrics.get("rmse", "N/A"),
-                                                "MAE": model_metrics.get("mae", "N/A"),
-                                                "MAPE": model_metrics.get("mape", "N/A")
-                                            })
-
-                                    if metrics_data:
-                                        metrics_df = pd.DataFrame(metrics_data)
-                                        st.dataframe(metrics_df, use_container_width=True)
-                            else:
-                                st.warning(f"No forecast generated for {metric}.")
-                        else:
-                            st.warning(f"No forecast data available for {metric}.")
-
-                # Overall financial outlook
-                st.header("Overall Financial Outlook")
-
-                # Analyze trends across metrics
-                trends = {}
-                for metric, forecast in forecasts.items():
-                    # Get the first available model's forecast
-                    for model in models_to_use:
-                        if model in forecast:
-                            forecast_data = forecast[model]
-                            if "forecast" in forecast_data:
-                                last_historical = financial_dfs[metric].iloc[:, 0].iloc[-1]
-                                last_forecast = forecast_data["forecast"]['mean'].iloc[-1]
-                                change_pct = ((last_forecast / last_historical) - 1) * 100
-                                trends[metric] = change_pct
-                                break
-
-                # Create a summary of financial trends
-                if trends:
-                    trends_df = pd.DataFrame(
-                        [{"Metric": k, "Forecasted Change (%)": f"{v:.2f}%"} for k, v in trends.items()])
-
-                    # Sort by forecasted change
-                    trends_df = trends_df.sort_values("Forecasted Change (%)", ascending=False)
-
-                    st.dataframe(trends_df, use_container_width=True)
-
-                    # Generate a financial outlook summary
-                    revenue_trend = trends.get("Revenue")
-                    profit_trend = trends.get("Net Income") or trends.get("EPS")
-                    margin_trend = trends.get("Operating Margin") or trends.get("Net Margin")
-
-                    if revenue_trend is not None and profit_trend is not None:
-                        if revenue_trend > 10 and profit_trend > 15:
-                            outlook = "Strong Growth"
-                            color = COLORS["primary"]  # Green
-                            description = f"The company is projected to experience strong growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                        elif revenue_trend > 5 and profit_trend > 5:
-                            outlook = "Moderate Growth"
-                            color = COLORS["success"]  # Light green
-                            description = f"The company is projected to experience moderate growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                        elif revenue_trend > 0 and profit_trend > 0:
-                            outlook = "Stable Growth"
-                            color = COLORS["warning"]  # Yellow
-                            description = f"The company is projected to maintain stable growth with revenue increasing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-                        elif revenue_trend < 0 and profit_trend < 0:
-                            outlook = "Contraction"
-                            color = COLORS["accent"]  # Light red
-                            description = f"The company is projected to experience contraction with revenue declining by {-revenue_trend:.1f}% and profits by {-profit_trend:.1f}%."
-                        else:
-                            outlook = "Mixed"
-                            color = COLORS["warning"]  # Yellow
-                            description = f"The company is projected to show mixed performance with revenue changing by {revenue_trend:.1f}% and profits by {profit_trend:.1f}%."
-
-                        if margin_trend is not None:
-                            if margin_trend > 0:
-                                description += f" Margins are expected to improve by {margin_trend:.1f}%, indicating enhanced operational efficiency."
-                            else:
-                                description += f" Margins are expected to decrease by {-margin_trend:.1f}%, suggesting potential cost pressures."
-
-                        st.markdown(
-                            f"<div style='background-color: {color}; padding: 10px; border-radius: 5px; margin: 10px 0;'>"
-                            f"<h4 style='color: #121212; text-align: center;'>Financial Outlook: {outlook}</h4>"
-                            f"<p style='color: #121212; text-align: center;'>{description}</p>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-
-            except Exception as e:
-                st.error(f"An error occurred during financial metric forecasting: {str(e)}")
-                logger.error(f"Error in financial metric forecasting: {str(e)}")
-
-    elif forecast_type == "Economic Indicators" and forecast_button:
-        with st.spinner(f"Forecasting economic indicators..."):
+def run_forecasting_page() -> None:
+    """Render the forecasting page."""
+    st.title("Forecasting")
+    st.markdown("Statistical forecasts of share prices, fundamentals and macro-economic indicators, plus "
+                "scenario analysis. Forecasts are model estimates, not predictions or investment advice.")
+    ticker = _ticker_input()
+    price_tab, metric_tab, scenario_tab, macro_tab = st.tabs(
+        ["Price Forecast", "Financial Metrics", "Scenarios", "Economic Indicators"])
+    sections = ((price_tab, lambda: _render_price_tab(ticker)), (metric_tab, lambda: _render_metrics_tab(ticker)),
+                (scenario_tab, lambda: _render_scenario_tab(ticker)), (macro_tab, _render_macro_tab))
+    for tab, render in sections:
+        with tab:
             try:
-                # Get economic indicator data
-                indicators_data = {}
+                render()
+            except Exception:  # never show a traceback to users
+                logger.exception("Forecasting page section failed")
+                st.error("This section could not be displayed because of an unexpected error. "
+                         "Please try different settings.")
 
-                # Map selected indicators to their sources/codes
-                indicator_mapping = {
-                    "GDP Growth": "GDP",
-                    "Inflation (CPI)": "CPIAUCSL",
-                    "Unemployment Rate": "UNRATE",
-                    "Federal Funds Rate": "FEDFUNDS",
-                    "10-Year Treasury Yield": "DGS10",
-                    "Consumer Sentiment": "UMCSENT",
-                    "Retail Sales": "RSXFS",
-                    "Housing Starts": "HOUST"
-                }
 
-                # Load data for selected indicators
-                for indicator in selected_indicators:
-                    if indicator in indicator_mapping:
-                        try:
-                            indicator_code = indicator_mapping[indicator]
-
-                            # Get indicator data
-                            indicator_data = data_loader.get_macro_indicators([indicator_code])
-
-                            if indicator_code in indicator_data and not indicator_data[indicator_code].empty:
-                                indicators_data[indicator] = indicator_data[indicator_code]
-                        except Exception as e:
-                            logger.error(f"Error loading data for {indicator}: {str(e)}")
-
-                if not indicators_data:
-                    st.error("Could not load economic indicator data. Please try again later.")
-                    return
-
-                # Prepare forecasting parameters
-                forecast_params = {
-                    "frequency": forecast_frequency.lower(),
-                    "periods": forecast_periods
-                }
-
-                # Create list of models to use
-                models_to_use = []
-                if use_arima:
-                    models_to_use.append("arima")
-                if use_var and len(selected_indicators) > 1:
-                    models_to_use.append("var")
-                if use_ml:
-                    models_to_use.append("ml")
-
-                forecast_params["models"] = models_to_use
-
-                # Generate forecasts
-                forecasts = {}
-                if use_var and len(selected_indicators) > 1:
-                    # If VAR is selected, perform multivariate forecasting
-                    var_forecast = time_series_forecaster.forecast_economic_indicators_var(
-                        indicators_data,
-                        **forecast_params
-                    )
-
-                    if var_forecast:
-                        for indicator in selected_indicators:
-                            if indicator in var_forecast:
-                                forecasts[indicator] = {"var": var_forecast[indicator]}
-
-                # Perform individual forecasts for each indicator
-                for indicator, data in indicators_data.items():
-                    if indicator not in forecasts:
-                        forecasts[indicator] = {}
-
-                    if use_arima:
-                        try:
-                            arima_forecast = time_series_forecaster.forecast_economic_indicator_arima(
-                                data,
-                                indicator,
-                                **forecast_params
-                            )
-
-                            if arima_forecast:
-                                forecasts[indicator]["arima"] = arima_forecast
-                        except Exception as e:
-                            logger.error(f"Error in ARIMA forecast for {indicator}: {str(e)}")
-
-                    if use_ml:
-                        try:
-                            ml_forecast = time_series_forecaster.forecast_economic_indicator_ml(
-                                data,
-                                indicator,
-                                **forecast_params
-                            )
-
-                            if ml_forecast:
-                                forecasts[indicator]["ml"] = ml_forecast
-                        except Exception as e:
-                            logger.error(f"Error in ML forecast for {indicator}: {str(e)}")
-
-                if not any(forecasts.values()):
-                    st.error("Failed to generate forecasts. Please check your parameters and try again.")
-                    return
+if __name__ == "__main__":  # pragma: no cover
+    run_forecasting_page()

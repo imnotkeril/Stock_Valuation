@@ -1,1100 +1,847 @@
-import os
-import sys
+"""
+Stock screener page and the per-ticker data layer shared by the screening and
+comparison pages.
+
+Page entry point: :func:`run_stock_screener_page`.
+
+Shared helpers (used by ``valuation_filter``, ``peer_comparison`` and
+``sector_analysis``):
+
+* :data:`METRICS` - display metadata of every screening metric;
+* :func:`get_stock_snapshot` / :func:`load_stock_snapshot` - cached company
+  info, prices, statements (``financial_data`` bundle) and key metrics;
+* :func:`compute_key_metrics` - key ratios from a ``financial_data`` bundle;
+* :func:`screen_stocks` - filter a universe on metric ranges;
+* :func:`get_stock_universe`, :func:`get_stocks_by_sector`,
+  :func:`get_stocks_by_sector_and_subsector` - thin wrappers around
+  ``industry.universe``;
+* table / formatting helpers and :func:`render_analyze_jump`.
+
+Metric values are fractions for percentages (``0.25`` == 25 %), plain numbers
+for multiples and ratios, and dollars for prices / market caps.
+"""
+
+from __future__ import annotations
+
 import logging
-import pandas as pd
+import math
+from datetime import date, timedelta
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
 import numpy as np
+import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add the project root to Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
-
-# Import project modules
-from StockAnalysisSystem.src.config import UI_SETTINGS, COLORS, VIZ_SETTINGS, SECTOR_MAPPING
-from StockAnalysisSystem.src.utils.data_loader import DataLoader
-from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
+from StockAnalysisSystem.src.config import RISK_FREE_RATE, SECTORS, normalize_sector
+from StockAnalysisSystem.src.industry.universe import get_subsectors, get_universe, lookup_company
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from StockAnalysisSystem.src.navigation import COMPANY_ANALYSIS, go_to
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.utils.financial_data import (
+    build_financial_data, format_large_number, get_latest, get_value, safe_divide, to_float,
 )
-logger = logging.getLogger('stock_screener')
-
-
-def run_stock_screener_page():
-    """Main function to run the stock screener page"""
-    st.title("Stock Screener")
-    st.markdown("Screen stocks based on financial metrics, performance, and sector-specific criteria.")
-
-    # Initialize data loader and visualizer
-    data_loader = DataLoader()
-    visualizer = FinancialVisualizer(theme="dark")
-    ratio_analyzer = FinancialRatioAnalyzer()
-
-    # Sidebar for filter controls
-    with st.sidebar:
-        st.header("Screening Filters")
-
-        # Predefined screening strategies
-        st.subheader("Screening Strategies")
-        screening_strategies = {
-            "Custom": "Build your own custom filter",
-            "Value Investing": "Low P/E, P/B ratios, high dividend yield",
-            "Growth Investing": "High revenue growth, earnings growth",
-            "Quality Investing": "Strong ROE, low debt, consistent profitability",
-            "Dividend Investing": "High dividend yield, dividend growth",
-            "Momentum": "Strong price performance, positive earnings surprises"
-        }
-
-        selected_strategy = st.selectbox(
-            "Select a screening strategy:",
-            options=list(screening_strategies.keys())
-        )
-
-        st.info(screening_strategies[selected_strategy])
-
-        # Apply pre-defined filters based on strategy
-        if selected_strategy != "Custom":
-            st.info("Predefined filters will be applied based on your selected strategy.")
-
-        # Basic filters
-        st.subheader("Basic Filters")
-
-        # Market cap filter
-        market_cap_ranges = {
-            "All": (0, float('inf')),
-            "Mega Cap (>$200B)": (200e9, float('inf')),
-            "Large Cap ($10B-$200B)": (10e9, 200e9),
-            "Mid Cap ($2B-$10B)": (2e9, 10e9),
-            "Small Cap ($300M-$2B)": (300e6, 2e9),
-            "Micro Cap (<$300M)": (0, 300e6)
-        }
-
-        market_cap_filter = st.selectbox(
-            "Market Capitalization:",
-            options=list(market_cap_ranges.keys()),
-            index=0
-        )
-
-        # Sector filter
-        sectors = ["All"] + list(SECTOR_MAPPING.keys())
-        selected_sector = st.selectbox(
-            "Sector:",
-            options=sectors,
-            index=0
-        )
-
-        # If a sector is selected, show subsector filter
-        if selected_sector != "All":
-            subsectors = ["All"] + SECTOR_MAPPING.get(selected_sector, [])
-            selected_subsector = st.selectbox(
-                "Subsector:",
-                options=subsectors,
-                index=0
-            )
-        else:
-            selected_subsector = "All"
-
-        # Price filter
-        st.subheader("Price Filter")
-        min_price, max_price = st.slider(
-            "Price Range ($):",
-            min_value=0.0,
-            max_value=5000.0,
-            value=(0.0, 5000.0),
-            step=1.0
-        )
-
-        # Advanced filters based on strategy
-        st.subheader("Advanced Filters")
-
-        # Create expandable sections for different filter categories
-        with st.expander("Valuation Filters", expanded=(selected_strategy == "Value Investing")):
-            # P/E Ratio
-            pe_filter = st.checkbox("Filter by P/E Ratio", value=(selected_strategy == "Value Investing"))
-            if pe_filter:
-                min_pe, max_pe = st.slider(
-                    "P/E Ratio Range:",
-                    min_value=0.0,
-                    max_value=200.0,
-                    value=(0.0, 25.0 if selected_strategy == "Value Investing" else 200.0),
-                    step=0.5
-                )
-            else:
-                min_pe, max_pe = 0.0, float('inf')
-
-            # P/B Ratio
-            pb_filter = st.checkbox("Filter by P/B Ratio", value=(selected_strategy == "Value Investing"))
-            if pb_filter:
-                min_pb, max_pb = st.slider(
-                    "P/B Ratio Range:",
-                    min_value=0.0,
-                    max_value=50.0,
-                    value=(0.0, 3.0 if selected_strategy == "Value Investing" else 50.0),
-                    step=0.1
-                )
-            else:
-                min_pb, max_pb = 0.0, float('inf')
-
-            # P/S Ratio
-            ps_filter = st.checkbox("Filter by P/S Ratio", value=(selected_strategy == "Value Investing"))
-            if ps_filter:
-                min_ps, max_ps = st.slider(
-                    "P/S Ratio Range:",
-                    min_value=0.0,
-                    max_value=50.0,
-                    value=(0.0, 2.0 if selected_strategy == "Value Investing" else 50.0),
-                    step=0.1
-                )
-            else:
-                min_ps, max_ps = 0.0, float('inf')
-
-            # EV/EBITDA
-            ev_ebitda_filter = st.checkbox("Filter by EV/EBITDA", value=(selected_strategy == "Value Investing"))
-            if ev_ebitda_filter:
-                min_ev_ebitda, max_ev_ebitda = st.slider(
-                    "EV/EBITDA Range:",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=(0.0, 10.0 if selected_strategy == "Value Investing" else 100.0),
-                    step=0.5
-                )
-            else:
-                min_ev_ebitda, max_ev_ebitda = 0.0, float('inf')
-
-        with st.expander("Profitability Filters", expanded=(selected_strategy == "Quality Investing")):
-            # ROE
-            roe_filter = st.checkbox("Filter by ROE", value=(selected_strategy == "Quality Investing"))
-            if roe_filter:
-                min_roe, max_roe = st.slider(
-                    "ROE Range (%):",
-                    min_value=-50.0,
-                    max_value=100.0,
-                    value=(15.0 if selected_strategy == "Quality Investing" else 0.0, 100.0),
-                    step=1.0
-                )
-            else:
-                min_roe, max_roe = -float('inf'), float('inf')
-
-            # Net Margin
-            net_margin_filter = st.checkbox("Filter by Net Margin", value=(selected_strategy == "Quality Investing"))
-            if net_margin_filter:
-                min_net_margin, max_net_margin = st.slider(
-                    "Net Margin Range (%):",
-                    min_value=-50.0,
-                    max_value=100.0,
-                    value=(10.0 if selected_strategy == "Quality Investing" else 0.0, 100.0),
-                    step=1.0
-                )
-            else:
-                min_net_margin, max_net_margin = -float('inf'), float('inf')
-
-        with st.expander("Growth Filters", expanded=(selected_strategy == "Growth Investing")):
-            # Revenue Growth
-            revenue_growth_filter = st.checkbox("Filter by Revenue Growth",
-                                                value=(selected_strategy == "Growth Investing"))
-            if revenue_growth_filter:
-                min_revenue_growth, max_revenue_growth = st.slider(
-                    "Revenue Growth Range (%):",
-                    min_value=-50.0,
-                    max_value=200.0,
-                    value=(15.0 if selected_strategy == "Growth Investing" else 0.0, 200.0),
-                    step=1.0
-                )
-            else:
-                min_revenue_growth, max_revenue_growth = -float('inf'), float('inf')
-
-            # EPS Growth
-            eps_growth_filter = st.checkbox("Filter by EPS Growth", value=(selected_strategy == "Growth Investing"))
-            if eps_growth_filter:
-                min_eps_growth, max_eps_growth = st.slider(
-                    "EPS Growth Range (%):",
-                    min_value=-50.0,
-                    max_value=200.0,
-                    value=(15.0 if selected_strategy == "Growth Investing" else 0.0, 200.0),
-                    step=1.0
-                )
-            else:
-                min_eps_growth, max_eps_growth = -float('inf'), float('inf')
-
-        with st.expander("Dividend Filters", expanded=(selected_strategy == "Dividend Investing")):
-            # Dividend Yield
-            dividend_filter = st.checkbox("Filter by Dividend Yield", value=(selected_strategy == "Dividend Investing"))
-            if dividend_filter:
-                min_dividend, max_dividend = st.slider(
-                    "Dividend Yield Range (%):",
-                    min_value=0.0,
-                    max_value=20.0,
-                    value=(3.0 if selected_strategy == "Dividend Investing" else 0.0, 20.0),
-                    step=0.1
-                )
-            else:
-                min_dividend, max_dividend = 0.0, float('inf')
-
-            # Dividend Payout Ratio
-            payout_filter = st.checkbox("Filter by Payout Ratio", value=(selected_strategy == "Dividend Investing"))
-            if payout_filter:
-                min_payout, max_payout = st.slider(
-                    "Payout Ratio Range (%):",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=(0.0, 75.0 if selected_strategy == "Dividend Investing" else 100.0),
-                    step=1.0
-                )
-            else:
-                min_payout, max_payout = 0.0, float('inf')
-
-        with st.expander("Financial Health Filters", expanded=(selected_strategy == "Quality Investing")):
-            # Debt-to-Equity Ratio
-            de_filter = st.checkbox("Filter by Debt-to-Equity", value=(selected_strategy == "Quality Investing"))
-            if de_filter:
-                min_de, max_de = st.slider(
-                    "Debt-to-Equity Range:",
-                    min_value=0.0,
-                    max_value=10.0,
-                    value=(0.0, 1.0 if selected_strategy == "Quality Investing" else 10.0),
-                    step=0.1
-                )
-            else:
-                min_de, max_de = 0.0, float('inf')
-
-            # Current Ratio
-            current_ratio_filter = st.checkbox("Filter by Current Ratio",
-                                               value=(selected_strategy == "Quality Investing"))
-            if current_ratio_filter:
-                min_current_ratio, max_current_ratio = st.slider(
-                    "Current Ratio Range:",
-                    min_value=0.0,
-                    max_value=10.0,
-                    value=(1.5 if selected_strategy == "Quality Investing" else 0.0, 10.0),
-                    step=0.1
-                )
-            else:
-                min_current_ratio, max_current_ratio = 0.0, float('inf')
-
-        with st.expander("Performance Filters", expanded=(selected_strategy == "Momentum")):
-            # 1-Year Performance
-            perf_1y_filter = st.checkbox("Filter by 1-Year Performance", value=(selected_strategy == "Momentum"))
-            if perf_1y_filter:
-                min_perf_1y, max_perf_1y = st.slider(
-                    "1-Year Performance Range (%):",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=(20.0 if selected_strategy == "Momentum" else -100.0, 500.0),
-                    step=5.0
-                )
-            else:
-                min_perf_1y, max_perf_1y = -float('inf'), float('inf')
-
-        # Submit button
-        screen_button = st.button("Screen Stocks", type="primary")
-
-    # Main content area
-    if screen_button:
-        with st.spinner("Screening stocks based on your criteria..."):
-            try:
-                # Get universe of stocks based on sector filter
-                if selected_sector != "All":
-                    if selected_subsector != "All":
-                        universe = get_stocks_by_sector_and_subsector(selected_sector, selected_subsector)
-                    else:
-                        universe = get_stocks_by_sector(selected_sector)
-                else:
-                    # Get a broad universe of stocks
-                    universe = get_stock_universe()
-
-                if not universe:
-                    st.error("Could not load stock universe. Please try again later.")
-                    return
-
-                # Apply market cap filter
-                if market_cap_filter != "All":
-                    min_market_cap, max_market_cap = market_cap_ranges[market_cap_filter]
-                else:
-                    min_market_cap, max_market_cap = 0, float('inf')
-
-                # Screen stocks based on criteria
-                screened_stocks = screen_stocks(
-                    universe,
-                    data_loader,
-                    ratio_analyzer,
-                    min_market_cap=min_market_cap,
-                    max_market_cap=max_market_cap,
-                    min_price=min_price,
-                    max_price=max_price,
-                    min_pe=min_pe,
-                    max_pe=max_pe,
-                    min_pb=min_pb,
-                    max_pb=max_pb,
-                    min_ps=min_ps,
-                    max_ps=max_ps,
-                    min_ev_ebitda=min_ev_ebitda,
-                    max_ev_ebitda=max_ev_ebitda,
-                    min_roe=min_roe / 100 if roe_filter else -float('inf'),  # Convert from % to decimal
-                    max_roe=max_roe / 100 if roe_filter else float('inf'),
-                    min_net_margin=min_net_margin / 100 if net_margin_filter else -float('inf'),
-                    max_net_margin=max_net_margin / 100 if net_margin_filter else float('inf'),
-                    min_revenue_growth=min_revenue_growth / 100 if revenue_growth_filter else -float('inf'),
-                    max_revenue_growth=max_revenue_growth / 100 if revenue_growth_filter else float('inf'),
-                    min_eps_growth=min_eps_growth / 100 if eps_growth_filter else -float('inf'),
-                    max_eps_growth=max_eps_growth / 100 if eps_growth_filter else float('inf'),
-                    min_dividend_yield=min_dividend / 100 if dividend_filter else 0,
-                    max_dividend_yield=max_dividend / 100 if dividend_filter else float('inf'),
-                    min_payout_ratio=min_payout / 100 if payout_filter else 0,
-                    max_payout_ratio=max_payout / 100 if payout_filter else float('inf'),
-                    min_debt_equity=min_de if de_filter else 0,
-                    max_debt_equity=max_de if de_filter else float('inf'),
-                    min_current_ratio=min_current_ratio if current_ratio_filter else 0,
-                    max_current_ratio=max_current_ratio if current_ratio_filter else float('inf'),
-                    min_perf_1y=min_perf_1y / 100 if perf_1y_filter else -float('inf'),
-                    max_perf_1y=max_perf_1y / 100 if perf_1y_filter else float('inf')
-                )
-
-                # Display results
-                st.header("Screening Results")
-
-                if not screened_stocks:
-                    st.warning("No stocks match your screening criteria. Try relaxing some filters.")
-                    return
-
-                # Display count of results
-                st.success(f"Found {len(screened_stocks)} stocks matching your criteria.")
-
-                # Create tabs for different views
-                tabs = st.tabs(["Summary Table", "Detailed View", "Sector Breakdown", "Performance Comparison"])
-
-                # Tab 1: Summary Table
-                with tabs[0]:
-                    st.subheader("Matching Stocks")
-
-                    # Create a summary table
-                    summary_table = []
-
-                    for stock in screened_stocks:
-                        summary_table.append({
-                            "Symbol": stock["symbol"],
-                            "Company": stock["name"],
-                            "Sector": stock["sector"],
-                            "Price": f"${stock.get('price', 0):.2f}",
-                            "Market Cap": f"${stock.get('market_cap', 0) / 1e9:.2f}B" if stock.get('market_cap',
-                                                                                                   0) >= 1e9 else f"${stock.get('market_cap', 0) / 1e6:.2f}M",
-                            "P/E": f"{stock.get('pe_ratio', None):.2f}" if stock.get('pe_ratio') is not None else "N/A",
-                            "P/B": f"{stock.get('pb_ratio', None):.2f}" if stock.get('pb_ratio') is not None else "N/A",
-                            "ROE": f"{stock.get('roe', None) * 100:.2f}%" if stock.get('roe') is not None else "N/A",
-                            "Dividend": f"{stock.get('dividend_yield', None) * 100:.2f}%" if stock.get(
-                                'dividend_yield') is not None else "N/A",
-                        })
-
-                    # Convert to DataFrame and display
-                    summary_df = pd.DataFrame(summary_table)
-                    st.dataframe(summary_df, use_container_width=True)
-
-                    # Add export option
-                    st.download_button(
-                        label="Download Results as CSV",
-                        data=summary_df.to_csv(index=False).encode('utf-8'),
-                        file_name="stock_screening_results.csv",
-                        mime="text/csv"
-                    )
-
-                # Tab 2: Detailed View
-                with tabs[1]:
-                    st.subheader("Detailed Stock Information")
-
-                    # Add a selector for individual stocks
-                    stock_symbols = [stock["symbol"] for stock in screened_stocks]
-                    stock_names = [f"{stock['symbol']} - {stock['name']}" for stock in screened_stocks]
-
-                    selected_stock = st.selectbox(
-                        "Select a stock to view details:",
-                        options=stock_names
-                    )
-
-                    selected_symbol = selected_stock.split(" - ")[0]
-
-                    # Get the selected stock data
-                    stock_data = next((stock for stock in screened_stocks if stock["symbol"] == selected_symbol), None)
-
-                    if stock_data:
-                        # Create columns for key metrics
-                        col1, col2, col3, col4 = st.columns(4)
-
-                        with col1:
-                            st.metric("Price", f"${stock_data.get('price', 0):.2f}")
-
-                        with col2:
-                            market_cap = stock_data.get('market_cap', 0)
-                            if market_cap >= 1e9:
-                                market_cap_str = f"${market_cap / 1e9:.2f}B"
-                            else:
-                                market_cap_str = f"${market_cap / 1e6:.2f}M"
-                            st.metric("Market Cap", market_cap_str)
-
-                        with col3:
-                            st.metric("Sector", stock_data.get("sector", "N/A"))
-
-                        with col4:
-                            st.metric("Industry", stock_data.get("industry", "N/A"))
-
-                        # Create tabs for different aspects of the stock
-                        stock_tabs = st.tabs(["Valuation", "Profitability", "Growth", "Financial Health", "Dividends"])
-
-                        # Tab for valuation metrics
-                        with stock_tabs[0]:
-                            st.subheader("Valuation Metrics")
-
-                            # Create a dictionary of valuation metrics
-                            valuation_metrics = {
-                                "P/E Ratio": stock_data.get("pe_ratio"),
-                                "Forward P/E": stock_data.get("forward_pe"),
-                                "P/B Ratio": stock_data.get("pb_ratio"),
-                                "P/S Ratio": stock_data.get("ps_ratio"),
-                                "EV/EBITDA": stock_data.get("ev_ebitda"),
-                                "EV/Revenue": stock_data.get("ev_revenue"),
-                                "PEG Ratio": stock_data.get("peg_ratio")
-                            }
-
-                            # Display metrics as a bar chart
-                            valuation_df = pd.DataFrame(
-                                {"Metric": list(valuation_metrics.keys()), "Value": list(valuation_metrics.values())}
-                            )
-                            valuation_df = valuation_df.dropna()
-
-                            if not valuation_df.empty:
-                                fig = visualizer.plot_metrics_bar_chart(
-                                    valuation_df,
-                                    title="Valuation Metrics",
-                                    height=400
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning("No valuation metrics available.")
-
-                        # Tab for profitability metrics
-                        with stock_tabs[1]:
-                            st.subheader("Profitability Metrics")
-
-                            # Create a dictionary of profitability metrics
-                            profitability_metrics = {
-                                "Gross Margin": stock_data.get("gross_margin"),
-                                "Operating Margin": stock_data.get("operating_margin"),
-                                "Net Margin": stock_data.get("net_margin"),
-                                "ROE": stock_data.get("roe"),
-                                "ROA": stock_data.get("roa"),
-                                "ROIC": stock_data.get("roic")
-                            }
-
-                            # Convert to percentages for display
-                            profitability_df = pd.DataFrame(
-                                {"Metric": list(profitability_metrics.keys()),
-                                 "Value": list(profitability_metrics.values())}
-                            )
-                            profitability_df = profitability_df.dropna()
-
-                            if not profitability_df.empty:
-                                # Convert to percentage
-                                profitability_df["Value"] = profitability_df["Value"] * 100
-
-                                fig = visualizer.plot_metrics_bar_chart(
-                                    profitability_df,
-                                    title="Profitability Metrics (%)",
-                                    height=400,
-                                    is_percent=True
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning("No profitability metrics available.")
-
-                        # Tab for growth metrics
-                        with stock_tabs[2]:
-                            st.subheader("Growth Metrics")
-
-                            # Create a dictionary of growth metrics
-                            growth_metrics = {
-                                "Revenue Growth": stock_data.get("revenue_growth"),
-                                "EPS Growth": stock_data.get("eps_growth"),
-                                "Dividend Growth": stock_data.get("dividend_growth"),
-                                "EBITDA Growth": stock_data.get("ebitda_growth"),
-                                "Free Cash Flow Growth": stock_data.get("fcf_growth")
-                            }
-
-                            # Convert to percentages for display
-                            growth_df = pd.DataFrame(
-                                {"Metric": list(growth_metrics.keys()), "Value": list(growth_metrics.values())}
-                            )
-                            growth_df = growth_df.dropna()
-
-                            if not growth_df.empty:
-                                # Convert to percentage
-                                growth_df["Value"] = growth_df["Value"] * 100
-
-                                fig = visualizer.plot_metrics_bar_chart(
-                                    growth_df,
-                                    title="Growth Metrics (%)",
-                                    height=400,
-                                    is_percent=True
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning("No growth metrics available.")
-
-                        # Tab for financial health metrics
-                        with stock_tabs[3]:
-                            st.subheader("Financial Health Metrics")
-
-                            # Create a dictionary of financial health metrics
-                            financial_health_metrics = {
-                                "Current Ratio": stock_data.get("current_ratio"),
-                                "Quick Ratio": stock_data.get("quick_ratio"),
-                                "Debt-to-Equity": stock_data.get("debt_equity"),
-                                "Interest Coverage": stock_data.get("interest_coverage"),
-                                "Cash-to-Debt": stock_data.get("cash_to_debt")
-                            }
-
-                            # Display metrics
-                            financial_health_df = pd.DataFrame(
-                                {"Metric": list(financial_health_metrics.keys()),
-                                 "Value": list(financial_health_metrics.values())}
-                            )
-                            financial_health_df = financial_health_df.dropna()
-
-                            if not financial_health_df.empty:
-                                fig = visualizer.plot_metrics_bar_chart(
-                                    financial_health_df,
-                                    title="Financial Health Metrics",
-                                    height=400
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning("No financial health metrics available.")
-
-                        # Tab for dividend metrics
-                        with stock_tabs[4]:
-                            st.subheader("Dividend Metrics")
-
-                            # Create a dictionary of dividend metrics
-                            dividend_metrics = {
-                                "Dividend Yield": stock_data.get("dividend_yield"),
-                                "Payout Ratio": stock_data.get("payout_ratio"),
-                                "Dividend Growth Rate": stock_data.get("dividend_growth"),
-                                "Years of Dividend Growth": stock_data.get("dividend_years")
-                            }
-
-                            # Convert percentage metrics
-                            dividend_df = pd.DataFrame(
-                                {"Metric": list(dividend_metrics.keys()), "Value": list(dividend_metrics.values())}
-                            )
-                            dividend_df = dividend_df.dropna()
-
-                            if not dividend_df.empty:
-                                # Convert appropriate metrics to percentage
-                                for i, metric in enumerate(dividend_df["Metric"]):
-                                    if metric in ["Dividend Yield", "Payout Ratio", "Dividend Growth Rate"]:
-                                        if pd.notnull(dividend_df.loc[i, "Value"]):
-                                            dividend_df.loc[i, "Value"] = dividend_df.loc[i, "Value"] * 100
-
-                                # Create visualization
-                                fig = visualizer.plot_metrics_bar_chart(
-                                    dividend_df,
-                                    title="Dividend Metrics",
-                                    height=400,
-                                    is_percent=False  # We'll handle percentage formatting manually
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-
-                                # If the stock pays dividends, show more information
-                                if stock_data.get("dividend_yield") is not None and stock_data.get(
-                                        "dividend_yield") > 0:
-                                    st.info(
-                                        f"This stock pays a dividend yield of {stock_data.get('dividend_yield', 0) * 100:.2f}%. "
-                                        f"Based on the current price, this represents an annual dividend of approximately "
-                                        f"${stock_data.get('price', 0) * stock_data.get('dividend_yield', 0):.2f} per share."
-                                    )
-                                else:
-                                    st.info(
-                                        "This stock does not pay dividends or dividend information is not available.")
-                            else:
-                                st.warning("No dividend metrics available.")
-
-                        # Add stock price chart
-                        st.subheader("Price History")
-
-                        # Get historical price data
-                        end_date = datetime.now().strftime('%Y-%m-%d')
-                        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-
-                        try:
-                            price_data = data_loader.get_historical_prices(
-                                selected_symbol,
-                                start_date,
-                                end_date
-                            )
-
-                            if not price_data.empty:
-                                fig = visualizer.plot_stock_price(
-                                    price_data,
-                                    selected_symbol,
-                                    company_name=stock_data.get("name", ""),
-                                    ma_periods=[50, 200],
-                                    volume=True,
-                                    height=500
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning(f"No price data available for {selected_symbol}.")
-                        except Exception as e:
-                            st.error(f"Error loading price data: {str(e)}")
-                    else:
-                        st.error(f"Could not find data for {selected_symbol}.")
-
-                # Tab 3: Sector Breakdown
-                with tabs[2]:
-                    st.subheader("Sector Distribution")
-
-                    # Calculate sector distribution
-                    sector_counts = {}
-                    for stock in screened_stocks:
-                        sector = stock.get("sector", "Unknown")
-                        if sector in sector_counts:
-                            sector_counts[sector] += 1
-                        else:
-                            sector_counts[sector] = 1
-
-                    # Create a DataFrame for the sector distribution
-                    sector_df = pd.DataFrame({
-                        "Sector": list(sector_counts.keys()),
-                        "Count": list(sector_counts.values())
-                    })
-
-                    # Sort by count (descending)
-                    sector_df = sector_df.sort_values("Count", ascending=False)
-
-                    # Create a pie chart
-                    fig = visualizer.plot_sector_distribution(
-                        sector_df,
-                        title="Sector Distribution of Screened Stocks",
-                        height=500
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Display sector breakdown table
-                    st.dataframe(sector_df, use_container_width=True)
-
-                    # If we have more than one sector, display average metrics by sector
-                    if len(sector_counts) > 1:
-                        st.subheader("Average Metrics by Sector")
-
-                        # Calculate average metrics by sector
-                        sector_metrics = {}
-
-                        for sector in sector_counts.keys():
-                            sector_stocks = [stock for stock in screened_stocks if stock.get("sector") == sector]
-
-                            # Calculate averages
-                            avg_pe = np.mean(
-                                [stock.get("pe_ratio") for stock in sector_stocks if stock.get("pe_ratio") is not None])
-                            avg_pb = np.mean(
-                                [stock.get("pb_ratio") for stock in sector_stocks if stock.get("pb_ratio") is not None])
-                            avg_roe = np.mean(
-                                [stock.get("roe") for stock in sector_stocks if stock.get("roe") is not None])
-                            avg_div = np.mean([stock.get("dividend_yield") for stock in sector_stocks if
-                                               stock.get("dividend_yield") is not None])
-
-                            sector_metrics[sector] = {
-                                "Avg P/E": avg_pe if not np.isnan(avg_pe) else None,
-                                "Avg P/B": avg_pb if not np.isnan(avg_pb) else None,
-                                "Avg ROE (%)": avg_roe * 100 if not np.isnan(avg_roe) else None,
-                                "Avg Dividend (%)": avg_div * 100 if not np.isnan(avg_div) else None,
-                                "Count": sector_counts[sector]
-                            }
-
-                        # Convert to DataFrame
-                        sector_metrics_df = pd.DataFrame.from_dict(sector_metrics, orient='index')
-
-                        # Format the DataFrame
-                        for col in ["Avg P/E", "Avg P/B"]:
-                            sector_metrics_df[col] = sector_metrics_df[col].apply(
-                                lambda x: f"{x:.2f}" if pd.notnull(x) else "N/A")
-
-                        for col in ["Avg ROE (%)", "Avg Dividend (%)"]:
-                            sector_metrics_df[col] = sector_metrics_df[col].apply(
-                                lambda x: f"{x:.2f}%" if pd.notnull(x) else "N/A")
-
-                        # Display the DataFrame
-                        st.dataframe(sector_metrics_df, use_container_width=True)
-
-                    # Display stocks by sector
-                    st.subheader("Stocks by Sector")
-
-                    # Create expandable sections for each sector
-                    for sector in sector_df["Sector"]:
-                        with st.expander(f"{sector} ({sector_counts[sector]} stocks)"):
-                            # Get stocks in this sector
-                            sector_stocks = [stock for stock in screened_stocks if stock.get("sector") == sector]
-
-                            # Create a summary table
-                            sector_table = []
-
-                            for stock in sector_stocks:
-                                sector_table.append({
-                                    "Symbol": stock["symbol"],
-                                    "Company": stock["name"],
-                                    "Price": f"${stock.get('price', 0):.2f}",
-                                    "Market Cap": f"${stock.get('market_cap', 0) / 1e9:.2f}B" if stock.get('market_cap',
-                                                                                                           0) >= 1e9 else f"${stock.get('market_cap', 0) / 1e6:.2f}M",
-                                    "P/E": f"{stock.get('pe_ratio', None):.2f}" if stock.get(
-                                        'pe_ratio') is not None else "N/A",
-                                    "P/B": f"{stock.get('pb_ratio', None):.2f}" if stock.get(
-                                        'pb_ratio') is not None else "N/A",
-                                    "ROE": f"{stock.get('roe', None) * 100:.2f}%" if stock.get(
-                                        'roe') is not None else "N/A",
-                                    "Dividend": f"{stock.get('dividend_yield', None) * 100:.2f}%" if stock.get(
-                                        'dividend_yield') is not None else "N/A",
-                                })
-
-                            # Convert to DataFrame and display
-                            sector_df = pd.DataFrame(sector_table)
-                            st.dataframe(sector_df, use_container_width=True)
-
-                # Tab 4: Performance Comparison
-                with tabs[3]:
-                    st.subheader("Performance Comparison")
-
-                    # Select a subset of stocks for comparison (top 10 by market cap)
-                    top_stocks = sorted(
-                        screened_stocks,
-                        key=lambda x: x.get("market_cap", 0),
-                        reverse=True
-                    )[:10]
-
-                    # Get historical price data for comparison
-                    end_date = datetime.now().strftime('%Y-%m-%d')
-                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-
-                    performance_data = {}
-                    company_names = {}
-
-                    for stock in top_stocks:
-                        symbol = stock["symbol"]
-                        try:
-                            price_data = data_loader.get_historical_prices(symbol, start_date, end_date)
-
-                            if not price_data.empty:
-                                # Calculate normalized returns
-                                first_price = price_data['Close'].iloc[0]
-                                performance_data[symbol] = (price_data['Close'] / first_price - 1) * 100
-                                company_names[symbol] = stock["name"]
-                        except Exception as e:
-                            logger.error(f"Error loading price data for {symbol}: {str(e)}")
-
-                    # Create performance comparison chart
-                    if performance_data:
-                        fig = visualizer.plot_price_comparison(
-                            performance_data,
-                            company_names,
-                            title="1-Year Price Performance Comparison",
-                            height=600
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-
-                        # Calculate performance metrics
-                        performance_metrics = []
-
-                        for symbol, returns in performance_data.items():
-                            # Calculate total return
-                            total_return = returns.iloc[-1]
-
-                            # Calculate volatility
-                            daily_returns = returns.pct_change().dropna()
-                            volatility = daily_returns.std() * (252 ** 0.5)
-
-                            # Calculate max drawdown
-                            cumulative_returns = (1 + returns / 100)
-                            running_max = cumulative_returns.cummax()
-                            drawdown = (cumulative_returns / running_max - 1) * 100
-                            max_drawdown = drawdown.min()
-
-                            performance_metrics.append({
-                                "Symbol": symbol,
-                                "Company": company_names.get(symbol, symbol),
-                                "Total Return": f"{total_return:.2f}%",
-                                "Volatility": f"{volatility:.2f}%",
-                                "Max Drawdown": f"{max_drawdown:.2f}%",
-                                "Sharpe Ratio": f"{(total_return / volatility):.2f}" if volatility != 0 else "N/A"
-                            })
-
-                        # Display performance metrics table
-                        st.subheader("Performance Metrics")
-                        perf_df = pd.DataFrame(performance_metrics)
-                        st.dataframe(perf_df, use_container_width=True)
-                    else:
-                        st.warning("No performance data available for comparison.")
-
-            except Exception as e:
-                st.error(f"An error occurred during stock screening: {str(e)}")
-                logger.error(f"Error in stock screening: {str(e)}")
-
-
-def get_stock_universe():
-    """Get a broad universe of stocks for screening"""
-    # In a real implementation, this would retrieve a comprehensive list of stocks
-    # For now, we'll return a sample list from major indices
-
-    # This is a placeholder. In a production environment, you would:
-    # 1. Load from a database or API
-    # 2. Include thousands of stocks from major exchanges
-    # 3. Update regularly
-
-    # Sample implementation with a few stocks from different sectors
-    return [
-        {"symbol": "AAPL", "name": "Apple Inc.", "sector": "Technology"},
-        {"symbol": "MSFT", "name": "Microsoft Corp.", "sector": "Technology"},
-        {"symbol": "AMZN", "name": "Amazon.com Inc.", "sector": "Consumer Discretionary"},
-        {"symbol": "GOOGL", "name": "Alphabet Inc.", "sector": "Communication Services"},
-        {"symbol": "GOOG", "name": "Alphabet Inc.", "sector": "Communication Services"},
-        {"symbol": "META", "name": "Meta Platforms Inc.", "sector": "Communication Services"},
-        {"symbol": "TSLA", "name": "Tesla Inc.", "sector": "Consumer Discretionary"},
-        {"symbol": "BRK.B", "name": "Berkshire Hathaway Inc.", "sector": "Financials"},
-        {"symbol": "UNH", "name": "UnitedHealth Group Inc.", "sector": "Healthcare"},
-        {"symbol": "JNJ", "name": "Johnson & Johnson", "sector": "Healthcare"},
-        {"symbol": "JPM", "name": "JPMorgan Chase & Co.", "sector": "Financials"},
-        {"symbol": "V", "name": "Visa Inc.", "sector": "Financials"},
-        {"symbol": "PG", "name": "Procter & Gamble Co.", "sector": "Consumer Staples"},
-        {"symbol": "XOM", "name": "Exxon Mobil Corp.", "sector": "Energy"},
-        {"symbol": "NVDA", "name": "NVIDIA Corp.", "sector": "Technology"},
-        {"symbol": "HD", "name": "Home Depot Inc.", "sector": "Consumer Discretionary"},
-        {"symbol": "CVX", "name": "Chevron Corp.", "sector": "Energy"},
-        {"symbol": "MA", "name": "Mastercard Inc.", "sector": "Financials"},
-        {"symbol": "ABBV", "name": "AbbVie Inc.", "sector": "Healthcare"},
-        {"symbol": "PFE", "name": "Pfizer Inc.", "sector": "Healthcare"},
-        {"symbol": "AVGO", "name": "Broadcom Inc.", "sector": "Technology"},
-        {"symbol": "COST", "name": "Costco Wholesale Corp.", "sector": "Consumer Staples"},
-        {"symbol": "DIS", "name": "Walt Disney Co.", "sector": "Communication Services"},
-        {"symbol": "KO", "name": "Coca-Cola Co.", "sector": "Consumer Staples"},
-        {"symbol": "PEP", "name": "PepsiCo Inc.", "sector": "Consumer Staples"},
-        {"symbol": "WMT", "name": "Walmart Inc.", "sector": "Consumer Staples"},
-        {"symbol": "BAC", "name": "Bank of America Corp.", "sector": "Financials"},
-        {"symbol": "CSCO", "name": "Cisco Systems Inc.", "sector": "Technology"},
-        {"symbol": "TMO", "name": "Thermo Fisher Scientific Inc.", "sector": "Healthcare"},
-        {"symbol": "MRK", "name": "Merck & Co. Inc.", "sector": "Healthcare"},
-        {"symbol": "LLY", "name": "Eli Lilly and Co.", "sector": "Healthcare"},
-        {"symbol": "ADBE", "name": "Adobe Inc.", "sector": "Technology"},
-        {"symbol": "CRM", "name": "Salesforce Inc.", "sector": "Technology"},
-        {"symbol": "ABT", "name": "Abbott Laboratories", "sector": "Healthcare"},
-        {"symbol": "DHR", "name": "Danaher Corp.", "sector": "Healthcare"},
-        {"symbol": "AMD", "name": "Advanced Micro Devices Inc.", "sector": "Technology"},
-        {"symbol": "INTC", "name": "Intel Corp.", "sector": "Technology"},
-        {"symbol": "VZ", "name": "Verizon Communications Inc.", "sector": "Communication Services"},
-        {"symbol": "T", "name": "AT&T Inc.", "sector": "Communication Services"},
-        {"symbol": "NKE", "name": "Nike Inc.", "sector": "Consumer Discretionary"}
-    ]
-
-
-def get_stocks_by_sector(sector):
-    """Get stocks filtered by sector"""
-    universe = get_stock_universe()
-    return [stock for stock in universe if stock["sector"] == sector]
-
-
-def get_stocks_by_sector_and_subsector(sector, subsector):
-    """Get stocks filtered by sector and subsector"""
-    # In a real implementation, you would retrieve stocks by subsector
-    # For now, we'll just return stocks by sector
-    return get_stocks_by_sector(sector)
-
-
-def screen_stocks(universe, data_loader, ratio_analyzer, **filters):
+from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
+
+logger = logging.getLogger(__name__)
+
+PREFIX = "screener"
+CACHE_TTL_SECONDS = 3600
+DEFAULT_LOOKBACK_DAYS = 365
+
+# ---------------------------------------------------------------------------
+# Metric metadata
+# ---------------------------------------------------------------------------
+#: key -> {label, kind, category, higher_is_better}
+#: kinds: percent (fraction), multiple (x), ratio, currency ($), large_currency ($, shown in $B)
+METRICS: Dict[str, Dict[str, Any]] = {
+    "price": {"label": "Price", "kind": "currency", "category": "Market", "higher_is_better": None},
+    "market_cap": {"label": "Market Cap", "kind": "large_currency", "category": "Market", "higher_is_better": None},
+    "perf_1y": {"label": "1Y Return", "kind": "percent", "category": "Performance", "higher_is_better": True},
+    "volatility": {"label": "Volatility", "kind": "percent", "category": "Performance", "higher_is_better": False},
+    "beta": {"label": "Beta", "kind": "ratio", "category": "Performance", "higher_is_better": None},
+    "pe_ratio": {"label": "P/E", "kind": "multiple", "category": "Valuation", "higher_is_better": False},
+    "pb_ratio": {"label": "P/B", "kind": "multiple", "category": "Valuation", "higher_is_better": False},
+    "ps_ratio": {"label": "P/S", "kind": "multiple", "category": "Valuation", "higher_is_better": False},
+    "ev_ebitda": {"label": "EV/EBITDA", "kind": "multiple", "category": "Valuation", "higher_is_better": False},
+    "fcf_yield": {"label": "FCF Yield", "kind": "percent", "category": "Valuation", "higher_is_better": True},
+    "gross_margin": {"label": "Gross Margin", "kind": "percent", "category": "Profitability",
+                     "higher_is_better": True},
+    "operating_margin": {"label": "Operating Margin", "kind": "percent", "category": "Profitability",
+                         "higher_is_better": True},
+    "net_margin": {"label": "Net Margin", "kind": "percent", "category": "Profitability", "higher_is_better": True},
+    "roe": {"label": "ROE", "kind": "percent", "category": "Profitability", "higher_is_better": True},
+    "roa": {"label": "ROA", "kind": "percent", "category": "Profitability", "higher_is_better": True},
+    "revenue_growth": {"label": "Revenue Growth", "kind": "percent", "category": "Growth", "higher_is_better": True},
+    "eps_growth": {"label": "EPS Growth", "kind": "percent", "category": "Growth", "higher_is_better": True},
+    "current_ratio": {"label": "Current Ratio", "kind": "ratio", "category": "Financial Health",
+                      "higher_is_better": True},
+    "quick_ratio": {"label": "Quick Ratio", "kind": "ratio", "category": "Financial Health",
+                    "higher_is_better": True},
+    "debt_equity": {"label": "Debt/Equity", "kind": "ratio", "category": "Financial Health",
+                    "higher_is_better": False},
+    "interest_coverage": {"label": "Interest Coverage", "kind": "ratio", "category": "Financial Health",
+                          "higher_is_better": True},
+    "dividend_yield": {"label": "Dividend Yield", "kind": "percent", "category": "Dividends",
+                       "higher_is_better": True},
+    "payout_ratio": {"label": "Payout Ratio", "kind": "percent", "category": "Dividends", "higher_is_better": None},
+}
+
+METRIC_CATEGORIES: Dict[str, List[str]] = {}
+for _key, _spec in METRICS.items():
+    METRIC_CATEGORIES.setdefault(_spec["category"], []).append(_key)
+
+_UNIT_SUFFIX = {"percent": " (%)", "multiple": " (x)", "currency": " ($)", "large_currency": " ($B)", "ratio": ""}
+
+#: FinancialRatioAnalyzer.calculate_ratios (category, key) -> metric key
+_ANALYZER_KEYS: Dict[Tuple[str, str], str] = {
+    ("valuation", "pe_ratio"): "pe_ratio", ("valuation", "pb_ratio"): "pb_ratio",
+    ("valuation", "ps_ratio"): "ps_ratio", ("valuation", "ev_ebitda"): "ev_ebitda",
+    ("profitability", "gross_margin"): "gross_margin", ("profitability", "operating_margin"): "operating_margin",
+    ("profitability", "net_margin"): "net_margin", ("profitability", "roe"): "roe", ("profitability", "roa"): "roa",
+    ("liquidity", "current_ratio"): "current_ratio", ("liquidity", "quick_ratio"): "quick_ratio",
+    ("leverage", "debt_to_equity"): "debt_equity", ("leverage", "interest_coverage"): "interest_coverage",
+    ("growth", "revenue_growth"): "revenue_growth",
+}
+
+#: metric key -> (category, key) in ``industry.benchmarks.get_sector_benchmarks(...)["ratios"]``
+BENCHMARK_KEYS: Dict[str, Tuple[str, str]] = {
+    "pe_ratio": ("valuation", "pe_ratio"), "pb_ratio": ("valuation", "pb_ratio"),
+    "ps_ratio": ("valuation", "ps_ratio"), "ev_ebitda": ("valuation", "ev_ebitda"),
+    "gross_margin": ("profitability", "gross_margin"), "operating_margin": ("profitability", "operating_margin"),
+    "net_margin": ("profitability", "net_margin"), "roe": ("profitability", "roe"), "roa": ("profitability", "roa"),
+    "current_ratio": ("liquidity", "current_ratio"), "quick_ratio": ("liquidity", "quick_ratio"),
+    "debt_equity": ("leverage", "debt_to_equity"), "interest_coverage": ("leverage", "interest_coverage"),
+    "revenue_growth": ("growth", "revenue_growth"),
+}
+
+MARKET_CAP_BUCKETS: Dict[str, Tuple[Optional[float], Optional[float]]] = {
+    "All": (None, None),
+    "Mega cap (> $200B)": (200e9, None),
+    "Large cap ($10B - $200B)": (10e9, 200e9),
+    "Mid cap ($2B - $10B)": (2e9, 10e9),
+    "Small cap ($300M - $2B)": (300e6, 2e9),
+    "Micro cap (< $300M)": (None, 300e6),
+}
+
+
+def metric_label(key: str, with_unit: bool = False) -> str:
+    """Display label of a metric (optionally with its unit, e.g. ``"Net Margin (%)"``)."""
+    spec = METRICS.get(key)
+    if spec is None:
+        return key.replace("_", " ").title()
+    return spec["label"] + (_UNIT_SUFFIX[spec["kind"]] if with_unit else "")
+
+
+def to_display(value: Any, kind: str) -> float:
+    """Metric value in display units (percent points, $B for market cap); NaN when missing."""
+    value = to_float(value)
+    if value is None:
+        return float("nan")
+    if kind == "percent":
+        return value * 100
+    if kind == "large_currency":
+        return value / 1e9
+    return value
+
+
+def format_metric(value: Any, key_or_kind: str) -> str:
+    """Human readable metric value (``"24.0%"``, ``"29.4x"``, ``"$2.76T"``, ``"N/A"``)."""
+    kind = METRICS.get(key_or_kind, {}).get("kind", key_or_kind)
+    value = to_float(value)
+    if value is None:
+        return "N/A"
+    if kind == "percent":
+        return f"{value * 100:.1f}%"
+    if kind == "multiple":
+        return f"{value:.1f}x"
+    if kind == "currency":
+        return f"${value:,.2f}"
+    if kind == "large_currency":
+        return format_large_number(value)
+    return f"{value:.2f}"
+
+
+def metrics_table(rows: Iterable[Mapping[str, Any]], metric_keys: Sequence[str],
+                  id_columns: Sequence[Tuple[str, str]] = (("symbol", "Symbol"), ("name", "Company"),
+                                                           ("sector", "Sector"))) -> pd.DataFrame:
     """
-    Screen stocks based on specified criteria
+    Numeric display table: identifier columns plus one column per metric in
+    display units with the unit in the header (e.g. ``"ROE (%)"``).
+    """
+    records = []
+    for row in rows:
+        record = {label: row.get(key) for key, label in id_columns}
+        for key in metric_keys:
+            record[metric_label(key, with_unit=True)] = to_display(row.get(key), METRICS[key]["kind"])
+        records.append(record)
+    columns = [label for _, label in id_columns] + [metric_label(k, with_unit=True) for k in metric_keys]
+    return pd.DataFrame.from_records(records, columns=columns)
 
-    Args:
-        universe: List of stocks to screen
-        data_loader: DataLoader instance
-        ratio_analyzer: FinancialRatioAnalyzer instance
-        **filters: Various filtering criteria
+
+def numeric_column_config(df: pd.DataFrame, decimals: int = 2) -> Dict[str, Any]:
+    """``st.dataframe`` column config formatting every numeric column with ``decimals``."""
+    return {column: st.column_config.NumberColumn(format=f"%.{decimals}f")
+            for column in df.columns if pd.api.types.is_numeric_dtype(df[column])}
+
+
+def benchmark_value(benchmarks: Optional[Mapping[str, Any]], metric: str) -> Optional[float]:
+    """Benchmark of ``metric`` from ``get_sector_benchmarks(...)`` output (or its ``ratios`` dict)."""
+    if not benchmarks or metric not in BENCHMARK_KEYS:
+        return None
+    ratios = benchmarks.get("ratios", benchmarks)
+    category, key = BENCHMARK_KEYS[metric]
+    section = ratios.get(category) if isinstance(ratios, Mapping) else None
+    return to_float(section.get(key)) if isinstance(section, Mapping) else None
+
+
+# ---------------------------------------------------------------------------
+# Universe (thin wrappers around industry.universe)
+# ---------------------------------------------------------------------------
+def get_stock_universe() -> List[Dict[str, str]]:
+    """Every company of the curated universe as ``{symbol, name, sector, subsector}`` records."""
+    return get_universe()
+
+
+def get_stocks_by_sector(sector: str) -> List[Dict[str, str]]:
+    """Universe companies of ``sector`` (any provider spelling)."""
+    return get_universe(sector)
+
+
+def get_stocks_by_sector_and_subsector(sector: str, subsector: Optional[str]) -> List[Dict[str, str]]:
+    """Universe companies of ``sector`` and ``subsector`` (``"All"`` disables the subsector filter)."""
+    return get_universe(sector, subsector)
+
+
+# ---------------------------------------------------------------------------
+# Metrics and per-ticker data
+# ---------------------------------------------------------------------------
+def date_window(days: int, end: Optional[date] = None) -> Tuple[str, str]:
+    """``(start, end)`` ISO dates covering the last ``days`` calendar days."""
+    end = end or date.today()
+    return (end - timedelta(days=int(days))).isoformat(), end.isoformat()
+
+
+def close_prices(price_data: Optional[pd.DataFrame]) -> pd.Series:
+    """Clean, sorted closing price series (empty when unavailable)."""
+    if not isinstance(price_data, pd.DataFrame) or price_data.empty or "Close" not in price_data.columns:
+        return pd.Series(dtype=float)
+    close = pd.to_numeric(price_data["Close"], errors="coerce").astype(float)
+    close = close[np.isfinite(close.to_numpy())]
+    if isinstance(close.index, pd.DatetimeIndex):
+        if close.index.tz is not None:
+            close.index = close.index.tz_localize(None)
+        close = close[~close.index.duplicated(keep="last")].sort_index()
+    return close
+
+
+def trailing_window(close: pd.Series, days: int) -> pd.Series:
+    """Last ``days`` calendar days of a date-indexed series."""
+    if close.empty or not isinstance(close.index, pd.DatetimeIndex):
+        return close
+    return close[close.index >= close.index[-1] - pd.Timedelta(days=int(days))]
+
+
+def performance_stats(close: pd.Series) -> Dict[str, Optional[float]]:
+    """
+    Total return, annualised return / volatility, max drawdown (fractions) and
+    Sharpe ratio (risk-free rate from config) of a closing price series.
+    """
+    empty = {"total_return": None, "annual_return": None, "volatility": None, "max_drawdown": None, "sharpe": None}
+    close = close.dropna() if isinstance(close, pd.Series) else pd.Series(dtype=float)
+    if len(close) < 2 or close.iloc[0] <= 0:
+        return empty
+    total = float(close.iloc[-1] / close.iloc[0] - 1)
+    returns = close.pct_change().dropna()
+    volatility = float(returns.std() * math.sqrt(252)) if len(returns) > 1 else None
+    if isinstance(close.index, pd.DatetimeIndex):
+        years = max((close.index[-1] - close.index[0]).days / 365.25, 1 / 365.25)
+    else:
+        years = max(len(close) / 252, 1 / 252)
+    annual = (1 + total) ** (1 / years) - 1 if total > -1 else -1.0
+    drawdown = float((close / close.cummax() - 1).min())
+    sharpe = safe_divide(annual - RISK_FREE_RATE, volatility)
+    return {"total_return": total, "annual_return": annual, "volatility": volatility, "max_drawdown": drawdown,
+            "sharpe": sharpe}
+
+
+def _growth(current: Optional[float], previous: Optional[float]) -> Optional[float]:
+    if current is None or previous is None or previous <= 0:
+        return None
+    return current / previous - 1
+
+
+def _positive(value: Optional[float]) -> Optional[float]:
+    return value if value is not None and value > 0 else None
+
+
+def _local_metrics(financial_data: Mapping[str, Any], company_info: Mapping[str, Any],
+                   price_data: Optional[pd.DataFrame]) -> Dict[str, Optional[float]]:
+    """Key metrics computed directly from the statements with the shared line-item helpers."""
+    income = financial_data.get("income_statement")
+    balance = financial_data.get("balance_sheet")
+    cash_flow = financial_data.get("cash_flow")
+    market = financial_data.get("market_data") or {}
+
+    close = close_prices(price_data)
+    price = to_float(close.iloc[-1]) if not close.empty else to_float(market.get("share_price"))
+    if price is None:
+        price = to_float(company_info.get("current_price"))
+    market_cap = to_float(market.get("market_cap")) or to_float(company_info.get("market_cap"))
+
+    revenue = get_latest(income, "revenue")
+    net_income = get_latest(income, "net_income")
+    gross_profit = get_latest(income, "gross_profit")
+    operating_income = get_latest(income, "operating_income")
+    ebitda = get_latest(income, "ebitda")
+    if ebitda is None and operating_income is not None:
+        ebitda = operating_income + (get_latest(income, "depreciation") or get_latest(cash_flow, "depreciation")
+                                     or 0.0)
+    interest = get_latest(income, "interest_expense")
+
+    equity = get_latest(balance, "total_equity")
+    assets = get_latest(balance, "total_assets")
+    debt = get_latest(balance, "total_debt")
+    cash = get_latest(balance, "cash_and_short_term_investments")
+    current_assets = get_latest(balance, "current_assets")
+    current_liabilities = get_latest(balance, "current_liabilities")
+    inventory = get_latest(balance, "inventory") or 0.0
+
+    free_cash_flow = get_latest(cash_flow, "free_cash_flow")
+    if free_cash_flow is None:
+        ocf, capex = get_latest(cash_flow, "operating_cash_flow"), get_latest(cash_flow, "capital_expenditure")
+        free_cash_flow = ocf - abs(capex) if ocf is not None and capex is not None else None
+    dividends = get_latest(cash_flow, "dividends_paid")
+
+    enterprise_value = market_cap + (debt or 0.0) - (cash or 0.0) if market_cap else None
+
+    eps_growth = _growth(get_value(income, "diluted_eps", 0), get_value(income, "diluted_eps", 1))
+    if eps_growth is None:
+        eps_growth = _growth(get_value(income, "net_income", 0), get_value(income, "net_income", 1))
+
+    year = trailing_window(close, 365)
+    perf = performance_stats(year) if len(year) >= 20 else {}
+
+    dividend_yield = to_float(market.get("dividend_yield"))
+    return {
+        "price": price,
+        "market_cap": market_cap,
+        "perf_1y": perf.get("total_return"),
+        "volatility": perf.get("volatility"),
+        "beta": to_float(market.get("beta")) or to_float(company_info.get("beta")),
+        "pe_ratio": safe_divide(market_cap, _positive(net_income)),
+        "pb_ratio": safe_divide(market_cap, _positive(equity)),
+        "ps_ratio": safe_divide(market_cap, _positive(revenue)),
+        "ev_ebitda": safe_divide(enterprise_value, _positive(ebitda)) if enterprise_value and enterprise_value > 0
+        else None,
+        "fcf_yield": safe_divide(free_cash_flow, _positive(market_cap)),
+        "gross_margin": safe_divide(gross_profit, _positive(revenue)),
+        "operating_margin": safe_divide(operating_income, _positive(revenue)),
+        "net_margin": safe_divide(net_income, _positive(revenue)),
+        "roe": safe_divide(net_income, _positive(equity)),
+        "roa": safe_divide(net_income, _positive(assets)),
+        "revenue_growth": _growth(get_value(income, "revenue", 0), get_value(income, "revenue", 1)),
+        "eps_growth": eps_growth,
+        "current_ratio": safe_divide(current_assets, _positive(current_liabilities)),
+        "quick_ratio": safe_divide(current_assets - inventory, _positive(current_liabilities))
+        if current_assets is not None else None,
+        "debt_equity": safe_divide(debt, _positive(equity)),
+        "interest_coverage": safe_divide(operating_income, abs(interest)) if interest else None,
+        "dividend_yield": dividend_yield if dividend_yield is not None else 0.0 if dividends == 0 else None,
+        "payout_ratio": safe_divide(abs(dividends), _positive(net_income)) if dividends is not None else None,
+    }
+
+
+def compute_key_metrics(financial_data: Optional[Mapping[str, Any]],
+                        company_info: Optional[Mapping[str, Any]] = None,
+                        price_data: Optional[pd.DataFrame] = None,
+                        ratio_analyzer: Optional[FinancialRatioAnalyzer] = None) -> Dict[str, Optional[float]]:
+    """
+    Key screening metrics (see :data:`METRICS`) for one company.
+
+    Ratios from ``FinancialRatioAnalyzer.calculate_ratios`` take precedence so
+    the numbers match the Company Analysis page; gaps are filled from the
+    statements via the shared line-item helpers. Missing values are None.
+    """
+    financial_data = financial_data or {}
+    company_info = company_info or financial_data.get("company_info") or {}
+    metrics = _local_metrics(financial_data, company_info, price_data)
+    try:
+        ratios = (ratio_analyzer or FinancialRatioAnalyzer()).calculate_ratios(dict(financial_data)) or {}
+    except Exception:  # analyzer problems must not break screening
+        logger.exception("Ratio analysis failed; using statement-based metrics only")
+        ratios = {}
+    for (category, key), metric in _ANALYZER_KEYS.items():
+        value = to_float((ratios.get(category) or {}).get(key)) if isinstance(ratios, Mapping) else None
+        if value is not None:
+            metrics[metric] = value
+    return {key: to_float(metrics.get(key)) for key in METRICS}
+
+
+def build_stock_snapshot(symbol: str, data_loader: DataLoader, lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+                         ratio_analyzer: Optional[FinancialRatioAnalyzer] = None) -> Dict[str, Any]:
+    """
+    Load everything the screening / comparison pages need for one ticker.
 
     Returns:
-        List of stocks that meet the criteria
+        ``{symbol, name, sector, subsector, industry, company_info, price_data,
+        financial_data, metrics}``.
+
+    Raises:
+        LookupError: when neither company information nor prices are available.
     """
-    # Extract filter criteria
-    min_market_cap = filters.get("min_market_cap", 0)
-    max_market_cap = filters.get("max_market_cap", float('inf'))
-    min_price = filters.get("min_price", 0)
-    max_price = filters.get("max_price", float('inf'))
-    min_pe = filters.get("min_pe", 0)
-    max_pe = filters.get("max_pe", float('inf'))
-    min_pb = filters.get("min_pb", 0)
-    max_pb = filters.get("max_pb", float('inf'))
-    min_ps = filters.get("min_ps", 0)
-    max_ps = filters.get("max_ps", float('inf'))
-    min_ev_ebitda = filters.get("min_ev_ebitda", 0)
-    max_ev_ebitda = filters.get("max_ev_ebitda", float('inf'))
-    min_roe = filters.get("min_roe", -float('inf'))
-    max_roe = filters.get("max_roe", float('inf'))
-    min_net_margin = filters.get("min_net_margin", -float('inf'))
-    max_net_margin = filters.get("max_net_margin", float('inf'))
-    min_revenue_growth = filters.get("min_revenue_growth", -float('inf'))
-    max_revenue_growth = filters.get("max_revenue_growth", float('inf'))
-    min_eps_growth = filters.get("min_eps_growth", -float('inf'))
-    max_eps_growth = filters.get("max_eps_growth", float('inf'))
-    min_dividend_yield = filters.get("min_dividend_yield", 0)
-    max_dividend_yield = filters.get("max_dividend_yield", float('inf'))
-    min_payout_ratio = filters.get("min_payout_ratio", 0)
-    max_payout_ratio = filters.get("max_payout_ratio", float('inf'))
-    min_debt_equity = filters.get("min_debt_equity", 0)
-    max_debt_equity = filters.get("max_debt_equity", float('inf'))
-    min_current_ratio = filters.get("min_current_ratio", 0)
-    max_current_ratio = filters.get("max_current_ratio", float('inf'))
-    min_perf_1y = filters.get("min_perf_1y", -float('inf'))
-    max_perf_1y = filters.get("max_perf_1y", float('inf'))
+    symbol = symbol.strip().upper()
+    record = lookup_company(symbol) or {}
+    info = data_loader.get_company_info(symbol) or {}
+    start, end = date_window(lookback_days)
+    try:
+        prices = data_loader.get_historical_prices(symbol, start, end)
+    except Exception:
+        logger.exception("Price download failed for %s", symbol)
+        prices = pd.DataFrame()
+    if not info and (prices is None or prices.empty):
+        raise LookupError(f"No data found for {symbol}")
 
-    # Results list
-    screened_stocks = []
-
-    # Process each stock in the universe
-    for stock in universe:
-        symbol = stock["symbol"]
-
+    statements = {}
+    for key, statement_type in (("income_statement", "income"), ("balance_sheet", "balance"),
+                                ("cash_flow", "cash")):
         try:
-            # Get company info
-            company_info = data_loader.get_company_info(symbol)
+            statements[key] = data_loader.get_financial_statements(symbol, statement_type, "annual")
+        except Exception:
+            logger.exception("Could not load %s statement for %s", statement_type, symbol)
+            statements[key] = pd.DataFrame()
 
-            if not company_info:
+    financial_data = build_financial_data(company_info=info, price_data=prices, **statements)
+    sector = normalize_sector(info.get("sector") or record.get("sector"))
+    industry = info.get("industry") if info.get("industry") not in (None, "", "N/A") else None
+    return {
+        "symbol": symbol,
+        "name": info.get("name") or record.get("name") or symbol,
+        "sector": sector,
+        "subsector": record.get("subsector") or industry or "N/A",
+        "industry": industry or record.get("subsector") or "N/A",
+        "company_info": info,
+        "price_data": prices if isinstance(prices, pd.DataFrame) else pd.DataFrame(),
+        "financial_data": financial_data,
+        "metrics": compute_key_metrics(financial_data, info, prices, ratio_analyzer),
+    }
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False, max_entries=2000)
+def load_stock_snapshot(symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> Dict[str, Any]:
+    """Cached :func:`build_stock_snapshot` using a default ``DataLoader`` (raises on failure; not cached)."""
+    return build_stock_snapshot(symbol, DataLoader(), lookback_days)
+
+
+def get_stock_snapshot(symbol: str, data_loader: Optional[DataLoader] = None,
+                       lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+                       ratio_analyzer: Optional[FinancialRatioAnalyzer] = None) -> Optional[Dict[str, Any]]:
+    """
+    Snapshot of one ticker or None when its data cannot be loaded (logged).
+
+    Uses the Streamlit cache unless a specific ``data_loader`` is passed.
+    """
+    try:
+        if data_loader is not None:
+            return build_stock_snapshot(symbol, data_loader, lookback_days, ratio_analyzer)
+        return load_stock_snapshot(symbol.strip().upper(), int(lookback_days))
+    except LookupError as e:
+        logger.info(str(e))
+    except Exception:
+        logger.exception("Could not load data for %s", symbol)
+    return None
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False, max_entries=500)
+def load_price_history(symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> pd.DataFrame:
+    """Cached daily price history of ``symbol`` (empty DataFrame when unavailable)."""
+    start, end = date_window(lookback_days)
+    try:
+        prices = DataLoader().get_historical_prices(symbol.upper(), start, end)
+    except Exception:
+        logger.exception("Could not load prices for %s", symbol)
+        return pd.DataFrame()
+    return prices if isinstance(prices, pd.DataFrame) else pd.DataFrame()
+
+
+def snapshot_row(snapshot: Mapping[str, Any], record: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Flat, lightweight result row (identifiers + metrics, no DataFrames)."""
+    record = record or {}
+    row = {
+        "symbol": snapshot["symbol"],
+        "name": snapshot.get("name") or record.get("name") or snapshot["symbol"],
+        "sector": snapshot.get("sector") or record.get("sector") or "Unknown",
+        "subsector": record.get("subsector") or snapshot.get("subsector") or "N/A",
+        "industry": snapshot.get("industry") or "N/A",
+    }
+    row.update(snapshot.get("metrics") or {})
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Screening
+# ---------------------------------------------------------------------------
+#: legacy ``min_<name>`` / ``max_<name>`` keyword names -> metric key
+LEGACY_FILTERS = {
+    "pe": "pe_ratio", "pb": "pb_ratio", "ps": "ps_ratio", "dividend": "dividend_yield", "payout": "payout_ratio",
+    "de": "debt_equity", "perf_1y": "perf_1y", "market_cap": "market_cap", "price": "price",
+}
+
+Criteria = Dict[str, Tuple[Optional[float], Optional[float]]]
+
+
+def _bound(value: Any) -> Optional[float]:
+    value = to_float(value)
+    return value if value is not None and math.isfinite(value) else None
+
+
+def build_criteria(criteria: Optional[Mapping[str, Sequence[Any]]] = None, **filters: Any) -> Criteria:
+    """
+    Normalise screening criteria to ``{metric: (min, max)}``.
+
+    ``criteria`` maps metric keys to ``(min, max)``; legacy keyword filters
+    such as ``min_pe=0, max_pe=25`` or ``min_roe=0.15`` are merged in.
+    None and infinite bounds mean "no bound"; criteria without any bound are dropped.
+    """
+    merged: Dict[str, List[Optional[float]]] = {}
+    for metric, bounds in (criteria or {}).items():
+        lo, hi = (list(bounds) + [None, None])[:2]
+        merged[metric] = [_bound(lo), _bound(hi)]
+    for name, value in filters.items():
+        side, _, base = name.partition("_")
+        if side not in ("min", "max") or not base:
+            raise TypeError(f"Unknown screening filter: {name}")
+        metric = LEGACY_FILTERS.get(base, base)
+        if metric not in METRICS:
+            raise TypeError(f"Unknown screening metric: {base}")
+        merged.setdefault(metric, [None, None])[0 if side == "min" else 1] = _bound(value)
+    return {metric: (lo, hi) for metric, (lo, hi) in merged.items() if lo is not None or hi is not None}
+
+
+def passes_criteria(row: Mapping[str, Any], criteria: Criteria, include_missing: bool = False) -> bool:
+    """True when every criterion holds (missing values fail unless ``include_missing``)."""
+    for metric, (lo, hi) in criteria.items():
+        value = to_float(row.get(metric))
+        if value is None:
+            if include_missing:
                 continue
-
-            # Get latest price and performance data
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date_1y = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-
-            price_data = data_loader.get_historical_prices(symbol, start_date_1y, end_date)
-
-            if price_data.empty:
-                continue
-
-            # Get current price
-            current_price = price_data['Close'].iloc[-1]
-
-            # Calculate 1-year performance
-            if len(price_data) > 20:  # Ensure we have enough data
-                perf_1y = (price_data['Close'].iloc[-1] / price_data['Close'].iloc[0] - 1)
-            else:
-                perf_1y = None
-
-            # Get financial statements
-            income_stmt = data_loader.get_financial_statements(symbol, 'income', 'annual')
-            balance_sheet = data_loader.get_financial_statements(symbol, 'balance', 'annual')
-            cash_flow = data_loader.get_financial_statements(symbol, 'cash', 'annual')
-
-            # Combine into financial data dict
-            financial_data = {
-                'income_statement': income_stmt,
-                'balance_sheet': balance_sheet,
-                'cash_flow': cash_flow,
-                'market_data': {
-                    'share_price': current_price,
-                    'market_cap': company_info.get('market_cap')
-                }
-            }
-
-            # Calculate financial ratios
-            ratios = ratio_analyzer.calculate_ratios(financial_data)
-
-            # Prepare stock data with all metrics
-            stock_data = {
-                "symbol": symbol,
-                "name": company_info.get('name', stock.get('name', symbol)),
-                "sector": company_info.get('sector', stock.get('sector', 'Unknown')),
-                "industry": company_info.get('industry', 'Unknown'),
-                "price": current_price,
-                "market_cap": company_info.get('market_cap'),
-                "perf_1y": perf_1y,
-
-                # Valuation ratios
-                "pe_ratio": ratios.get('valuation', {}).get('pe_ratio'),
-                "forward_pe": ratios.get('valuation', {}).get('forward_pe'),
-                "pb_ratio": ratios.get('valuation', {}).get('pb_ratio'),
-                "ps_ratio": ratios.get('valuation', {}).get('ps_ratio'),
-                "ev_ebitda": ratios.get('valuation', {}).get('ev_ebitda'),
-                "ev_revenue": ratios.get('valuation', {}).get('ev_revenue'),
-                "peg_ratio": ratios.get('valuation', {}).get('peg_ratio'),
-
-                # Profitability ratios
-                "gross_margin": ratios.get('profitability', {}).get('gross_margin'),
-                "operating_margin": ratios.get('profitability', {}).get('operating_margin'),
-                "net_margin": ratios.get('profitability', {}).get('net_margin'),
-                "roe": ratios.get('profitability', {}).get('roe'),
-                "roa": ratios.get('profitability', {}).get('roa'),
-                "roic": ratios.get('profitability', {}).get('roic'),
-
-                # Growth ratios
-                "revenue_growth": ratios.get('growth', {}).get('revenue_growth'),
-                "eps_growth": ratios.get('growth', {}).get('net_income_growth'),  # Using net income growth as proxy
-                "dividend_growth": ratios.get('growth', {}).get('dividend_growth'),
-                "ebitda_growth": ratios.get('growth', {}).get('ebitda_growth'),
-                "fcf_growth": ratios.get('growth', {}).get('fcf_growth'),
-
-                # Liquidity ratios
-                "current_ratio": ratios.get('liquidity', {}).get('current_ratio'),
-                "quick_ratio": ratios.get('liquidity', {}).get('quick_ratio'),
-                "cash_ratio": ratios.get('liquidity', {}).get('cash_ratio'),
-
-                # Leverage ratios
-                "debt_equity": ratios.get('leverage', {}).get('debt_to_equity'),
-                "interest_coverage": ratios.get('leverage', {}).get('interest_coverage'),
-                "debt_to_assets": ratios.get('leverage', {}).get('debt_to_assets'),
-                "cash_to_debt": ratios.get('leverage', {}).get('cash_to_debt'),
-
-                # Dividend metrics
-                "dividend_yield": company_info.get('dividend_yield'),
-                "payout_ratio": ratios.get('valuation', {}).get('payout_ratio'),
-                "dividend_years": None  # Would need to be obtained from additional sources
-            }
-
-            # Apply filters
-            if (
-                    (stock_data.get("market_cap") is None or (
-                            min_market_cap <= stock_data["market_cap"] <= max_market_cap)) and
-                    (min_price <= stock_data["price"] <= max_price) and
-                    (stock_data.get("pe_ratio") is None or np.isnan(stock_data.get("pe_ratio", np.nan)) or (
-                            min_pe <= stock_data["pe_ratio"] <= max_pe)) and
-                    (stock_data.get("pb_ratio") is None or np.isnan(stock_data.get("pb_ratio", np.nan)) or (
-                            min_pb <= stock_data["pb_ratio"] <= max_pb)) and
-                    (stock_data.get("ps_ratio") is None or np.isnan(stock_data.get("ps_ratio", np.nan)) or (
-                            min_ps <= stock_data["ps_ratio"] <= max_ps)) and
-                    (stock_data.get("ev_ebitda") is None or np.isnan(stock_data.get("ev_ebitda", np.nan)) or (
-                            min_ev_ebitda <= stock_data["ev_ebitda"] <= max_ev_ebitda)) and
-                    (stock_data.get("roe") is None or np.isnan(stock_data.get("roe", np.nan)) or (
-                            min_roe <= stock_data["roe"] <= max_roe)) and
-                    (stock_data.get("net_margin") is None or np.isnan(stock_data.get("net_margin", np.nan)) or (
-                            min_net_margin <= stock_data["net_margin"] <= max_net_margin)) and
-                    (stock_data.get("revenue_growth") is None or np.isnan(stock_data.get("revenue_growth", np.nan)) or (
-                            min_revenue_growth <= stock_data["revenue_growth"] <= max_revenue_growth)) and
-                    (stock_data.get("eps_growth") is None or np.isnan(stock_data.get("eps_growth", np.nan)) or (
-                            min_eps_growth <= stock_data["eps_growth"] <= max_eps_growth)) and
-                    (stock_data.get("dividend_yield") is None or np.isnan(stock_data.get("dividend_yield", np.nan)) or (
-                            min_dividend_yield <= stock_data["dividend_yield"] <= max_dividend_yield)) and
-                    (stock_data.get("payout_ratio") is None or np.isnan(stock_data.get("payout_ratio", np.nan)) or (
-                            min_payout_ratio <= stock_data["payout_ratio"] <= max_payout_ratio)) and
-                    (stock_data.get("debt_equity") is None or np.isnan(stock_data.get("debt_equity", np.nan)) or (
-                            min_debt_equity <= stock_data["debt_equity"] <= max_debt_equity)) and
-                    (stock_data.get("current_ratio") is None or np.isnan(stock_data.get("current_ratio", np.nan)) or (
-                            min_current_ratio <= stock_data["current_ratio"] <= max_current_ratio)) and
-                    (stock_data.get("perf_1y") is None or np.isnan(stock_data.get("perf_1y", np.nan)) or (
-                            min_perf_1y <= stock_data["perf_1y"] <= max_perf_1y))
-            ):
-                # Stock meets all criteria, add to results
-                screened_stocks.append(stock_data)
-
-        except Exception as e:
-            logger.error(f"Error processing stock {symbol}: {str(e)}")
-
-    return screened_stocks
+            return False
+        if (lo is not None and value < lo) or (hi is not None and value > hi):
+            return False
+    return True
 
 
-# For direct execution
-if __name__ == "__main__":
+def screen_stocks(universe: Iterable[Any], data_loader: Optional[DataLoader] = None,
+                  ratio_analyzer: Optional[FinancialRatioAnalyzer] = None, *,
+                  criteria: Optional[Mapping[str, Sequence[Any]]] = None, include_missing: bool = False,
+                  progress_callback: Optional[Callable[[int, int, str], None]] = None,
+                  failures: Optional[List[str]] = None, **filters: Any) -> List[Dict[str, Any]]:
+    """
+    Screen ``universe`` (records with ``symbol`` or plain tickers) on metric ranges.
+
+    Args:
+        data_loader: Optional loader; the cached default loader is used when None.
+        ratio_analyzer: Optional analyzer (only used with an explicit ``data_loader``).
+        criteria: ``{metric: (min, max)}`` in metric units (fractions for percentages).
+        include_missing: Keep stocks whose value for a filtered metric is unknown.
+        progress_callback: ``callback(done, total, symbol)`` after each ticker.
+        failures: List receiving tickers whose data could not be loaded.
+        **filters: Legacy ``min_<metric>`` / ``max_<metric>`` bounds.
+
+    Returns:
+        Matching rows (see :func:`snapshot_row`) in universe order. Tickers that
+        fail to load are skipped, never fatal.
+    """
+    rules = build_criteria(criteria, **filters)
+    records = [u if isinstance(u, Mapping) else {"symbol": str(u)} for u in universe]
+    results: List[Dict[str, Any]] = []
+    for done, record in enumerate(records, start=1):
+        symbol = str(record.get("symbol", "")).strip().upper()
+        snapshot = get_stock_snapshot(symbol, data_loader, ratio_analyzer=ratio_analyzer) if symbol else None
+        if snapshot is None:
+            if failures is not None and symbol:
+                failures.append(symbol)
+        else:
+            row = snapshot_row(snapshot, record)
+            if passes_criteria(row, rules, include_missing):
+                results.append(row)
+        if progress_callback:
+            progress_callback(done, len(records), symbol)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Shared UI helpers
+# ---------------------------------------------------------------------------
+def render_analyze_jump(symbols: Sequence[str], key_prefix: str, names: Optional[Mapping[str, str]] = None,
+                        label: str = "Open in Company Analysis") -> None:
+    """Selectbox + button that jumps to Company Analysis for the chosen ticker."""
+    symbols = [s for s in dict.fromkeys(symbols) if s]
+    if not symbols:
+        return
+    names = names or {}
+    col_pick, col_button = st.columns([3, 1], vertical_alignment="bottom")
+    with col_pick:
+        choice = st.selectbox(label, symbols, key=f"{key_prefix}_analyze_pick",
+                              format_func=lambda s: f"{s} - {names[s]}" if names.get(s) else s)
+    with col_button:
+        st.button("Analyze", key=f"{key_prefix}_analyze", icon=":material/query_stats:", on_click=go_to,
+                  args=(COMPANY_ANALYSIS, choice), type="secondary")
+
+
+def progress_reporter(bar: Any, verb: str = "Loading") -> Callable[[int, int, str], None]:
+    """Progress callback updating an ``st.progress`` bar."""
+
+    def report(done: int, total: int, symbol: str) -> None:
+        bar.progress(min(done / max(total, 1), 1.0), text=f"{verb} {symbol} ({done}/{total})")
+
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+#: Filter slider ranges in display units: metric -> (min, max, step). A bound
+#: at the end of the slider means "no limit".
+FILTER_RANGES: Dict[str, Tuple[float, float, float]] = {
+    "price": (0.0, 2000.0, 5.0), "perf_1y": (-100.0, 300.0, 1.0), "volatility": (0.0, 150.0, 1.0),
+    "beta": (0.0, 3.0, 0.05), "pe_ratio": (0.0, 100.0, 0.5), "pb_ratio": (0.0, 50.0, 0.1),
+    "ps_ratio": (0.0, 30.0, 0.1), "ev_ebitda": (0.0, 60.0, 0.5), "fcf_yield": (-20.0, 30.0, 0.5),
+    "gross_margin": (-50.0, 100.0, 1.0), "operating_margin": (-100.0, 100.0, 1.0),
+    "net_margin": (-100.0, 100.0, 1.0), "roe": (-100.0, 200.0, 1.0), "roa": (-50.0, 50.0, 0.5),
+    "revenue_growth": (-50.0, 200.0, 1.0), "eps_growth": (-100.0, 300.0, 1.0),
+    "current_ratio": (0.0, 10.0, 0.1), "quick_ratio": (0.0, 10.0, 0.1), "debt_equity": (0.0, 10.0, 0.1),
+    "interest_coverage": (0.0, 100.0, 1.0), "dividend_yield": (0.0, 15.0, 0.1), "payout_ratio": (0.0, 150.0, 1.0),
+}
+
+#: Strategy presets: name -> (description, {metric: (min, max)} in display units)
+STRATEGIES: Dict[str, Tuple[str, Dict[str, Tuple[float, float]]]] = {
+    "Custom": ("Build your own filters.", {}),
+    "Value": ("Low earnings and book multiples with a dividend.",
+              {"pe_ratio": (0.0, 20.0), "pb_ratio": (0.0, 3.0), "dividend_yield": (1.0, 15.0)}),
+    "Growth": ("Double-digit revenue and earnings growth.",
+               {"revenue_growth": (10.0, 200.0), "eps_growth": (10.0, 300.0)}),
+    "Quality": ("High returns on equity, solid margins and moderate leverage.",
+                {"roe": (15.0, 200.0), "net_margin": (10.0, 100.0), "debt_equity": (0.0, 1.5)}),
+    "Dividend": ("High, sustainable dividends.", {"dividend_yield": (3.0, 15.0), "payout_ratio": (0.0, 80.0)}),
+    "Momentum": ("Strong 12-month price performance.", {"perf_1y": (15.0, 300.0)}),
+}
+
+TABLE_METRICS = ["price", "market_cap", "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda", "net_margin", "roe",
+                 "revenue_growth", "debt_equity", "dividend_yield", "perf_1y"]
+
+RESULTS_KEY = f"{PREFIX}_results"
+FILTERS_KEY = f"{PREFIX}_active_filters"
+
+
+def _range_key(metric: str) -> str:
+    return f"{PREFIX}_range_{metric}"
+
+
+def _apply_strategy() -> None:
+    """``on_change`` callback: load the preset filters of the selected strategy."""
+    _, preset = STRATEGIES.get(st.session_state.get(f"{PREFIX}_strategy"), ("", {}))
+    if not preset:
+        return
+    st.session_state[FILTERS_KEY] = list(preset)
+    for metric, bounds in preset.items():
+        st.session_state[_range_key(metric)] = tuple(float(b) for b in bounds)
+
+
+def _criteria_from_widgets(active: Sequence[str]) -> Criteria:
+    """Slider ranges (display units) -> metric criteria (metric units); slider ends mean no limit."""
+    criteria: Criteria = {}
+    for metric in active:
+        lo_limit, hi_limit, _ = FILTER_RANGES[metric]
+        lo, hi = st.session_state.get(_range_key(metric), (lo_limit, hi_limit))
+        scale = 100.0 if METRICS[metric]["kind"] == "percent" else 1.0
+        criteria[metric] = (None if lo <= lo_limit else lo / scale, None if hi >= hi_limit else hi / scale)
+    return criteria
+
+
+def _render_controls() -> Dict[str, Any]:
+    """Sidebar filter controls; returns the current screening parameters."""
+    with st.sidebar:
+        st.subheader("Screening filters")
+        st.selectbox("Strategy", list(STRATEGIES), key=f"{PREFIX}_strategy", on_change=_apply_strategy,
+                     help="Presets fill in the ratio filters below; adjust them freely.")
+        st.caption(STRATEGIES[st.session_state.get(f"{PREFIX}_strategy", "Custom")][0])
+
+        sector = st.selectbox("Sector", ["All"] + SECTORS, key=f"{PREFIX}_sector")
+        subsector = "All"
+        if sector != "All":
+            subsector = st.selectbox("Subsector", ["All"] + get_subsectors(sector), key=f"{PREFIX}_subsector_{sector}")
+        cap_bucket = st.selectbox("Market capitalisation", list(MARKET_CAP_BUCKETS), key=f"{PREFIX}_market_cap")
+
+        st.session_state.setdefault(FILTERS_KEY, [])
+        active = st.multiselect("Ratio filters", list(FILTER_RANGES), key=FILTERS_KEY, format_func=metric_label,
+                                placeholder="Add a filter")
+        for metric in active:
+            lo_limit, hi_limit, step = FILTER_RANGES[metric]
+            st.session_state.setdefault(_range_key(metric), (lo_limit, hi_limit))
+            unit = {"percent": "%", "multiple": "x", "currency": "$"}.get(METRICS[metric]["kind"], "")
+            st.slider(f"{metric_label(metric)} ({unit})" if unit else metric_label(metric), min_value=lo_limit,
+                      max_value=hi_limit, step=step, key=_range_key(metric),
+                      help="Moving a handle to the end of the slider removes that limit.")
+        include_missing = st.checkbox("Keep stocks with missing data", key=f"{PREFIX}_include_missing",
+                                      help="Otherwise stocks without a value for an active filter are excluded.")
+        run = st.button("Run screen", type="primary", key=f"{PREFIX}_run", icon=":material/filter_alt:",
+                        width="stretch")
+
+    criteria = _criteria_from_widgets(active)
+    lo_cap, hi_cap = MARKET_CAP_BUCKETS[cap_bucket]
+    if lo_cap is not None or hi_cap is not None:
+        criteria["market_cap"] = (lo_cap, hi_cap)
+    return {"sector": sector, "subsector": subsector, "market_cap": cap_bucket, "criteria": criteria,
+            "include_missing": include_missing, "run": run}
+
+
+def _run_screen(params: Mapping[str, Any]) -> None:
+    universe = get_stocks_by_sector_and_subsector(params["sector"], params["subsector"]) \
+        if params["sector"] != "All" else get_stock_universe()
+    failures: List[str] = []
+    bar = st.progress(0.0, text="Loading company data...")
+    try:
+        rows = screen_stocks(universe, criteria=params["criteria"], include_missing=params["include_missing"],
+                             progress_callback=progress_reporter(bar, "Screening"), failures=failures)
+    finally:
+        bar.empty()
+    st.session_state[RESULTS_KEY] = {
+        "rows": rows, "failures": failures, "universe_size": len(universe),
+        "signature": _signature(params), "sector": params["sector"], "subsector": params["subsector"],
+        "criteria": dict(params["criteria"]), "include_missing": params["include_missing"],
+    }
+
+
+def _signature(params: Mapping[str, Any]) -> Tuple:
+    return (params["sector"], params["subsector"], params["include_missing"],
+            tuple(sorted((k, v) for k, v in params["criteria"].items())))
+
+
+def _describe_criteria(criteria: Mapping[str, Tuple[Optional[float], Optional[float]]]) -> str:
+    parts = []
+    for metric, (lo, hi) in criteria.items():
+        label = metric_label(metric)
+        if lo is not None and hi is not None:
+            parts.append(f"{format_metric(lo, metric)} <= {label} <= {format_metric(hi, metric)}")
+        elif lo is not None:
+            parts.append(f"{label} >= {format_metric(lo, metric)}")
+        else:
+            parts.append(f"{label} <= {format_metric(hi, metric)}")
+    return "; ".join(parts) if parts else "no ratio filters"
+
+
+def _render_results(results: Mapping[str, Any], params: Mapping[str, Any], visualizer: FinancialVisualizer) -> None:
+    rows: List[Dict[str, Any]] = results["rows"]
+    scope = results["sector"] if results["sector"] != "All" else "all sectors"
+    if results["subsector"] != "All":
+        scope += f" / {results['subsector']}"
+    st.subheader("Screening results")
+    st.caption(f"Universe: {scope} ({results['universe_size']} stocks). "
+               f"Criteria: {_describe_criteria(results['criteria'])}.")
+    if results["signature"] != _signature(params):
+        st.info("Filters changed since the last run - click **Run screen** to refresh the results.",
+                icon=":material/info:")
+    if results["failures"]:
+        st.warning(f"Data unavailable for {len(results['failures'])} stocks (skipped): "
+                   f"{', '.join(results['failures'][:15])}{'...' if len(results['failures']) > 15 else ''}")
+    if not rows:
+        st.warning("No stocks match your criteria. Try relaxing some filters or enabling "
+                   "**Keep stocks with missing data**.")
+        return
+    st.success(f"{len(rows)} of {results['universe_size']} stocks match.")
+
+    metric_columns = list(dict.fromkeys(TABLE_METRICS + [m for m in results["criteria"] if m in METRICS]))
+    tab_table, tab_charts, tab_performance, tab_details = st.tabs(
+        ["Results", "Charts", "Price performance", "Stock details"])
+
+    with tab_table:
+        col_sort, col_order = st.columns([3, 1], vertical_alignment="bottom")
+        with col_sort:
+            sort_metric = st.selectbox("Sort by", metric_columns, key=f"{PREFIX}_sort_by", format_func=metric_label,
+                                       index=metric_columns.index("market_cap"))
+        with col_order:
+            descending = st.toggle("Descending", value=True, key=f"{PREFIX}_sort_desc")
+        ordered = sorted(rows, key=lambda r: (to_float(r.get(sort_metric)) is None,
+                                              -(to_float(r.get(sort_metric)) or 0) if descending
+                                              else (to_float(r.get(sort_metric)) or 0)))
+        table = metrics_table(ordered, metric_columns, id_columns=(("symbol", "Symbol"), ("name", "Company"),
+                                                                   ("sector", "Sector"), ("subsector", "Subsector")))
+        st.dataframe(table, hide_index=True, column_config=numeric_column_config(table), key=f"{PREFIX}_table")
+        st.download_button("Download CSV", table.to_csv(index=False).encode("utf-8"),
+                           file_name="stock_screener_results.csv", mime="text/csv", key=f"{PREFIX}_download",
+                           icon=":material/download:")
+        render_analyze_jump([r["symbol"] for r in ordered], PREFIX, {r["symbol"]: r["name"] for r in rows})
+
+    with tab_charts:
+        group = "sector" if len({r["sector"] for r in rows}) > 1 else "subsector"
+        counts = pd.Series([r[group] for r in rows]).value_counts()
+        st.plotly_chart(visualizer.plot_sector_distribution(
+            pd.DataFrame({"Sector": counts.index, "Count": counts.values}),
+            title=f"Matches by {group}", height=400), key=f"{PREFIX}_chart_distribution")
+        chart_metric = st.selectbox("Compare metric", metric_columns, key=f"{PREFIX}_chart_metric",
+                                    format_func=metric_label, index=metric_columns.index("pe_ratio"))
+        kind = METRICS[chart_metric]["kind"]
+        values = [(r["symbol"], to_display(r.get(chart_metric), kind)) for r in rows]
+        values = sorted([v for v in values if np.isfinite(v[1])], key=lambda v: v[1], reverse=True)[:30]
+        st.plotly_chart(visualizer.plot_metrics_bar_chart(
+            pd.DataFrame(values, columns=["Metric", "Value"]), title=metric_label(chart_metric, with_unit=True),
+            height=420, is_percent=kind == "percent"), key=f"{PREFIX}_chart_metric_bars")
+
+    with tab_performance:
+        top = sorted(rows, key=lambda r: to_float(r.get("market_cap")) or 0, reverse=True)[:10]
+        series, names = {}, {}
+        for row in top:
+            snapshot = get_stock_snapshot(row["symbol"])
+            close = trailing_window(close_prices(snapshot["price_data"] if snapshot else None), 365)
+            if len(close) > 1:
+                series[row["symbol"]] = (close / close.iloc[0] - 1) * 100
+                names[row["symbol"]] = row["name"]
+        if series:
+            st.caption("Largest matches by market capitalisation (up to 10).")
+            st.plotly_chart(visualizer.plot_price_comparison(series, names, title="1-Year Price Performance",
+                                                             height=500), key=f"{PREFIX}_chart_performance")
+        else:
+            st.info("No price history available for the matching stocks.")
+
+    with tab_details:
+        symbols = [r["symbol"] for r in rows]
+        pick = st.selectbox("Stock", symbols, key=f"{PREFIX}_detail_pick",
+                            format_func=lambda s: f"{s} - {next(r['name'] for r in rows if r['symbol'] == s)}")
+        row = next(r for r in rows if r["symbol"] == pick)
+        cols = st.columns(4)
+        for col, metric in zip(cols, ("price", "market_cap", "pe_ratio", "dividend_yield")):
+            col.metric(metric_label(metric), format_metric(row.get(metric), metric))
+        category = st.segmented_control("Metric group", [c for c in METRIC_CATEGORIES if c != "Market"],
+                                        default="Profitability", key=f"{PREFIX}_detail_group") or "Profitability"
+        keys = METRIC_CATEGORIES[category]
+        percent = all(METRICS[k]["kind"] == "percent" for k in keys)
+        frame = pd.DataFrame({"Metric": [metric_label(k) for k in keys],
+                              "Value": [to_display(row.get(k), METRICS[k]["kind"]) for k in keys]})
+        st.plotly_chart(visualizer.plot_metrics_bar_chart(frame, title=f"{pick} - {category}", height=380,
+                                                          is_percent=percent), key=f"{PREFIX}_detail_metrics")
+        snapshot = get_stock_snapshot(pick)
+        if snapshot is not None and not snapshot["price_data"].empty:
+            st.plotly_chart(visualizer.plot_stock_price(snapshot["price_data"], pick, company_name=row["name"],
+                                                        height=500), key=f"{PREFIX}_detail_price")
+        else:
+            st.info(f"No price history available for {pick}.")
+
+
+def run_stock_screener_page() -> None:
+    """Render the Stock Screener page."""
+    st.title("Stock Screener")
+    st.markdown("Screen the curated universe on valuation, profitability, growth, financial health, dividends "
+                "and momentum. Results stay on screen until you run a new screen.")
+    visualizer = FinancialVisualizer(theme="dark")
+    params = _render_controls()
+    if params["run"]:
+        _run_screen(params)
+    results = st.session_state.get(RESULTS_KEY)
+    if not results:
+        st.info("Choose a universe and filters in the sidebar, then click **Run screen**.", icon=":material/tune:")
+        return
+    _render_results(results, params, visualizer)
+
+
+if __name__ == "__main__":  # pragma: no cover - run with ``streamlit run``
     run_stock_screener_page()
