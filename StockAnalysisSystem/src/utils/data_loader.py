@@ -1,1157 +1,609 @@
-import os
-import sys
-import time
+"""
+Market and fundamental data access with on-disk caching.
+
+Providers:
+    * yfinance (default) — prices, company info, financial statements, search
+    * Alpha Vantage (optional, needs ``ALPHA_VANTAGE_API_KEY``) — prices,
+      company overview and symbol search as fallbacks
+    * FRED via pandas-datareader (optional) — macro indicators
+
+Every public method returns an empty DataFrame / dict / list instead of
+raising when data is unavailable. Fresh data is cached in ``CACHE_DIR``;
+when a provider fails, an expired cache entry is served rather than nothing.
+With ``STOCK_ANALYSIS_OFFLINE=1`` no network calls are made at all.
+
+Normalised outputs:
+    * prices: tz-naive ``DatetimeIndex`` named ``Date``; columns ``Open``,
+      ``High``, ``Low``, ``Close``, ``Adj Close``, ``Volume`` (+ ``Dividends``,
+      ``Stock Splits`` when available), sorted ascending.
+    * company info: see :meth:`DataLoader.get_company_info`.
+    * statements: yfinance layout (line items × period end dates, newest first).
+"""
+
+import json
 import logging
 import pickle
-import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-import pandas as pd
+from typing import Any, Callable, Dict, List, Optional
+
 import numpy as np
+import pandas as pd
 import requests
-from typing import Dict, List, Tuple, Optional, Union, Any
 
+from StockAnalysisSystem.src import config
+from StockAnalysisSystem.src.config import API_KEYS, CACHE_EXPIRY_DAYS, normalize_sector
+from StockAnalysisSystem.src.utils.financial_data import normalize_dividend_yield, to_float
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
-
-from StockAnalysisSystem.src.config import CACHE_DIR, CACHE_EXPIRY_DAYS, API_KEYS
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger('data_loader')
+
+PRICE_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+STATEMENT_TYPES = ('income', 'balance', 'cash')
+STATEMENT_ATTRIBUTES = {
+    ('income', 'annual'): 'income_stmt',
+    ('income', 'quarterly'): 'quarterly_income_stmt',
+    ('balance', 'annual'): 'balance_sheet',
+    ('balance', 'quarterly'): 'quarterly_balance_sheet',
+    ('cash', 'annual'): 'cashflow',
+    ('cash', 'quarterly'): 'quarterly_cashflow',
+}
+REQUEST_TIMEOUT = 15  # seconds
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+
+# Cache lifetimes in days
+INFO_CACHE_DAYS = 7
+STATEMENT_CACHE_DAYS = 7
+SEARCH_CACHE_DAYS = 3
+
+
+def provider_symbol(ticker: str) -> str:
+    """Ticker as expected by Yahoo / Alpha Vantage (``BRK.B`` -> ``BRK-B``)."""
+    return ticker.strip().upper().replace('.', '-')
+
+
+def display_symbol(symbol: str) -> str:
+    """Ticker as shown to users (``BRK-B`` -> ``BRK.B`` for share classes)."""
+    parts = symbol.split('-')
+    if len(parts) == 2 and len(parts[1]) == 1:
+        return symbol.replace('-', '.')
+    return symbol
+
+
+def normalize_price_frame(data: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Bring a provider price frame into the normalised layout (see module docstring)."""
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        return pd.DataFrame()
+    data = data.copy()
+
+    # yf.download returns (field, ticker) MultiIndex columns even for one ticker
+    if isinstance(data.columns, pd.MultiIndex):
+        level = 0 if 'Close' in data.columns.get_level_values(0) else -1
+        data.columns = data.columns.get_level_values(level)
+    data = data.loc[:, ~pd.Index(data.columns).duplicated()]
+
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index, errors='coerce', utc=True)
+    if data.index.tz is not None:
+        data.index = data.index.tz_convert('America/New_York').tz_localize(None)
+    data = data[~data.index.isna()]
+    data.index = data.index.normalize()
+    data.index.name = 'Date'
+
+    rename = {c: c.title() for c in data.columns if c.lower() in {'open', 'high', 'low', 'close', 'volume'}}
+    data = data.rename(columns=rename)
+    if 'Close' not in data.columns:
+        return pd.DataFrame()
+    if 'Adj Close' not in data.columns:
+        data['Adj Close'] = data['Close']
+    for column in PRICE_COLUMNS:
+        if column not in data.columns:
+            data[column] = np.nan
+        data[column] = pd.to_numeric(data[column], errors='coerce')
+
+    data = data[~data.index.duplicated(keep='last')].sort_index()
+    data = data.dropna(subset=['Close'])
+    extra = [c for c in ('Dividends', 'Stock Splits') if c in data.columns]
+    return data[PRICE_COLUMNS + extra]
 
 
 class DataLoader:
-    """
-    Main class for fetching financial data from various sources.
-    Supports data caching for performance optimization.
-    """
+    """Fetches financial data from external providers with caching."""
 
-    def __init__(self, cache_dir: str = CACHE_DIR, cache_expiry_days: int = CACHE_EXPIRY_DAYS):
+    def __init__(self, cache_dir: Optional[str] = None, cache_expiry_days: int = CACHE_EXPIRY_DAYS,
+                 offline: Optional[bool] = None):
         """
-        Initialize data loader with cache settings
-
         Args:
-            cache_dir: Directory for data caching
-            cache_expiry_days: Cache expiry period in days
+            cache_dir: Cache directory (defaults to ``config.CACHE_DIR``).
+            cache_expiry_days: Expiry for price data caches.
+            offline: Disable all network access (defaults to ``config.OFFLINE_MODE``).
         """
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = Path(cache_dir) if cache_dir else Path(config.CACHE_DIR)
         self.cache_expiry_days = cache_expiry_days
-        self.api_call_counts = {'yfinance': 0, 'alpha_vantage': 0}
-        self.api_limits = {'alpha_vantage': 500}  # API call limits
-
-        # Create cache directory if it doesn't exist
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load API keys
+        self.offline = config.OFFLINE_MODE if offline is None else offline
         self.api_keys = API_KEYS
-
-        # Supported data providers
-        self.providers = {
+        self.api_call_counts = {'yfinance': 0, 'alpha_vantage': 0}
+        self.api_limits = {'alpha_vantage': 25}  # free tier daily limit
+        self.providers: Dict[str, Callable[..., pd.DataFrame]] = {
             'yfinance': self._fetch_yfinance,
-            'alpha_vantage': self._fetch_alpha_vantage
+            'alpha_vantage': self._fetch_alpha_vantage,
         }
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"DataLoader initialised (cache: {self.cache_dir}, offline: {self.offline})")
 
-        logger.info(f"DataLoader initialized with cache in {self.cache_dir}")
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+    def _cache_path(self, name: str) -> Path:
+        safe = re.sub(r'[^A-Za-z0-9_.=-]', '_', name)
+        return self.cache_dir / safe
 
-    def get_historical_prices(
-            self,
-            ticker: str,
-            start_date: Optional[str] = None,
-            end_date: Optional[str] = None,
-            provider: str = 'yfinance',
-            interval: str = '1d',
-            force_refresh: bool = False
-    ) -> pd.DataFrame:
+    @staticmethod
+    def _is_fresh(path: Path, max_age_days: float) -> bool:
+        age = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
+        return age < timedelta(days=max_age_days)
+
+    def _read_cache(self, path: Path, max_age_days: Optional[float]) -> Any:
+        """Read a cache file; ``max_age_days=None`` accepts any age. Returns None on miss."""
+        if not path.exists() or (max_age_days is not None and not self._is_fresh(path, max_age_days)):
+            return None
+        try:
+            if path.suffix == '.json':
+                return json.loads(path.read_text())
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable cache file {path.name}: {e}")
+            return None
+
+    def _write_cache(self, path: Path, value: Any) -> None:
+        try:
+            if path.suffix == '.json':
+                path.write_text(json.dumps(value, default=str))
+            else:
+                with open(path, 'wb') as f:
+                    pickle.dump(value, f)
+        except Exception as e:
+            logger.warning(f"Could not write cache file {path.name}: {e}")
+
+    def _cached(self, path: Path, max_age_days: float, fetch: Callable[[], Any], force_refresh: bool,
+                is_valid: Callable[[Any], bool]) -> Any:
+        """Fresh cache -> fetch -> stale cache, in that order."""
+        if not force_refresh:
+            cached = self._read_cache(path, max_age_days)
+            if cached is not None and is_valid(cached):
+                return cached
+        if not self.offline:
+            try:
+                value = fetch()
+                if is_valid(value):
+                    self._write_cache(path, value)
+                    return value
+            except Exception as e:
+                logger.error(f"Fetching {path.stem} failed: {e}")
+        stale = self._read_cache(path, None)
+        if stale is not None and is_valid(stale):
+            logger.info(f"Serving stale cache for {path.stem}")
+            return stale
+        return None
+
+    # ------------------------------------------------------------------
+    # Prices
+    # ------------------------------------------------------------------
+    def get_historical_prices(self, ticker: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                              provider: str = 'yfinance', interval: str = '1d',
+                              force_refresh: bool = False) -> pd.DataFrame:
         """
-        Get historical price data for a given ticker
+        Historical OHLCV prices.
 
         Args:
-            ticker: Stock/ETF ticker
-            start_date: Start date in 'YYYY-MM-DD' format
-            end_date: End date in 'YYYY-MM-DD' format
-            provider: Data provider ('yfinance', 'alpha_vantage')
-            interval: Data interval ('1d', '1wk', '1mo')
-            force_refresh: Force data refresh even if cache exists
-
-        Returns:
-            DataFrame with historical prices
+            ticker: Stock/ETF ticker (``BRK.B`` style accepted).
+            start_date: ``YYYY-MM-DD`` (default: 5 years ago).
+            end_date: ``YYYY-MM-DD`` inclusive (default: today).
+            provider: ``yfinance`` or ``alpha_vantage``; the other is used as fallback.
+            interval: ``1d``, ``1wk`` or ``1mo``.
+            force_refresh: Ignore fresh cache entries.
         """
-        # Check if ticker contains a dot and create corrected version for API
-        original_ticker = ticker
-        corrected_ticker = ticker.replace('.', '-') if '.' in ticker else ticker
-
-        if corrected_ticker != original_ticker:
-            logger.info(f"Using corrected ticker {corrected_ticker} for {original_ticker} request")
-
-        # Use original ticker for cache key
-        cache_key = original_ticker
-
-        # Set default dates if not provided
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-
-        if start_date is None:
-            # Default to 5 years of historical data
-            start_date = (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
-
-        # Check cache expiry
-        cache_file = self.cache_dir / f"{cache_key}_{start_date}_{end_date}_{interval}_{provider}.pkl"
-
-        if not force_refresh and cache_file.exists():
-            # Check cache age
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < self.cache_expiry_days:
-                try:
-                    with open(cache_file, 'rb') as f:
-                        logger.info(f"Loading {original_ticker} data from cache")
-                        return pickle.load(f)
-                except Exception as e:
-                    logger.warning(f"Failed to load cache for {original_ticker}: {e}")
-
-        # If cache is missing or expired, fetch new data
-        if provider in self.providers:
-            try:
-                # Get data from provider using corrected ticker
-                data = self.providers[provider](corrected_ticker, start_date, end_date, interval)
-
-                # Save to cache if data was retrieved
-                if data is not None and not data.empty:
-                    with open(cache_file, 'wb') as f:
-                        pickle.dump(data, f)
-                    logger.info(f"Saved {original_ticker} data to cache")
-
-                return data
-            except Exception as e:
-                logger.error(f"Error getting data for {original_ticker} from {provider}: {e}")
-                # Try fallback provider if current one fails
-                fallback_provider = next((p for p in self.providers.keys() if p != provider), None)
-                if fallback_provider:
-                    logger.info(f"Trying fallback provider: {fallback_provider}")
-                    return self.get_historical_prices(
-                        ticker, start_date, end_date, fallback_provider, interval, force_refresh
-                    )
-        else:
+        if provider not in self.providers:
             raise ValueError(f"Unsupported data provider: {provider}")
+        ticker = ticker.strip().upper()
+        end_date = end_date or datetime.now().strftime('%Y-%m-%d')
+        start_date = start_date or (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
 
-        # If data retrieval failed
+        order = [provider] + [p for p in self.providers if p != provider]
+        for name in order:
+            path = self._cache_path(f"{ticker}_{start_date}_{end_date}_{interval}_{name}.pkl")
+            data = self._cached(
+                path, self.cache_expiry_days,
+                lambda: normalize_price_frame(self.providers[name](ticker, start_date, end_date, interval)),
+                force_refresh, lambda df: isinstance(df, pd.DataFrame) and not df.empty,
+            )
+            if data is not None:
+                return normalize_price_frame(data)
         return pd.DataFrame()
 
-    def get_company_info(self, ticker: str, provider: str = 'yfinance') -> Dict:
-        """
-        Get company information
+    def _fetch_yfinance(self, ticker: str, start_date: str, end_date: str, interval: str = '1d') -> pd.DataFrame:
+        import yfinance as yf
 
-        Args:
-            ticker: Stock/ETF ticker
-            provider: Data provider
+        self.api_call_counts['yfinance'] += 1
+        # yfinance treats ``end`` as exclusive
+        end_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        data = yf.Ticker(provider_symbol(ticker)).history(start=start_date, end=end_exclusive, interval=interval,
+                                                          auto_adjust=False)
+        if data is None or data.empty:
+            data = yf.download(provider_symbol(ticker), start=start_date, end=end_exclusive, interval=interval,
+                               progress=False, auto_adjust=False, threads=False)
+        return data if data is not None else pd.DataFrame()
 
-        Returns:
-            Dictionary with company information
-        """
-        cache_file = self.cache_dir / f"{ticker}_info_{provider}.json"
-
-        # Check cache (company info cache expires after 7 days)
-        if cache_file.exists():
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < 7:  # Company info updates less frequently
-                try:
-                    with open(cache_file, 'r') as f:
-                        logger.info(f"Loading {ticker} info from cache")
-                        return json.load(f)
-                except Exception as e:
-                    logger.warning(f"Failed to load info cache for {ticker}: {e}")
-
-        info = {}
-
-        try:
-            if provider == 'yfinance':
-                info = self._get_yfinance_company_info(ticker)
-            elif provider == 'alpha_vantage':
-                info = self._get_alpha_vantage_company_info(ticker)
-            else:
-                raise ValueError(f"Unsupported provider for company info: {provider}")
-
-            # Save to cache
-            if info:
-                with open(cache_file, 'w') as f:
-                    json.dump(info, f)
-                logger.info(f"Saved {ticker} info to cache")
-
-            return info
-        except Exception as e:
-            logger.error(f"Error getting information about {ticker}: {e}")
-
-            # Try alternative provider
-            if provider != 'yfinance':
-                logger.info("Trying to get info via yfinance")
-                return self.get_company_info(ticker, 'yfinance')
-
-            return {}
-
-    def get_financial_statements(self, ticker: str, statement_type: str = 'income',
-                                 period: str = 'annual', force_refresh: bool = False) -> pd.DataFrame:
-        """
-        Get financial statements for a company
-
-        Args:
-            ticker: Stock ticker
-            statement_type: Type of statement ('income', 'balance', 'cash')
-            period: Period ('annual' or 'quarterly')
-            force_refresh: Force data refresh even if cache exists
-
-        Returns:
-            DataFrame with financial statement data
-        """
-        cache_file = self.cache_dir / f"{ticker}_{statement_type}_{period}.pkl"
-
-        # Check cache
-        if not force_refresh and cache_file.exists():
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < 7:  # Financial statements update less frequently
-                try:
-                    with open(cache_file, 'rb') as f:
-                        logger.info(f"Loading {ticker} {statement_type} statement from cache")
-                        return pickle.load(f)
-                except Exception as e:
-                    logger.warning(f"Failed to load financial statement cache for {ticker}: {e}")
-
-        try:
-            import yfinance as yf
-
-            # Get data
-            ticker_obj = yf.Ticker(ticker)
-
-            if statement_type == 'income':
-                if period == 'annual':
-                    df = ticker_obj.income_stmt
-                else:
-                    df = ticker_obj.quarterly_income_stmt
-            elif statement_type == 'balance':
-                if period == 'annual':
-                    df = ticker_obj.balance_sheet
-                else:
-                    df = ticker_obj.quarterly_balance_sheet
-            elif statement_type == 'cash':
-                if period == 'annual':
-                    df = ticker_obj.cashflow
-                else:
-                    df = ticker_obj.quarterly_cashflow
-            else:
-                raise ValueError(f"Unsupported statement type: {statement_type}")
-
-            # Save to cache if successful
-            if df is not None and not df.empty:
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(df, f)
-                logger.info(f"Saved {ticker} {statement_type} statement to cache")
-
-            return df
-        except Exception as e:
-            logger.error(f"Error fetching financial statements for {ticker}: {e}")
+    def _fetch_alpha_vantage(self, ticker: str, start_date: str, end_date: str, interval: str = '1d') -> pd.DataFrame:
+        functions = {'1d': 'TIME_SERIES_DAILY', '1wk': 'TIME_SERIES_WEEKLY', '1mo': 'TIME_SERIES_MONTHLY'}
+        data = self._alpha_vantage_request({"function": functions.get(interval, 'TIME_SERIES_DAILY'),
+                                            "symbol": provider_symbol(ticker), "outputsize": "full"})
+        series_key = next((k for k in (data or {}) if k.startswith("Time Series")), None)
+        if not series_key:
             return pd.DataFrame()
+        df = pd.DataFrame.from_dict(data[series_key], orient='index')
+        df = df.rename(columns=lambda c: {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close',
+                                          'adjusted close': 'Adj Close', 'volume': 'Volume'}.get(
+            re.sub(r'^\d+\.\s*', '', c), c))
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        return df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
 
-    def get_financial_ratios(self, ticker: str, force_refresh: bool = False) -> Dict:
-        """
-        Get financial ratios for a company
-
-        Args:
-            ticker: Stock ticker
-            force_refresh: Force data refresh even if cache exists
-
-        Returns:
-            Dictionary of financial ratios
-        """
-        cache_file = self.cache_dir / f"{ticker}_ratios.json"
-
-        # Check cache
-        if not force_refresh and cache_file.exists():
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < 7:  # Ratios update less frequently
-                try:
-                    with open(cache_file, 'r') as f:
-                        logger.info(f"Loading {ticker} ratios from cache")
-                        return json.load(f)
-                except Exception as e:
-                    logger.warning(f"Failed to load ratios cache for {ticker}: {e}")
-
-        try:
-            # Try to get company info which has some ratios
-            info = self.get_company_info(ticker)
-
-            # Basic ratios from company info
-            ratios = {
-                "valuation": {
-                    "pe_ratio": info.get("pe_ratio"),
-                    "forward_pe": info.get("forward_pe"),
-                    "pb_ratio": info.get("pb_ratio"),
-                    "dividend_yield": info.get("dividend_yield")
-                },
-                "profitability": {
-                    "return_on_equity": info.get("return_on_equity"),
-                    "return_on_assets": info.get("return_on_assets"),
-                    "profit_margins": info.get("profit_margins"),
-                    "operating_margins": info.get("operating_margins"),
-                    "gross_margins": info.get("gross_margins")
-                },
-                "last_updated": datetime.now().strftime('%Y-%m-%d')
-            }
-
-            # Try to calculate additional ratios from financial statements
-            try:
-                # Get financial statements
-                income_statement = self.get_financial_statements(ticker, 'income')
-                balance_sheet = self.get_financial_statements(ticker, 'balance')
-                cash_flow = self.get_financial_statements(ticker, 'cash')
-
-                if not income_statement.empty and not balance_sheet.empty:
-                    # Get latest data
-                    latest_income = income_statement.iloc[:, 0]
-                    latest_balance = balance_sheet.iloc[:, 0]
-
-                    # Calculate additional ratios
-                    if 'Total Revenue' in latest_income and 'Total Assets' in latest_balance:
-                        ratios["efficiency"] = {
-                            "asset_turnover": latest_income['Total Revenue'] / latest_balance['Total Assets']
-                        }
-
-                    if 'Total Current Assets' in latest_balance and 'Total Current Liabilities' in latest_balance:
-                        ratios["liquidity"] = {
-                            "current_ratio": latest_balance['Total Current Assets'] / latest_balance[
-                                'Total Current Liabilities']
-                        }
-
-                        # Quick ratio if we have inventory data
-                        if 'Inventory' in latest_balance:
-                            quick_ratio = (latest_balance['Total Current Assets'] - latest_balance['Inventory']) / \
-                                          latest_balance['Total Current Liabilities']
-                            ratios["liquidity"]["quick_ratio"] = quick_ratio
-
-                    if 'Total Debt' in latest_balance and 'Total Stockholder Equity' in latest_balance:
-                        ratios["leverage"] = {
-                            "debt_to_equity": latest_balance['Total Debt'] / latest_balance['Total Stockholder Equity']
-                        }
-            except Exception as e:
-                logger.warning(f"Error calculating additional ratios for {ticker}: {e}")
-
-            # Save to cache
-            with open(cache_file, 'w') as f:
-                json.dump(ratios, f)
-            logger.info(f"Saved {ticker} ratios to cache")
-
-            return ratios
-        except Exception as e:
-            logger.error(f"Error getting financial ratios for {ticker}: {e}")
-            return {}
-
-    def get_sector_data(self, sector: str, force_refresh: bool = False) -> pd.DataFrame:
-        """
-        Get aggregated data for a specific sector
-
-        Args:
-            sector: Market sector name
-            force_refresh: Force data refresh even if cache exists
-
-        Returns:
-            DataFrame with sector data
-        """
-        cache_file = self.cache_dir / f"sector_{sector.lower().replace(' ', '_')}.pkl"
-
-        # Check cache
-        if not force_refresh and cache_file.exists():
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < 7:  # Sector data updates less frequently
-                try:
-                    with open(cache_file, 'rb') as f:
-                        logger.info(f"Loading {sector} sector data from cache")
-                        return pickle.load(f)
-                except Exception as e:
-                    logger.warning(f"Failed to load sector data cache for {sector}: {e}")
-
-        try:
-            # Define sector ETFs to use as proxies
-            sector_etfs = {
-                "Information Technology": "XLK",
-                "Healthcare": "XLV",
-                "Financials": "XLF",
-                "Consumer Discretionary": "XLY",
-                "Consumer Staples": "XLP",
-                "Energy": "XLE",
-                "Utilities": "XLU",
-                "Real Estate": "XLRE",
-                "Materials": "XLB",
-                "Industrials": "XLI",
-                "Communication Services": "XLC"
-            }
-
-            if sector not in sector_etfs:
-                logger.warning(f"No sector ETF defined for {sector}")
-                return pd.DataFrame()
-
-            # Get historical prices for the sector ETF
-            etf_ticker = sector_etfs[sector]
-            start_date = (datetime.now() - timedelta(days=365 * 3)).strftime('%Y-%m-%d')
-
-            etf_data = self.get_historical_prices(etf_ticker, start_date=start_date)
-
-            # Calculate sector performance metrics
-            if not etf_data.empty:
-                # Save to cache
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(etf_data, f)
-                logger.info(f"Saved {sector} sector data to cache")
-
-                return etf_data
-
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Error getting sector data for {sector}: {e}")
-            return pd.DataFrame()
-
-    def search_tickers(self, query: str, limit: int = 10, provider: str = 'alpha_vantage') -> List[Dict]:
-        """
-        Search for tickers based on a query
-
-        Args:
-            query: Search query
-            limit: Maximum number of results
-            provider: Data provider
-
-        Returns:
-            List of dictionaries with ticker information
-        """
-        cache_key = f"search_{query.lower()}_{provider}.json"
-        cache_file = self.cache_dir / cache_key
-
-        # Check cache (search results expire after 3 days)
-        if cache_file.exists():
-            file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if file_age.days < 3:
-                try:
-                    with open(cache_file, 'r') as f:
-                        results = json.load(f)
-                        logger.info(f"Loading search results for '{query}' from cache")
-                        return results[:limit]
-                except Exception as e:
-                    logger.warning(f"Failed to load search cache: {e}")
-
-        results = []
-
-        try:
-            if provider == 'alpha_vantage':
-                results = self._search_alpha_vantage(query, limit)
-            elif provider == 'yfinance':
-                # yfinance doesn't have a direct search API, use alternative
-                results = self._search_alternative(query, limit)
-            else:
-                raise ValueError(f"Unsupported provider for search: {provider}")
-
-            # Save to cache
-            if results:
-                with open(cache_file, 'w') as f:
-                    json.dump(results, f)
-                logger.info(f"Saved search results for '{query}' to cache")
-
-            return results[:limit]
-        except Exception as e:
-            logger.error(f"Error searching for tickers with query '{query}': {e}")
-
-            # Try alternative provider
-            if provider != 'alpha_vantage' and self.api_keys['alpha_vantage']:
-                return self.search_tickers(query, limit, 'alpha_vantage')
-
-            return []
-
-    def get_macro_indicators(self, indicators: List[str], start_date: Optional[str] = None,
-                             end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
-        """
-        Get macroeconomic indicators
-
-        Args:
-            indicators: List of indicators
-            start_date: Start date
-            end_date: End date
-
-        Returns:
-            Dictionary {indicator: DataFrame}
-        """
-        results = {}
-
-        # Map indicator codes to FRED codes
-        indicator_mapping = {
-            'INFLATION': 'CPIAUCSL',  # Consumer Price Index
-            'GDP': 'GDP',  # Gross Domestic Product
-            'UNEMPLOYMENT': 'UNRATE',  # Unemployment Rate
-            'INTEREST_RATE': 'FEDFUNDS',  # Federal Funds Rate
-            'RETAIL_SALES': 'RSXFS',  # Retail Sales
-            'INDUSTRIAL_PRODUCTION': 'INDPRO',  # Industrial Production Index
-            'HOUSE_PRICE_INDEX': 'CSUSHPISA',  # Case-Shiller Home Price Index
-            'CONSUMER_SENTIMENT': 'UMCSENT'  # University of Michigan Consumer Sentiment
-        }
-
-        try:
-            import pandas_datareader.data as web
-
-            # Set up dates
-            if end_date is None:
-                end_date = datetime.now().strftime('%Y-%m-%d')
-
-            if start_date is None:
-                start_date = (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
-
-            # Convert date strings to datetime
-            start_date_dt = pd.to_datetime(start_date)
-            end_date_dt = pd.to_datetime(end_date)
-
-            # Get data for each indicator
-            for indicator in indicators:
-                try:
-                    # Convert indicator to FRED code
-                    fred_code = indicator_mapping.get(indicator, indicator)
-
-                    # Load data from FRED
-                    data = web.DataReader(fred_code, 'fred', start_date_dt, end_date_dt)
-
-                    # Save to results
-                    results[indicator] = data
-
-                    logger.info(f"Loaded macroeconomic indicator {indicator} ({fred_code})")
-                except Exception as e:
-                    logger.error(f"Error when loading indicator {indicator}: {e}")
-                    results[indicator] = pd.DataFrame()
-
-            return results
-        except ImportError:
-            logger.error("pandas_datareader not installed. Install it with pip install pandas-datareader")
-            return {indicator: pd.DataFrame() for indicator in indicators}
-        except Exception as e:
-            logger.error(f"Error when getting macroeconomic indicators: {e}")
-            return {indicator: pd.DataFrame() for indicator in indicators}
+    def _alpha_vantage_request(self, params: Dict[str, str]) -> Optional[Dict]:
+        if not self.api_keys.get('alpha_vantage'):
+            return None
+        if self.api_call_counts['alpha_vantage'] >= self.api_limits['alpha_vantage']:
+            logger.warning("Alpha Vantage API call limit reached for this session")
+            return None
+        self.api_call_counts['alpha_vantage'] += 1
+        response = requests.get(ALPHA_VANTAGE_URL, params={**params, "apikey": self.api_keys['alpha_vantage']},
+                                timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or "Error Message" in data or "Note" in data or "Information" in data:
+            logger.warning(f"Alpha Vantage returned no data for {params.get('symbol') or params.get('keywords')}")
+            return None
+        return data
 
     def get_batch_data(self, tickers: List[str], start_date: Optional[str] = None,
                        end_date: Optional[str] = None, provider: str = 'yfinance') -> Dict[str, pd.DataFrame]:
-        """
-        Get data for multiple tickers at once
-
-        Args:
-            tickers: List of tickers
-            start_date: Start date
-            end_date: End date
-            provider: Data provider
-
-        Returns:
-            Dictionary {ticker: DataFrame}
-        """
-        results = {}
-
-        # Process special tickers with dots
-        ticker_mapping = {}
-        corrected_tickers = []
-
-        for ticker in tickers:
-            if '.' in ticker:
-                # Replace dot with dash for data request
-                corrected_ticker = ticker.replace('.', '-')
-                ticker_mapping[corrected_ticker] = ticker
-                corrected_tickers.append(corrected_ticker)
-            else:
-                corrected_tickers.append(ticker)
-                ticker_mapping[ticker] = ticker
-
-        if ticker_mapping:
-            logger.info(f"Ticker substitution for data request: {ticker_mapping}")
-
-        # Implement multi-threaded loading for yfinance
-        if provider == 'yfinance' and len(corrected_tickers) > 1:
-            try:
-                import yfinance as yf
-
-                # Set default dates if not provided
-                if end_date is None:
-                    end_date = datetime.now().strftime('%Y-%m-%d')
-
-                if start_date is None:
-                    start_date = (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
-
-                # Check cache for each ticker (use original tickers for file names)
-                tickers_to_download = []
-                download_mapping = {}  # Mapping for download: {corrected_ticker: original_ticker}
-
-                for original_ticker in tickers:
-                    cache_file = self.cache_dir / f"{original_ticker}_{start_date}_{end_date}_1d_{provider}.pkl"
-                    if cache_file.exists():
-                        file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-                        if file_age.days < self.cache_expiry_days:
-                            try:
-                                with open(cache_file, 'rb') as f:
-                                    results[original_ticker] = pickle.load(f)
-                                    logger.info(f"Loading {original_ticker} data from cache")
-                                    continue
-                            except Exception as e:
-                                logger.warning(f"Failed to load cache for {original_ticker}: {e}")
-
-                    # Find corrected ticker for download
-                    corrected_ticker = original_ticker.replace('.', '-') if '.' in original_ticker else original_ticker
-                    tickers_to_download.append(corrected_ticker)
-                    download_mapping[corrected_ticker] = original_ticker
-
-                # Download missing data
-                if tickers_to_download:
-                    self.api_call_counts['yfinance'] += 1
-
-                    # Download data in one request
-                    data = yf.download(
-                        tickers_to_download,
-                        start=start_date,
-                        end=end_date,
-                        interval='1d',
-                        group_by='ticker',
-                        progress=False,
-                        show_errors=False
-                    )
-
-                    # Process and save data for each ticker
-                    for corrected_ticker, original_ticker in download_mapping.items():
-                        if len(tickers_to_download) == 1:
-                            # If only one ticker, data is not grouped
-                            ticker_data = data
-                        else:
-                            # Extract data for specific ticker
-                            ticker_data = data[corrected_ticker].copy() if corrected_ticker in data else pd.DataFrame()
-
-                        # Check and save data
-                        if not ticker_data.empty:
-                            # Save to cache under original name
-                            cache_file = self.cache_dir / f"{original_ticker}_{start_date}_{end_date}_1d_{provider}.pkl"
-                            with open(cache_file, 'wb') as f:
-                                pickle.dump(ticker_data, f)
-
-                            results[original_ticker] = ticker_data
-                            logger.info(
-                                f"Downloaded and saved data for {original_ticker} (requested as {corrected_ticker})")
-
-                return results
-            except ImportError:
-                logger.error("yfinance not installed. Install it with pip install yfinance")
-            except Exception as e:
-                logger.error(f"Error during batch data download: {e}")
-                # Continue with sequential loading as fallback
-
-        # Sequential loading for each ticker
-        for original_ticker in tickers:
-            try:
-                # For single loading use the modified get_historical_prices method
-                corrected_ticker = original_ticker.replace('.', '-') if '.' in original_ticker else original_ticker
-
-                # Temporarily replace ticker for request
-                data = self.get_historical_prices(corrected_ticker, start_date, end_date, provider)
-
-                if not data.empty:
-                    # Save under original ticker
-                    results[original_ticker] = data
-            except Exception as e:
-                logger.error(f"Error loading data for {original_ticker}: {e}")
-
+        """Historical prices for several tickers: ``{ticker: DataFrame}`` (missing tickers omitted)."""
+        results: Dict[str, pd.DataFrame] = {}
+        for ticker in dict.fromkeys(t.strip().upper() for t in tickers if t and t.strip()):
+            data = self.get_historical_prices(ticker, start_date, end_date, provider)
+            if not data.empty:
+                results[ticker] = data
         return results
 
-    # Methods for specific data providers
+    # ------------------------------------------------------------------
+    # Company information
+    # ------------------------------------------------------------------
+    def get_company_info(self, ticker: str, provider: str = 'yfinance') -> Dict:
+        """
+        Normalised company information.
 
-    def _fetch_yfinance(self, ticker: str, start_date: str, end_date: str, interval: str = '1d') -> pd.DataFrame:
-        """Fetch data via yfinance"""
-        try:
-            import yfinance as yf
+        Keys: ``symbol``, ``name``, ``sector`` (canonical, see
+        ``config.normalize_sector``), ``sector_raw``, ``industry``, ``country``,
+        ``exchange``, ``currency``, ``market_cap``, ``current_price``,
+        ``shares_outstanding``, ``pe_ratio``, ``forward_pe``, ``pb_ratio``,
+        ``ps_ratio``, ``ev_ebitda``, ``enterprise_value``, ``dividend_yield``
+        (fraction), ``beta``, ``description``, ``website``, ``employees``,
+        ``type``, ``return_on_equity``, ``return_on_assets``, ``profit_margins``,
+        ``operating_margins``, ``gross_margins``, ``fifty_two_week_high``,
+        ``fifty_two_week_low``, ``last_updated``. Empty dict when unknown.
+        """
+        ticker = ticker.strip().upper()
+        fetchers = {'yfinance': self._get_yfinance_company_info,
+                    'alpha_vantage': self._get_alpha_vantage_company_info}
+        if provider not in fetchers:
+            raise ValueError(f"Unsupported provider for company info: {provider}")
+        order = [provider] + [p for p in fetchers if p != provider]
+        for name in order:
+            path = self._cache_path(f"{ticker}_info_{name}.json")
+            info = self._cached(path, INFO_CACHE_DAYS, lambda: fetchers[name](ticker), False,
+                                lambda d: isinstance(d, dict) and bool(d.get('name')))
+            if info:
+                return self._finalize_info(info, ticker)
+        return {}
 
-            # Check if ticker contains a dot and create corrected version for API
-            original_ticker = ticker
-            corrected_ticker = ticker.replace('.', '-') if '.' in ticker else ticker
-
-            if corrected_ticker != original_ticker:
-                logger.info(f"Using corrected ticker {corrected_ticker} for request {original_ticker}")
-
-            # Increment API call counter
-            self.api_call_counts['yfinance'] += 1
-
-            try:
-                # First method - use Ticker.history with corrected ticker
-                ticker_obj = yf.Ticker(corrected_ticker)
-                data = ticker_obj.history(start=start_date, end=end_date, interval=interval)
-
-                if data is None or data.empty:
-                    # If that didn't work, try through download
-                    data = yf.download(
-                        corrected_ticker,
-                        start=start_date,
-                        end=end_date,
-                        interval=interval,
-                        progress=False,
-                        show_errors=False
-                    )
-
-                # Check and handle empty data
-                if data is None or data.empty:
-                    logger.warning(
-                        f"No data found for {original_ticker} (requested as {corrected_ticker}) through yfinance")
-                    return pd.DataFrame()
-
-                # Check and correct index if it's not DatetimeIndex
-                if not isinstance(data.index, pd.DatetimeIndex):
-                    try:
-                        data.index = pd.to_datetime(data.index)
-                    except Exception as e:
-                        logger.warning(f"Failed to convert index to DatetimeIndex: {e}")
-
-                # Make sure all our columns exist
-                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-                for col in required_columns:
-                    if col not in data.columns:
-                        if col == 'Volume' and 'volume' in data.columns:
-                            data['Volume'] = data['volume']
-                        else:
-                            data[col] = np.nan
-
-                # If 'Adj Close' is missing, use 'Close'
-                if 'Adj Close' not in data.columns:
-                    data['Adj Close'] = data['Close']
-
-                return data
-
-            except Exception as e:
-                logger.error(f"Error getting data via yfinance for {ticker} (requested as {corrected_ticker}): {e}")
-                return pd.DataFrame()
-        except ImportError:
-            logger.error("yfinance not installed. Install it with pip install yfinance")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Error getting data via yfinance for {ticker}: {e}")
-            return pd.DataFrame()
-
-    def _fetch_alpha_vantage(self, ticker: str, start_date: str, end_date: str, interval: str = '1d') -> pd.DataFrame:
-        """Fetch data via Alpha Vantage API"""
-        if not self.api_keys['alpha_vantage']:
-            logger.error("Alpha Vantage API key not set")
-            return pd.DataFrame()
-
-        # Check API limits
-        if self.api_call_counts['alpha_vantage'] >= self.api_limits['alpha_vantage']:
-            logger.warning("Alpha Vantage API call limit reached")
-            return pd.DataFrame()
-
-        # Check if ticker contains a dot and create corrected version for API
-        original_ticker = ticker
-        corrected_ticker = ticker.replace('.', '-') if '.' in ticker else ticker
-
-        if corrected_ticker != original_ticker:
-            logger.info(
-                f"Using corrected ticker {corrected_ticker} for Alpha Vantage request {original_ticker}")
-
-        # Interval mapping
-        interval_map = {
-            '1d': 'daily',
-            '1wk': 'weekly',
-            '1mo': 'monthly'
-        }
-
-        function = f"TIME_SERIES_{interval_map.get(interval, 'daily').upper()}"
-
-        try:
-            # Build URL
-            base_url = "https://www.alphavantage.co/query"
-            params = {
-                "function": function,
-                "symbol": corrected_ticker,  # Use corrected ticker
-                "apikey": self.api_keys['alpha_vantage'],
-                "outputsize": "full"
-            }
-
-            # Increment API call counter
-            self.api_call_counts['alpha_vantage'] += 1
-
-            # Make request
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()  # Check for HTTP errors
-
-            data = response.json()
-
-            # Check for errors in response
-            if "Error Message" in data:
-                logger.error(f"Alpha Vantage API returned error for {ticker} (requested as {corrected_ticker}): {data['Error Message']}")
-                return pd.DataFrame()
-
-            # Determine time series key based on function
-            time_series_key = next((k for k in data.keys() if k.startswith("Time Series")), None)
-
-            if not time_series_key:
-                logger.error(f"Unexpected Alpha Vantage response format for {original_ticker}: {data.keys()}")
-                return pd.DataFrame()
-
-            # Convert data to DataFrame
-            time_series_data = data[time_series_key]
-
-            # Create DataFrame
-            df = pd.DataFrame.from_dict(time_series_data, orient='index')
-
-            # Convert column names
-            column_map = {
-                '1. open': 'Open',
-                '2. high': 'High',
-                '3. low': 'Low',
-                '4. close': 'Close',
-                '5. adjusted close': 'Adj Close',
-                '5. volume': 'Volume',
-                '6. volume': 'Volume'
-            }
-
-            df = df.rename(columns=column_map)
-
-            # Convert data types
-            for col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            # Set index as DatetimeIndex
-            df.index = pd.to_datetime(df.index)
-
-            # Sort by date
-            df = df.sort_index()
-
-            # Filter by specified dates
-            if start_date:
-                df = df[df.index >= start_date]
-            if end_date:
-                df = df[df.index <= end_date]
-
-            return df
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error to Alpha Vantage API for {original_ticker}: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Error processing Alpha Vantage data for {original_ticker}: {e}")
-            return pd.DataFrame()
+    @staticmethod
+    def _finalize_info(info: Dict, ticker: str) -> Dict:
+        """Apply normalisations that also need to hold for older cache entries."""
+        info = dict(info)
+        info['symbol'] = info.get('symbol') or ticker
+        raw_sector = info.get('sector_raw', info.get('sector'))
+        info['sector_raw'] = raw_sector
+        info['sector'] = normalize_sector(raw_sector)
+        info['dividend_yield'] = normalize_dividend_yield(info.get('dividend_yield'))
+        for key in ('industry', 'country', 'exchange', 'description', 'website'):
+            if info.get(key) in (None, '', 'None'):
+                info[key] = 'N/A'
+        info.setdefault('currency', 'USD')
+        return info
 
     def _get_yfinance_company_info(self, ticker: str) -> Dict:
-        """Get company information via yfinance"""
-        try:
-            import yfinance as yf
+        import yfinance as yf
 
-            # Check if ticker contains a dot and create corrected version for API
-            original_ticker = ticker
-            corrected_ticker = ticker.replace('.', '-') if '.' in ticker else ticker
-
-            if corrected_ticker != original_ticker:
-                logger.info(
-                    f"Using corrected ticker {corrected_ticker} for company info request {original_ticker}")
-
-            # Increment API call counter
-            self.api_call_counts['yfinance'] += 1
-
-            # Get data
-            ticker_obj = yf.Ticker(corrected_ticker)
-            info = ticker_obj.info
-
-            # Process and normalize data
-            # Some keys may be missing, add basic checks
-            normalized_info = {
-                'symbol': original_ticker,  # Keep original ticker
-                'name': info.get('longName', info.get('shortName', original_ticker)),
-                'sector': info.get('sector', 'N/A'),
-                'industry': info.get('industry', 'N/A'),
-                'country': info.get('country', 'N/A'),
-                'exchange': info.get('exchange', 'N/A'),
-                'currency': info.get('currency', 'USD'),
-                'market_cap': info.get('marketCap', None),
-                'pe_ratio': info.get('trailingPE', None),
-                'forward_pe': info.get('forwardPE', None),
-                'pb_ratio': info.get('priceToBook', None),
-                'dividend_yield': info.get('dividendYield', None) if info.get('dividendYield') else None,
-                'beta': info.get('beta', None),
-                'description': info.get('longBusinessSummary', 'N/A'),
-                'website': info.get('website', 'N/A'),
-                'employees': info.get('fullTimeEmployees', None),
-                'logo_url': info.get('logo_url', None),
-                'type': self._determine_asset_type(info),
-                'last_updated': datetime.now().strftime('%Y-%m-%d')
-            }
-
-            # Add financial metrics if available
-            for metric in ['returnOnEquity', 'returnOnAssets', 'profitMargins', 'operatingMargins', 'grossMargins']:
-                if metric in info:
-                    normalized_info[self._camel_to_snake(metric)] = info[metric]
-
-            return normalized_info
-        except ImportError:
-            logger.error("yfinance not installed. Install it with pip install yfinance")
+        self.api_call_counts['yfinance'] += 1
+        info = yf.Ticker(provider_symbol(ticker)).info or {}
+        if not info or not (info.get('longName') or info.get('shortName')):
             return {}
-        except Exception as e:
-            logger.error(f"Error getting company info via yfinance for {ticker}: {e}")
-            return {}
+        quote_type = str(info.get('quoteType', '')).lower()
+        normalized = {
+            'symbol': ticker,
+            'name': info.get('longName') or info.get('shortName') or ticker,
+            'sector': info.get('sector') or ('N/A' if quote_type != 'etf' else 'ETF'),
+            'industry': info.get('industry') or 'N/A',
+            'country': info.get('country') or 'N/A',
+            'exchange': info.get('exchange') or 'N/A',
+            'currency': info.get('currency') or 'USD',
+            'market_cap': to_float(info.get('marketCap')),
+            'current_price': to_float(info.get('currentPrice') or info.get('regularMarketPrice')
+                                      or info.get('previousClose')),
+            'shares_outstanding': to_float(info.get('sharesOutstanding')),
+            'pe_ratio': to_float(info.get('trailingPE')),
+            'forward_pe': to_float(info.get('forwardPE')),
+            'pb_ratio': to_float(info.get('priceToBook')),
+            'ps_ratio': to_float(info.get('priceToSalesTrailing12Months')),
+            'ev_ebitda': to_float(info.get('enterpriseToEbitda')),
+            'enterprise_value': to_float(info.get('enterpriseValue')),
+            'dividend_yield': to_float(info.get('dividendYield')),
+            'beta': to_float(info.get('beta')),
+            'description': info.get('longBusinessSummary') or 'N/A',
+            'website': info.get('website') or 'N/A',
+            'employees': info.get('fullTimeEmployees'),
+            'type': self._determine_asset_type(info),
+            'fifty_two_week_high': to_float(info.get('fiftyTwoWeekHigh')),
+            'fifty_two_week_low': to_float(info.get('fiftyTwoWeekLow')),
+            'last_updated': datetime.now().strftime('%Y-%m-%d'),
+        }
+        for metric in ('returnOnEquity', 'returnOnAssets', 'profitMargins', 'operatingMargins', 'grossMargins'):
+            if info.get(metric) is not None:
+                normalized[self._camel_to_snake(metric)] = to_float(info[metric])
+        return normalized
 
     def _get_alpha_vantage_company_info(self, ticker: str) -> Dict:
-        """Get company information via Alpha Vantage"""
-        if not self.api_keys['alpha_vantage']:
-            logger.error("Alpha Vantage API key not set")
+        data = self._alpha_vantage_request({"function": "OVERVIEW", "symbol": provider_symbol(ticker)})
+        if not data or not data.get('Name'):
             return {}
+        number = lambda key: to_float(data.get(key)) if data.get(key) not in (None, 'None', '-') else None  # noqa: E731
+        return {
+            'symbol': ticker,
+            'name': data.get('Name', ticker),
+            'sector': data.get('Sector', 'N/A'),
+            'industry': data.get('Industry', 'N/A'),
+            'country': data.get('Country', 'N/A'),
+            'exchange': data.get('Exchange', 'N/A'),
+            'currency': data.get('Currency', 'USD'),
+            'market_cap': number('MarketCapitalization'),
+            'shares_outstanding': number('SharesOutstanding'),
+            'pe_ratio': number('PERatio'),
+            'forward_pe': number('ForwardPE'),
+            'pb_ratio': number('PriceToBookRatio'),
+            'ps_ratio': number('PriceToSalesRatioTTM'),
+            'ev_ebitda': number('EVToEBITDA'),
+            'dividend_yield': number('DividendYield'),
+            'beta': number('Beta'),
+            'description': data.get('Description', 'N/A'),
+            'type': 'Stock',
+            'return_on_equity': number('ReturnOnEquityTTM'),
+            'return_on_assets': number('ReturnOnAssetsTTM'),
+            'profit_margins': number('ProfitMargin'),
+            'operating_margins': number('OperatingMarginTTM'),
+            'fifty_two_week_high': number('52WeekHigh'),
+            'fifty_two_week_low': number('52WeekLow'),
+            'last_updated': datetime.now().strftime('%Y-%m-%d'),
+        }
 
-        # Check API limits
-        if self.api_call_counts['alpha_vantage'] >= self.api_limits['alpha_vantage']:
-            logger.warning("Alpha Vantage API call limit reached")
-            return {}
-
-        # Check if ticker contains a dot and create corrected version for API
-        original_ticker = ticker
-        corrected_ticker = ticker.replace('.', '-') if '.' in ticker else ticker
-
-        if corrected_ticker != original_ticker:
-            logger.info(
-                f"Using corrected ticker {corrected_ticker} for Alpha Vantage company info request {original_ticker}")
-
-        try:
-            # Build URL for overview
-            base_url = "https://www.alphavantage.co/query"
-            params = {
-                "function": "OVERVIEW",
-                "symbol": corrected_ticker,  # Use corrected ticker
-                "apikey": self.api_keys['alpha_vantage']
-            }
-
-            # Increment API call counter
-            self.api_call_counts['alpha_vantage'] += 1
-
-            # Make request
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-
-            data = response.json()
-
-            # Check for data presence
-            if not data or ("Error Message" in data) or len(data.keys()) <= 1:
-                logger.warning(
-                    f"Alpha Vantage returned no data for {original_ticker} (requested as {corrected_ticker})")
-                return {}
-
-            # Transform and normalize data
-            normalized_info = {
-                'symbol': original_ticker,  # Keep original ticker
-                'name': data.get('Name', original_ticker),
-                'sector': data.get('Sector', 'N/A'),
-                'industry': data.get('Industry', 'N/A'),
-                'country': data.get('Country', 'N/A'),
-                'exchange': data.get('Exchange', 'N/A'),
-                'currency': data.get('Currency', 'USD'),
-                'market_cap': self._safe_convert(data.get('MarketCapitalization'), float),
-                'pe_ratio': self._safe_convert(data.get('PERatio'), float),
-                'forward_pe': self._safe_convert(data.get('ForwardPE'), float),
-                'pb_ratio': self._safe_convert(data.get('PriceToBookRatio'), float),
-                'dividend_yield': self._safe_convert(data.get('DividendYield'), float),
-                'beta': self._safe_convert(data.get('Beta'), float),
-                'description': data.get('Description', 'N/A'),
-                'last_updated': datetime.now().strftime('%Y-%m-%d')
-            }
-
-            # Add financial metrics
-            for key in ['ReturnOnEquityTTM', 'ReturnOnAssetsTTM', 'ProfitMargin', 'OperatingMarginTTM',
-                        'GrossProfitTTM']:
-                if key in data:
-                    normalized_key = self._camel_to_snake(key.replace('TTM', ''))
-                    normalized_info[normalized_key] = self._safe_convert(data[key], float)
-
-            return normalized_info
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error to Alpha Vantage API for company info {original_ticker}: {e}")
-            return {}
-        except Exception as e:
-            logger.error(f"Error processing Alpha Vantage company info for {original_ticker}: {e}")
-            return {}
-
-    def _search_alpha_vantage(self, query: str, limit: int = 10) -> List[Dict]:
-        """Search tickers via Alpha Vantage"""
-        if not self.api_keys['alpha_vantage']:
-            logger.error("Alpha Vantage API key not set")
-            return []
-
-        # Check API limits
-        if self.api_call_counts['alpha_vantage'] >= self.api_limits['alpha_vantage']:
-            logger.warning("Alpha Vantage API call limit reached")
-            return []
-
-        try:
-            # Build URL
-            base_url = "https://www.alphavantage.co/query"
-            params = {
-                "function": "SYMBOL_SEARCH",
-                "keywords": query,
-                "apikey": self.api_keys['alpha_vantage']
-            }
-
-            # Increment API call counter
-            self.api_call_counts['alpha_vantage'] += 1
-
-            # Make request
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-
-            data = response.json()
-
-            results = []
-            if 'bestMatches' in data:
-                for match in data['bestMatches'][:limit]:
-                    # Get symbol from result
-                    symbol = match.get('1. symbol', '')
-
-                    # Check if symbol contains dash which may be representation of a dot
-                    # Replace dash with dot for display to user if it matches
-                    # known format of tickers with dots (e.g., BRK-B -> BRK.B)
-                    display_symbol = symbol
-                    if '-' in symbol:
-                        # Only for known patterns (e.g., BRK-B, BF-B)
-                        known_patterns = ['BRK-B', 'BF-B']
-                        if symbol in known_patterns or (len(symbol.split('-')) == 2 and len(symbol.split('-')[1]) == 1):
-                            display_symbol = symbol.replace('-', '.')
-                            logger.info(f"Transformed ticker in search results: {symbol} -> {display_symbol}")
-
-                    results.append({
-                        'symbol': display_symbol,  # Display with dot if appropriate format
-                        'original_symbol': symbol,  # Keep original symbol
-                        'name': match.get('2. name', ''),
-                        'type': match.get('3. type', ''),
-                        'region': match.get('4. region', ''),
-                        'currency': match.get('8. currency', 'USD'),
-                        'exchange': match.get('5. marketOpen', '') + '-' + match.get('6. marketClose', ''),
-                        'timezone': match.get('7. timezone', '')
-                    })
-
-            return results
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error to Alpha Vantage API for search: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Error searching tickers via Alpha Vantage: {e}")
-            return []
-
-    def _search_alternative(self, query: str, limit: int = 10) -> List[Dict]:
+    # ------------------------------------------------------------------
+    # Financial statements
+    # ------------------------------------------------------------------
+    def get_financial_statements(self, ticker: str, statement_type: str = 'income',
+                                 period: str = 'annual', force_refresh: bool = False) -> pd.DataFrame:
         """
-        Alternative method for searching tickers via Yahoo Finance API
+        Financial statement in yfinance layout.
 
         Args:
-            query: Search query
-            limit: Maximum number of results
-
-        Returns:
-            List of dictionaries with found ticker information
+            ticker: Stock ticker.
+            statement_type: ``income``, ``balance`` or ``cash``.
+            period: ``annual`` or ``quarterly``.
         """
-        try:
-            import yfinance as yf
-            import json
-            import requests
+        if (statement_type, period) not in STATEMENT_ATTRIBUTES:
+            raise ValueError(f"Unsupported statement: {statement_type}/{period}")
+        ticker = ticker.strip().upper()
+        path = self._cache_path(f"{ticker}_{statement_type}_{period}.pkl")
+        data = self._cached(path, STATEMENT_CACHE_DAYS,
+                            lambda: self._fetch_statement(ticker, statement_type, period), force_refresh,
+                            lambda df: isinstance(df, pd.DataFrame) and not df.empty)
+        return data if data is not None else pd.DataFrame()
 
-            # Use Yahoo Finance API for search
-            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount={limit}&newsCount=0"
-            headers = {'User-Agent': 'Mozilla/5.0'}
+    def _fetch_statement(self, ticker: str, statement_type: str, period: str) -> pd.DataFrame:
+        import yfinance as yf
 
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                logger.error(f"Error requesting Yahoo Finance API: {response.status_code}")
-                return []
+        self.api_call_counts['yfinance'] += 1
+        df = getattr(yf.Ticker(provider_symbol(ticker)), STATEMENT_ATTRIBUTES[(statement_type, period)])
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        df.columns = pd.to_datetime(df.columns, errors='coerce')
+        df = df.loc[:, ~df.columns.isna()]
+        return df[sorted(df.columns, reverse=True)].apply(pd.to_numeric, errors='coerce')
 
-            data = response.json()
-
-            results = []
-            if 'quotes' in data and data['quotes']:
-                for quote in data['quotes'][:limit]:
-                    # Transform format to match Alpha Vantage
-                    ticker = quote.get('symbol', '')
-
-                    # Check if ticker contains dash which may be representation of a dot
-                    display_ticker = ticker
-                    if '-' in ticker:
-                        if len(ticker.split('-')) == 2 and len(ticker.split('-')[1]) == 1:
-                            display_ticker = ticker.replace('-', '.')
-
-                    results.append({
-                        'symbol': display_ticker,
-                        'original_symbol': ticker,
-                        'name': quote.get('shortname', quote.get('longname', '')),
-                        'type': quote.get('quoteType', ''),
-                        'region': quote.get('region', 'US'),
-                        'currency': quote.get('currency', 'USD'),
-                        'exchange': quote.get('exchange', '')
-                    })
-
-            return results
-        except Exception as e:
-            logger.error(f"Error searching tickers via Yahoo Finance: {e}")
-            return []
-
-    # Helper methods
-
-    def _determine_asset_type(self, info: Dict) -> str:
-        """Determine asset type based on information"""
+    def get_financial_ratios(self, ticker: str, force_refresh: bool = False) -> Dict:
+        """
+        Headline ratios from company info, grouped like
+        ``{"valuation": {...}, "profitability": {...}}``. For full ratio
+        analysis use ``models.ratio_analysis.FinancialRatioAnalyzer``.
+        """
+        info = self.get_company_info(ticker)
         if not info:
-            return 'Unknown'
+            return {}
+        return {
+            "valuation": {
+                "pe_ratio": info.get("pe_ratio"), "forward_pe": info.get("forward_pe"),
+                "pb_ratio": info.get("pb_ratio"), "ps_ratio": info.get("ps_ratio"),
+                "ev_ebitda": info.get("ev_ebitda"), "dividend_yield": info.get("dividend_yield"),
+            },
+            "profitability": {
+                "return_on_equity": info.get("return_on_equity"),
+                "return_on_assets": info.get("return_on_assets"),
+                "profit_margins": info.get("profit_margins"),
+                "operating_margins": info.get("operating_margins"),
+                "gross_margins": info.get("gross_margins"),
+            },
+            "last_updated": info.get("last_updated"),
+        }
 
-        # Determine type from available data
-        if 'quoteType' in info:
-            quote_type = info['quoteType'].lower()
-            if quote_type in ['equity', 'stock']:
-                return 'Stock'
-            elif quote_type == 'etf':
-                return 'ETF'
-            elif quote_type == 'index':
-                return 'Index'
-            elif quote_type in ['cryptocurrency', 'crypto']:
-                return 'Crypto'
-            elif quote_type == 'mutualfund':
-                return 'Mutual Fund'
-            else:
-                return quote_type.capitalize()
+    # ------------------------------------------------------------------
+    # Sector data
+    # ------------------------------------------------------------------
+    def get_sector_data(self, sector: str, force_refresh: bool = False) -> pd.DataFrame:
+        """Three years of daily prices of the sector's benchmark ETF (empty for unknown sectors)."""
+        from StockAnalysisSystem.src.industry.universe import get_sector_etf
 
-        # If no direct indication, try to determine from other attributes
-        if 'fundFamily' in info and info['fundFamily']:
-            return 'ETF' if 'ETF' in info.get('longName', '') else 'Mutual Fund'
+        etf = get_sector_etf(sector)
+        if not etf:
+            logger.info(f"No sector ETF defined for {sector}")
+            return pd.DataFrame()
+        start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
+        return self.get_historical_prices(etf, start_date=start_date, force_refresh=force_refresh)
 
-        if 'industry' in info and info['industry']:
-            return 'Stock'
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+    def search_tickers(self, query: str, limit: int = 10, provider: str = 'alpha_vantage') -> List[Dict]:
+        """
+        Search companies by ticker or name.
 
-        return 'Unknown'
+        The curated universe is searched first (instant, offline); provider
+        results (Yahoo search, then Alpha Vantage when a key is configured)
+        are appended and de-duplicated. Each result has ``symbol``, ``name``,
+        ``type``, ``region``, ``currency`` and optionally ``exchange``/``sector``.
+        """
+        from StockAnalysisSystem.src.industry.universe import search_universe
 
-    def _camel_to_snake(self, name: str) -> str:
-        """Convert camelCase to snake_case"""
+        query = (query or '').strip()
+        if not query:
+            return []
+        results = [{"symbol": r["symbol"], "name": r["name"], "type": "Equity", "region": "United States",
+                    "currency": "USD", "sector": r["sector"]} for r in search_universe(query, limit)]
+
+        if len(results) < limit and not self.offline:
+            order = ['yfinance', 'alpha_vantage'] if provider != 'alpha_vantage' or not self.api_keys.get(
+                'alpha_vantage') else ['alpha_vantage', 'yfinance']
+            searchers = {'yfinance': self._search_yahoo, 'alpha_vantage': self._search_alpha_vantage}
+            for name in order:
+                path = self._cache_path(f"search_{query.lower()}_{name}.json")
+                found = self._cached(path, SEARCH_CACHE_DAYS, lambda: searchers[name](query, limit), False,
+                                     lambda r: isinstance(r, list) and bool(r)) or []
+                results.extend(found)
+                if found:
+                    break
+
+        unique: Dict[str, Dict] = {}
+        for result in results:
+            symbol = str(result.get('symbol', '')).upper()
+            if symbol and symbol not in unique:
+                unique[symbol] = result
+        return list(unique.values())[:limit]
+
+    def _search_yahoo(self, query: str, limit: int = 10) -> List[Dict]:
+        import yfinance as yf
+
+        self.api_call_counts['yfinance'] += 1
+        quotes = yf.Search(query, max_results=limit, news_count=0).quotes or []
+        return [{
+            'symbol': display_symbol(q.get('symbol', '')),
+            'original_symbol': q.get('symbol', ''),
+            'name': q.get('longname') or q.get('shortname') or q.get('symbol', ''),
+            'type': q.get('quoteType', ''),
+            'region': q.get('region', ''),
+            'currency': q.get('currency', ''),
+            'exchange': q.get('exchDisp') or q.get('exchange', ''),
+        } for q in quotes if q.get('symbol') and q.get('quoteType') in {'EQUITY', 'ETF', None}]
+
+    def _search_alpha_vantage(self, query: str, limit: int = 10) -> List[Dict]:
+        data = self._alpha_vantage_request({"function": "SYMBOL_SEARCH", "keywords": query})
+        return [{
+            'symbol': display_symbol(m.get('1. symbol', '')),
+            'original_symbol': m.get('1. symbol', ''),
+            'name': m.get('2. name', ''),
+            'type': m.get('3. type', ''),
+            'region': m.get('4. region', ''),
+            'currency': m.get('8. currency', 'USD'),
+        } for m in (data or {}).get('bestMatches', [])[:limit] if m.get('1. symbol')]
+
+    # ------------------------------------------------------------------
+    # Macro data
+    # ------------------------------------------------------------------
+    INDICATOR_CODES = {
+        'INFLATION': 'CPIAUCSL',
+        'GDP': 'GDP',
+        'UNEMPLOYMENT': 'UNRATE',
+        'INTEREST_RATE': 'FEDFUNDS',
+        'TREASURY_10Y': 'DGS10',
+        'RETAIL_SALES': 'RSXFS',
+        'INDUSTRIAL_PRODUCTION': 'INDPRO',
+        'HOUSE_PRICE_INDEX': 'CSUSHPISA',
+        'CONSUMER_SENTIMENT': 'UMCSENT',
+    }
+
+    def get_macro_indicators(self, indicators: List[str], start_date: Optional[str] = None,
+                             end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+        """FRED macro series ``{indicator: DataFrame}`` (empty frames when unavailable)."""
+        results = {indicator: pd.DataFrame() for indicator in indicators}
+        if self.offline:
+            return results
+        try:
+            import pandas_datareader.data as web
+        except ImportError:
+            logger.info("pandas-datareader not installed; macro indicators unavailable")
+            return results
+        start = pd.Timestamp(start_date) if start_date else pd.Timestamp.now() - pd.DateOffset(years=5)
+        end = pd.Timestamp(end_date) if end_date else pd.Timestamp.now()
+        for indicator in indicators:
+            try:
+                results[indicator] = web.DataReader(self.INDICATOR_CODES.get(indicator, indicator), 'fred', start, end)
+            except Exception as e:
+                logger.error(f"Error loading macro indicator {indicator}: {e}")
+        return results
+
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _determine_asset_type(info: Dict) -> str:
+        quote_type = str(info.get('quoteType', '')).lower()
+        mapping = {'equity': 'Stock', 'stock': 'Stock', 'etf': 'ETF', 'index': 'Index',
+                   'cryptocurrency': 'Crypto', 'mutualfund': 'Mutual Fund'}
+        if quote_type:
+            return mapping.get(quote_type, quote_type.capitalize())
+        return 'Stock' if info.get('industry') else 'Unknown'
+
+    @staticmethod
+    def _camel_to_snake(name: str) -> str:
         s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
         return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
-    def _safe_convert(self, value: Any, convert_type) -> Optional[Any]:
-        """Safe type conversion with error handling"""
-        if value is None:
-            return None
-
+    @staticmethod
+    def _safe_convert(value: Any, convert_type) -> Optional[Any]:
         try:
-            return convert_type(value)
+            return None if value is None else convert_type(value)
         except (ValueError, TypeError):
             return None
 
-    def clear_cache(self, tickers: Optional[List[str]] = None):
-        """
-        Clear data cache
-
-        Args:
-            tickers: List of tickers to clear. If None, clears entire cache.
-        """
-        if tickers is None:
-            # Clear entire cache
-            for file in self.cache_dir.glob('*.*'):
+    def clear_cache(self, tickers: Optional[List[str]] = None) -> int:
+        """Delete cache files (all, or only those of ``tickers``). Returns the number removed."""
+        patterns = ['*.*'] if tickers is None else [f"{t.strip().upper()}_*.*" for t in tickers]
+        removed = 0
+        for pattern in patterns:
+            for file in self.cache_dir.glob(pattern):
+                if file.name == '.gitkeep':
+                    continue
                 try:
                     file.unlink()
-                except Exception as e:
+                    removed += 1
+                except OSError as e:
                     logger.warning(f"Failed to delete cache file {file}: {e}")
-            logger.info("Cache completely cleared")
-        else:
-            # Clear cache only for specified tickers
-            for ticker in tickers:
-                for file in self.cache_dir.glob(f"{ticker}_*.*"):
-                    try:
-                        file.unlink()
-                    except Exception as e:
-                        logger.warning(f"Failed to delete cache file {file}: {e}")
-            logger.info(f"Cache cleared for tickers: {tickers}")
+        return removed

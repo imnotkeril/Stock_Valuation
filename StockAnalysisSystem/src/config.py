@@ -13,11 +13,23 @@ SECTOR_DATA_DIR = DATA_DIR / "sector_data"
 for dir_path in [DATA_DIR, CACHE_DIR, SECTOR_DATA_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
-# API keys (should use .env file in production)
+# Load variables from a local .env file when python-dotenv is available.
+try:  # pragma: no cover - optional dependency
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")
+    load_dotenv(BASE_DIR.parent / ".env")
+except ImportError:  # pragma: no cover
+    pass
+
+# API keys are read from the environment only (see .env.example).
 API_KEYS = {
-    "alpha_vantage": os.environ.get("ALPHA_VANTAGE_API_KEY", "0VJE73FSCQIPH601"),
-    "financial_modeling_prep": os.environ.get("FINANCIAL_MODELING_PREP_API_KEY", "9Yf6Hq8E74E7W4cbyzImXtH3H54TdS8Q")
+    "alpha_vantage": os.environ.get("ALPHA_VANTAGE_API_KEY", ""),
+    "financial_modeling_prep": os.environ.get("FINANCIAL_MODELING_PREP_API_KEY", ""),
 }
+
+# Offline mode: never call external APIs, serve only cached / bundled data.
+OFFLINE_MODE = os.environ.get("STOCK_ANALYSIS_OFFLINE", "").strip().lower() in {"1", "true", "yes"}
 
 # Cache settings
 CACHE_EXPIRY_DAYS = 1  # Default cache expiry in days
@@ -36,6 +48,55 @@ SECTOR_MAPPING = {
     "Communication Services": ["Telecom", "Media", "Entertainment"],
     "Utilities": ["Electric Utilities", "Gas Utilities", "Water Utilities", "Multi-Utilities"]
 }
+
+# Canonical sector names used across the application are the keys of
+# SECTOR_MAPPING. Data providers use other spellings (yfinance: "Financial
+# Services", "Consumer Cyclical", ...; GICS: "Information Technology", ...).
+SECTORS: List[str] = list(SECTOR_MAPPING.keys())
+
+SECTOR_ALIASES: Dict[str, str] = {
+    # yfinance / Morningstar
+    "technology": "Technology",
+    "financial services": "Financials",
+    "healthcare": "Healthcare",
+    "consumer cyclical": "Consumer Discretionary",
+    "consumer defensive": "Consumer Staples",
+    "basic materials": "Materials",
+    "industrials": "Industrials",
+    "energy": "Energy",
+    "real estate": "Real Estate",
+    "communication services": "Communication Services",
+    "utilities": "Utilities",
+    # GICS and common variants
+    "information technology": "Technology",
+    "tech": "Technology",
+    "health care": "Healthcare",
+    "financials": "Financials",
+    "financial": "Financials",
+    "consumer discretionary": "Consumer Discretionary",
+    "consumer staples": "Consumer Staples",
+    "materials": "Materials",
+    "telecommunication services": "Communication Services",
+    "telecommunications": "Communication Services",
+    "communication": "Communication Services",
+}
+
+
+def normalize_sector(sector: Optional[str]) -> str:
+    """
+    Map any provider-specific sector name to the canonical name used in this
+    application (a key of ``SECTOR_MAPPING``). Unknown values are returned
+    stripped; missing values become ``"Unknown"``.
+    """
+    if sector is None:
+        return "Unknown"
+    name = str(sector).strip()
+    if not name or name.upper() in {"N/A", "NA", "NONE", "UNKNOWN"}:
+        return "Unknown"
+    if name in SECTOR_MAPPING:
+        return name
+    return SECTOR_ALIASES.get(name.lower(), name)
+
 
 # Financial ratios settings
 RATIO_CATEGORIES = {

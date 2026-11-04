@@ -1,847 +1,443 @@
-import os
-import sys
+"""
+Reports page.
+
+Entry point: :func:`run_reports_page` (no arguments).
+
+Builds company, valuation, comparison and sector reports with
+:class:`~StockAnalysisSystem.src.utils.export.ReportGenerator` and offers
+them for download as Excel, CSV, JSON, PDF and HTML. Generated reports
+(including the rendered files) are kept in ``st.session_state`` per report
+type, so they persist while other widgets change.
+"""
+
+from __future__ import annotations
+
 import logging
-import pandas as pd
-import numpy as np
-import streamlit as st
+import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
-import base64
-import io
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
-# Add the project root to Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
+import pandas as pd
+import streamlit as st
 
-# Import project modules
-from StockAnalysisSystem.src.config import UI_SETTINGS, COLORS, VIZ_SETTINGS
-from StockAnalysisSystem.src.utils.data_loader import DataLoader
-from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
-from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
-from StockAnalysisSystem.src.models.financial_statements import FinancialStatementAnalyzer
-from StockAnalysisSystem.src.models.bankruptcy_models import BankruptcyAnalyzer
-from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
-from StockAnalysisSystem.src.utils.export import ReportGenerator
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from StockAnalysisSystem.src.config import SECTORS, normalize_sector
+from StockAnalysisSystem.src.industry.universe import (
+    MARKET_BENCHMARK,
+    UNIVERSE,
+    get_sector_companies,
+    get_sector_etf,
+    lookup_company,
 )
-logger = logging.getLogger('reports')
-
-
-def run_reports_page():
-    """Main function to run the reports page"""
-    st.title("Financial Reports Generator")
-    st.markdown(
-        "Generate comprehensive financial reports and analysis documents for companies, sectors, or custom portfolio analysis.")
-
-    # Initialize data loader and analyzers
-    data_loader = DataLoader()
-    visualizer = FinancialVisualizer(theme="dark")
-    ratio_analyzer = FinancialRatioAnalyzer()
-    statement_analyzer = FinancialStatementAnalyzer()
-    bankruptcy_analyzer = BankruptcyAnalyzer()
-    valuation_factory = ValuationFactory(data_loader)
-    report_generator = ReportGenerator()
-
-    # Sidebar for report options
-    with st.sidebar:
-        st.header("Report Options")
-
-        # Report type selection
-        report_types = {
-            "Company Analysis": "Comprehensive analysis of a single company",
-            "Sector Analysis": "Overview and analysis of a market sector",
-            "Comparative Analysis": "Compare multiple companies",
-            "Valuation Report": "Detailed valuation of a company",
-            "Portfolio Analysis": "Analysis of a custom portfolio"
-        }
-
-        report_type = st.selectbox(
-            "Select report type:",
-            options=list(report_types.keys())
-        )
-
-        st.info(report_types[report_type])
-
-        # Report options based on selection
-        if report_type == "Company Analysis":
-            # Company selection
-            ticker = st.text_input("Enter ticker symbol:", "AAPL").upper()
-
-            # Sections to include
-            st.subheader("Sections to Include")
-
-            include_company_overview = st.checkbox("Company Overview", value=True)
-            include_financial_analysis = st.checkbox("Financial Analysis", value=True)
-            include_ratio_analysis = st.checkbox("Ratio Analysis", value=True)
-            include_valuation = st.checkbox("Valuation", value=True)
-            include_risk_analysis = st.checkbox("Risk Analysis", value=True)
-            include_technical_analysis = st.checkbox("Technical Analysis", value=False)
-            include_charts = st.checkbox("Include Charts", value=True)
-
-            # Time period
-            st.subheader("Financial Data Period")
-
-            period_options = {
-                "1 Year": 1,
-                "3 Years": 3,
-                "5 Years": 5,
-                "10 Years": 10
-            }
-
-            financial_period = st.selectbox(
-                "Financial data period:",
-                options=list(period_options.keys()),
-                index=2  # Default to 5 years
-            )
-
-            years = period_options[financial_period]
-
-            # Statement frequency
-            statement_frequency = st.selectbox(
-                "Financial statement frequency:",
-                options=["Annual", "Quarterly"],
-                index=0  # Default to annual
-            )
-
-        elif report_type == "Sector Analysis":
-            # Sector selection
-            sectors = [
-                "Technology",
-                "Healthcare",
-                "Financials",
-                "Consumer Discretionary",
-                "Consumer Staples",
-                "Energy",
-                "Industrials",
-                "Materials",
-                "Real Estate",
-                "Communication Services",
-                "Utilities"
-            ]
-
-            selected_sector = st.selectbox(
-                "Select sector:",
-                options=sectors
-            )
-
-            # Number of companies to include
-            top_n = st.slider(
-                "Number of companies to include:",
-                min_value=5,
-                max_value=30,
-                value=10,
-                step=5
-            )
-
-            # Sections to include
-            st.subheader("Sections to Include")
-
-            include_sector_overview = st.checkbox("Sector Overview", value=True)
-            include_performance_analysis = st.checkbox("Performance Analysis", value=True)
-            include_top_companies = st.checkbox("Top Companies Analysis", value=True)
-            include_valuation_metrics = st.checkbox("Valuation Metrics", value=True)
-            include_financial_metrics = st.checkbox("Financial Metrics", value=True)
-            include_charts = st.checkbox("Include Charts", value=True)
-
-            # Time period
-            st.subheader("Analysis Period")
-
-            period_options = {
-                "1 Year": 365,
-                "3 Years": 3 * 365,
-                "5 Years": 5 * 365,
-                "10 Years": 10 * 365
-            }
-
-            analysis_period = st.selectbox(
-                "Analysis period:",
-                options=list(period_options.keys()),
-                index=1  # Default to 3 years
-            )
-
-            days = period_options[analysis_period]
-
-        elif report_type == "Comparative Analysis":
-            # Companies selection
-            st.subheader("Select Companies")
-
-            company1 = st.text_input("Company 1:", "AAPL").upper()
-            company2 = st.text_input("Company 2:", "MSFT").upper()
-            company3 = st.text_input("Company 3 (optional):", "").upper()
-            company4 = st.text_input("Company 4 (optional):", "").upper()
-            company5 = st.text_input("Company 5 (optional):", "").upper()
-
-            # Create list of companies
-            companies = [company1, company2]
-            if company3:
-                companies.append(company3)
-            if company4:
-                companies.append(company4)
-            if company5:
-                companies.append(company5)
-
-            # Sections to include
-            st.subheader("Sections to Include")
-
-            include_companies_overview = st.checkbox("Companies Overview", value=True)
-            include_performance_comparison = st.checkbox("Performance Comparison", value=True)
-            include_financial_comparison = st.checkbox("Financial Comparison", value=True)
-            include_valuation_comparison = st.checkbox("Valuation Comparison", value=True)
-            include_ratio_comparison = st.checkbox("Ratio Comparison", value=True)
-            include_charts = st.checkbox("Include Charts", value=True)
-
-            # Time period
-            st.subheader("Analysis Period")
-
-            period_options = {
-                "1 Year": 365,
-                "3 Years": 3 * 365,
-                "5 Years": 5 * 365,
-                "10 Years": 10 * 365
-            }
-
-            analysis_period = st.selectbox(
-                "Analysis period:",
-                options=list(period_options.keys()),
-                index=1  # Default to 3 years
-            )
-
-            days = period_options[analysis_period]
-
-            # Statement frequency
-            statement_frequency = st.selectbox(
-                "Financial statement frequency:",
-                options=["Annual", "Quarterly"],
-                index=0  # Default to annual
-            )
-
-        elif report_type == "Valuation Report":
-            # Company selection
-            ticker = st.text_input("Enter ticker symbol:", "AAPL").upper()
-
-            # Valuation methods
-            st.subheader("Valuation Methods")
-
-            include_dcf = st.checkbox("Discounted Cash Flow (DCF)", value=True)
-            include_relative = st.checkbox("Relative Valuation", value=True)
-            include_dividend = st.checkbox("Dividend Discount Model", value=True)
-            include_asset = st.checkbox("Asset-Based Valuation", value=False)
-
-            # DCF parameters
-            if include_dcf:
-                with st.expander("DCF Parameters", expanded=True):
-                    forecast_years = st.slider(
-                        "Forecast Period (Years):",
-                        min_value=3,
-                        max_value=10,
-                        value=5
-                    )
-
-                    discount_rate = st.slider(
-                        "Discount Rate (%):",
-                        min_value=5.0,
-                        max_value=20.0,
-                        value=10.0,
-                        step=0.5
-                    )
-
-                    terminal_growth = st.slider(
-                        "Terminal Growth Rate (%):",
-                        min_value=0.0,
-                        max_value=5.0,
-                        value=2.0,
-                        step=0.1
-                    )
-
-            # Sections to include
-            st.subheader("Sections to Include")
-
-            include_company_overview = st.checkbox("Company Overview", value=True)
-            include_historical_financials = st.checkbox("Historical Financials", value=True)
-            include_valuation_summary = st.checkbox("Valuation Summary", value=True)
-            include_valuation_details = st.checkbox("Valuation Details", value=True)
-            include_sensitivity_analysis = st.checkbox("Sensitivity Analysis", value=True)
-            include_fair_value_range = st.checkbox("Fair Value Range", value=True)
-            include_charts = st.checkbox("Include Charts", value=True)
-
-        elif report_type == "Portfolio Analysis":
-            # Portfolio composition
-            st.subheader("Portfolio Composition")
-
-            # Option to upload CSV with portfolio
-            upload_option = st.radio(
-                "Portfolio data:",
-                options=["Enter manually", "Upload CSV"]
-            )
-
-            portfolio_data = []
-
-            if upload_option == "Enter manually":
-                # Manual entry
-                for i in range(1, 11):
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        ticker = st.text_input(f"Stock {i}:", "").upper()
-
-                    with col2:
-                        weight = st.number_input(f"Weight {i} (%):", min_value=0.0, max_value=100.0, value=0.0,
-                                                 step=5.0)
-
-                    if ticker and weight > 0:
-                        portfolio_data.append({"ticker": ticker, "weight": weight / 100})
-            else:
-                # CSV upload
-                uploaded_file = st.file_uploader("Upload portfolio CSV", type=["csv"])
-
-                if uploaded_file is not None:
-                    try:
-                        # Read CSV
-                        portfolio_df = pd.read_csv(uploaded_file)
-
-                        # Check required columns
-                        if "ticker" in portfolio_df.columns and "weight" in portfolio_df.columns:
-                            # Convert to list of dictionaries
-                            portfolio_data = portfolio_df[["ticker", "weight"]].to_dict('records')
-
-                            # Normalize weights if needed
-                            total_weight = sum(item["weight"] for item in portfolio_data)
-                            if total_weight != 1.0:
-                                for item in portfolio_data:
-                                    item["weight"] = item["weight"] / total_weight
-
-                            # Show preview
-                            st.success(f"Successfully loaded {len(portfolio_data)} positions.")
-                            st.dataframe(portfolio_df)
-                        else:
-                            st.error("CSV must contain 'ticker' and 'weight' columns.")
-                    except Exception as e:
-                        st.error(f"Error loading CSV: {str(e)}")
-
-            # Sections to include
-            st.subheader("Sections to Include")
-
-            include_portfolio_overview = st.checkbox("Portfolio Overview", value=True)
-            include_performance_analysis = st.checkbox("Performance Analysis", value=True)
-            include_risk_analysis = st.checkbox("Risk Analysis", value=True)
-            include_diversification = st.checkbox("Diversification Analysis", value=True)
-            include_valuation = st.checkbox("Valuation Assessment", value=True)
-            include_individual_analysis = st.checkbox("Individual Holdings Analysis", value=True)
-            include_charts = st.checkbox("Include Charts", value=True)
-
-            # Time period
-            st.subheader("Analysis Period")
-
-            period_options = {
-                "1 Year": 365,
-                "3 Years": 3 * 365,
-                "5 Years": 5 * 365,
-                "10 Years": 10 * 365
-            }
-
-            analysis_period = st.selectbox(
-                "Analysis period:",
-                options=list(period_options.keys()),
-                index=1  # Default to 3 years
-            )
-
-            days = period_options[analysis_period]
-
-        # Report format
-        st.subheader("Report Format")
-
-        report_format = st.selectbox(
-            "Select report format:",
-            options=["PDF", "Excel", "HTML"],
-            index=0  # Default to PDF
-        )
-
-        # Include cover page
-        include_cover = st.checkbox("Include Cover Page", value=True)
-        # Generate report button
-        generate_report_btn = st.sidebar.button("Generate Report", type="primary")
-
-        # Main content area
-        if generate_report_btn:
-            try:
-                with st.spinner("Generating report... This may take a moment."):
-                    if report_type == "Company Analysis":
-                        # Validate input
-                        if not ticker:
-                            st.error("Please enter a valid ticker symbol.")
-                            st.stop()
-
-                        # Check if ticker exists
-                        try:
-                            company_info = data_loader.get_company_info(ticker)
-                            if not company_info or "name" not in company_info:
-                                st.error(f"Could not find information for ticker '{ticker}'. Please verify the symbol.")
-                                st.stop()
-                        except Exception as e:
-                            st.error(f"Error retrieving company information: {str(e)}")
-                            st.stop()
-
-                        st.subheader(f"Generating report for {company_info.get('name', ticker)} ({ticker})")
-
-                        # Load data
-                        start_date = (datetime.now() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
-                        end_date = datetime.now().strftime('%Y-%m-%d')
-
-                        # Progress indicators
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        # 1. Load price data
-                        status_text.text("Loading price data...")
-                        price_data = data_loader.get_historical_prices(ticker, start_date, end_date)
-                        progress_bar.progress(10)
-
-                        # 2. Load financial statements
-                        status_text.text("Loading financial statements...")
-                        freq = "annual" if statement_frequency == "Annual" else "quarterly"
-                        income_stmt = data_loader.get_financial_statements(ticker, 'income', freq)
-                        balance_sheet = data_loader.get_financial_statements(ticker, 'balance', freq)
-                        cash_flow = data_loader.get_financial_statements(ticker, 'cash', freq)
-                        progress_bar.progress(30)
-
-                        # 3. Perform analysis
-                        status_text.text("Performing financial analysis...")
-                        financial_data = {
-                            'income_statement': income_stmt,
-                            'balance_sheet': balance_sheet,
-                            'cash_flow': cash_flow,
-                            'market_data': {
-                                'share_price': price_data['Close'].iloc[-1] if not price_data.empty else None,
-                                'market_cap': company_info.get('market_cap'),
-                                'beta': company_info.get('beta')
-                            }
-                        }
-
-                        # Calculate ratios
-                        ratios = ratio_analyzer.calculate_ratios(financial_data)
-                        progress_bar.progress(50)
-
-                        # 4. Perform valuation
-                        status_text.text("Calculating valuation...")
-                        sector = company_info.get('sector', 'Unknown')
-                        valuation_models = {}
-
-                        if include_valuation:
-                            # Get appropriate valuation factory
-                            valuation_model = valuation_factory.get_valuation_model(sector)
-
-                            # DCF Valuation
-                            if include_dcf:
-                                dcf_params = {
-                                    'forecast_years': forecast_years,
-                                    'discount_rate': discount_rate / 100,
-                                    'terminal_growth': terminal_growth / 100
-                                }
-                                dcf_result = valuation_model.discounted_cash_flow_valuation(ticker, financial_data,
-                                                                                            sector, **dcf_params)
-                                valuation_models['DCF'] = dcf_result
-
-                            # Relative Valuation
-                            if include_relative:
-                                relative_result = valuation_model.relative_valuation(ticker, financial_data, sector)
-                                valuation_models['Relative'] = relative_result
-
-                            # Dividend Discount Model
-                            if include_dividend:
-                                dividend_result = valuation_model.dividend_discount_valuation(ticker, financial_data,
-                                                                                              sector)
-                                valuation_models['DDM'] = dividend_result
-
-                            # Asset-Based Valuation
-                            if include_asset:
-                                asset_result = valuation_model.asset_based_valuation(ticker, financial_data, sector)
-                                valuation_models['Asset-Based'] = asset_result
-
-                        progress_bar.progress(70)
-
-                        # 5. Risk analysis
-                        status_text.text("Analyzing risks...")
-                        risk_assessment = None
-                        if include_risk_analysis:
-                            risk_assessment = bankruptcy_analyzer.get_comprehensive_risk_assessment(financial_data,
-                                                                                                    sector)
-
-                        progress_bar.progress(80)
-
-                        # 6. Generate visualizations if needed
-                        charts = {}
-                        if include_charts:
-                            status_text.text("Generating charts...")
-                            # Price chart
-                            price_chart = visualizer.plot_stock_price(price_data, ticker,
-                                                                      company_name=company_info.get('name'))
-                            charts['price'] = price_chart
-
-                            # Financial ratio charts
-                            if include_ratio_analysis:
-                                ratio_chart = visualizer.plot_financial_ratios(
-                                    {category: ratio_analyzer.analyze_ratios(ratios, sector).get(category, {})
-                                     for category in ratios.keys()},
-                                    benchmark_data=ratio_analyzer.get_sector_benchmarks(sector)
-                                )
-                                charts['ratios'] = ratio_chart
-
-                        progress_bar.progress(90)
-
-                        # 7. Generate report
-                        status_text.text("Generating final report...")
-
-                        report_data = {
-                            "report_type": "Company Analysis",
-                            "company_info": company_info,
-                            "price_data": price_data,
-                            "financial_data": financial_data,
-                            "ratios": ratios,
-                            "valuation_models": valuation_models,
-                            "risk_assessment": risk_assessment,
-                            "charts": charts,
-                            "period": financial_period,
-                            "sections": {
-                                "company_overview": include_company_overview,
-                                "financial_analysis": include_financial_analysis,
-                                "ratio_analysis": include_ratio_analysis,
-                                "valuation": include_valuation,
-                                "risk_analysis": include_risk_analysis,
-                                "technical_analysis": include_technical_analysis
-                            },
-                            "include_charts": include_charts,
-                            "include_cover": include_cover
-                        }
-
-                        # Generate the actual report based on format
-                        if report_format == "PDF":
-                            report_file = report_generator.generate_pdf_report(report_data)
-                            mime_type = "application/pdf"
-                            file_extension = "pdf"
-                        elif report_format == "Excel":
-                            report_file = report_generator.generate_excel_report(report_data)
-                            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            file_extension = "xlsx"
-                        else:  # HTML
-                            report_file = report_generator.generate_html_report(report_data)
-                            mime_type = "text/html"
-                            file_extension = "html"
-
-                        progress_bar.progress(100)
-                        status_text.text("Report generated successfully!")
-
-                        # Provide download link
-                        st.success(f"Report for {company_info.get('name', ticker)} generated successfully!")
-
-                        # Create download button
-                        report_filename = f"{ticker}_analysis_{datetime.now().strftime('%Y%m%d')}.{file_extension}"
-
-                        # Convert to base64 for download
-                        b64 = base64.b64encode(report_file).decode()
-                        href = f'<a href="data:{mime_type};base64,{b64}" download="{report_filename}">Download {report_format} Report</a>'
-                        st.markdown(href, unsafe_allow_html=True)
-
-                        # Preview section
-                        with st.expander("Report Preview", expanded=True):
-                            if report_format == "PDF":
-                                st.warning("PDF preview not available. Please download the report to view.")
-                            elif report_format == "Excel":
-                                st.warning("Excel preview not available. Please download the report to view.")
-                            else:  # HTML
-                                st.components.v1.html(report_file.decode(), height=600)
-
-                    elif report_type == "Sector Analysis":
-                        # Implementation for sector analysis report
-                        st.subheader(f"Generating Sector Analysis for {selected_sector}")
-
-                        # Load sector data
-                        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-                        end_date = datetime.now().strftime('%Y-%m-%d')
-
-                        # Progress indicators
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        # 1. Load sector ETF data
-                        status_text.text("Loading sector data...")
-
-                        # Define sector ETFs mapping
-                        sector_etfs = {
-                            "Technology": "XLK",
-                            "Healthcare": "XLV",
-                            "Financials": "XLF",
-                            "Consumer Discretionary": "XLY",
-                            "Consumer Staples": "XLP",
-                            "Energy": "XLE",
-                            "Industrials": "XLI",
-                            "Materials": "XLB",
-                            "Real Estate": "XLRE",
-                            "Communication Services": "XLC",
-                            "Utilities": "XLU"
-                        }
-
-                        etf_ticker = sector_etfs.get(selected_sector)
-                        etf_data = data_loader.get_historical_prices(etf_ticker, start_date, end_date)
-                        progress_bar.progress(20)
-
-                        # 2. Get top companies in sector
-                        status_text.text(f"Identifying top {top_n} companies in {selected_sector}...")
-                        # In a real implementation, we would query a database or API to get top companies
-                        # For now, we'll use hardcoded values as a placeholder
-                        top_companies = get_top_companies_in_sector(selected_sector, top_n)
-                        progress_bar.progress(40)
-
-                        # 3. Load data for top companies
-                        status_text.text("Loading company data...")
-                        companies_data = {}
-                        for company in top_companies:
-                            ticker = company["ticker"]
-                            companies_data[ticker] = {
-                                "info": data_loader.get_company_info(ticker),
-                                "prices": data_loader.get_historical_prices(ticker, start_date, end_date)
-                            }
-                        progress_bar.progress(70)
-
-                        # 4. Generate visualizations
-                        charts = {}
-                        if include_charts:
-                            status_text.text("Generating charts...")
-                            # Sector performance chart
-                            performance_chart = visualizer.plot_sector_performance(etf_data, etf_ticker,
-                                                                                   selected_sector)
-                            charts['sector_performance'] = performance_chart
-
-                            # Companies comparison chart
-                            comparison_data = {ticker: data["prices"] for ticker, data in companies_data.items()}
-                            companies_chart = visualizer.plot_companies_comparison(comparison_data)
-                            charts['companies_comparison'] = companies_chart
-
-                        progress_bar.progress(85)
-
-                        # 5. Generate report
-                        status_text.text("Generating final report...")
-
-                        report_data = {
-                            "report_type": "Sector Analysis",
-                            "sector": selected_sector,
-                            "etf_data": etf_data,
-                            "top_companies": top_companies,
-                            "companies_data": companies_data,
-                            "charts": charts,
-                            "period": analysis_period,
-                            "sections": {
-                                "sector_overview": include_sector_overview,
-                                "performance_analysis": include_performance_analysis,
-                                "top_companies": include_top_companies,
-                                "valuation_metrics": include_valuation_metrics,
-                                "financial_metrics": include_financial_metrics
-                            },
-                            "include_charts": include_charts,
-                            "include_cover": include_cover
-                        }
-
-                        # Generate the actual report based on format
-                        if report_format == "PDF":
-                            report_file = report_generator.generate_pdf_report(report_data)
-                            mime_type = "application/pdf"
-                            file_extension = "pdf"
-                        elif report_format == "Excel":
-                            report_file = report_generator.generate_excel_report(report_data)
-                            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            file_extension = "xlsx"
-                        else:  # HTML
-                            report_file = report_generator.generate_html_report(report_data)
-                            mime_type = "text/html"
-                            file_extension = "html"
-
-                        progress_bar.progress(100)
-                        status_text.text("Report generated successfully!")
-
-                        # Provide download link
-                        st.success(f"Sector Analysis for {selected_sector} generated successfully!")
-
-                        # Create download button
-                        report_filename = f"{selected_sector}_analysis_{datetime.now().strftime('%Y%m%d')}.{file_extension}"
-
-                        # Convert to base64 for download
-                        b64 = base64.b64encode(report_file).decode()
-                        href = f'<a href="data:{mime_type};base64,{b64}" download="{report_filename}">Download {report_format} Report</a>'
-                        st.markdown(href, unsafe_allow_html=True)
-
-                        # Preview section
-                        with st.expander("Report Preview", expanded=True):
-                            if report_format == "PDF":
-                                st.warning("PDF preview not available. Please download the report to view.")
-                            elif report_format == "Excel":
-                                st.warning("Excel preview not available. Please download the report to view.")
-                            else:  # HTML
-                                st.components.v1.html(report_file.decode(), height=600)
-
-                    # Implementations for other report types would go here
-                    # For now we'll just show a placeholder message
-                    else:
-                        st.info(f"Implementation for {report_type} is coming soon.")
-
-            except Exception as e:
-                st.error(f"An error occurred while generating the report: {str(e)}")
-                st.exception(e)
-        else:
-            # Show instructions when no report is being generated
-            if report_type == "Company Analysis":
-                st.subheader("Company Analysis Report")
-                st.write("""
-                This report provides a comprehensive analysis of a single company, including:
-
-                - Company overview and business description
-                - Historical financial analysis and key metrics
-                - Ratio analysis with industry comparison
-                - Valuation using appropriate methods
-                - Risk assessment and financial health evaluation
-
-                Configure your report options in the sidebar and click "Generate Report" to create your custom analysis.
-                """)
-
-                # Example screenshot or placeholder
-                st.image("https://via.placeholder.com/800x400?text=Company+Analysis+Report+Example",
-                         use_column_width=True)
-
-            elif report_type == "Sector Analysis":
-                st.subheader("Sector Analysis Report")
-                st.write("""
-                This report provides insights and analysis of an entire market sector, including:
-
-                - Sector overview and current trends
-                - Performance analysis against broader market
-                - Top performing companies in the sector
-                - Valuation metrics across the sector
-                - Key financial metrics and growth drivers
-
-                Configure your report options in the sidebar and click "Generate Report" to create your sector analysis.
-                """)
-
-                # Example screenshot or placeholder
-                st.image("https://via.placeholder.com/800x400?text=Sector+Analysis+Report+Example",
-                         use_column_width=True)
-
-            elif report_type == "Comparative Analysis":
-                st.subheader("Comparative Analysis Report")
-                st.write("""
-                This report provides side-by-side comparison of multiple companies, including:
-
-                - Overview of each company
-                - Comparative performance analysis
-                - Financial metrics comparison
-                - Valuation multiples comparison
-                - Strengths and weaknesses analysis
-
-                Enter ticker symbols for the companies you want to compare, configure options in the sidebar, and click "Generate Report".
-                """)
-
-                # Example screenshot or placeholder
-                st.image("https://via.placeholder.com/800x400?text=Comparative+Analysis+Report+Example",
-                         use_column_width=True)
-
-            elif report_type == "Valuation Report":
-                st.subheader("Valuation Report")
-                st.write("""
-                This report provides an in-depth valuation analysis of a company, including:
-
-                - Multiple valuation methodologies (DCF, Relative, etc.)
-                - Detailed assumptions and inputs
-                - Sensitivity analysis for key variables
-                - Fair value range estimation
-                - Comparison with current market price
-
-                Configure valuation parameters in the sidebar and click "Generate Report" to create your valuation analysis.
-                """)
-
-                # Example screenshot or placeholder
-                st.image("https://via.placeholder.com/800x400?text=Valuation+Report+Example", use_column_width=True)
-
-            elif report_type == "Portfolio Analysis":
-                st.subheader("Portfolio Analysis Report")
-                st.write("""
-                This report provides analysis of a custom investment portfolio, including:
-
-                - Portfolio composition and allocation
-                - Performance analysis and attribution
-                - Risk metrics (volatility, drawdowns, etc.)
-                - Diversification assessment
-                - Individual holdings analysis
-
-                Enter your portfolio holdings or upload a CSV file, configure options in the sidebar, and click "Generate Report".
-                """)
-
-                # Example CSV template
-                st.subheader("CSV Template")
-                st.write("If uploading a CSV file, please use the following format:")
-
-                df_template = pd.DataFrame({
-                    "ticker": ["AAPL", "MSFT", "GOOGL", "AMZN"],
-                    "weight": [0.25, 0.25, 0.25, 0.25],
-                    "shares": [10, 5, 2, 1]  # Optional
-                })
-
-                st.dataframe(df_template)
-
-                # Download template button
-                csv = df_template.to_csv(index=False)
-                b64 = base64.b64encode(csv.encode()).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="portfolio_template.csv">Download CSV Template</a>'
-                st.markdown(href, unsafe_allow_html=True)
-
-                # Example screenshot or placeholder
-                st.image("https://via.placeholder.com/800x400?text=Portfolio+Analysis+Report+Example",
-                         use_column_width=True)
-
-        def get_top_companies_in_sector(sector, n=10):
-            """
-            Get top companies in a specific sector.
-            This is a placeholder implementation - in a real application,
-            this would query a database or API.
-
-            Args:
-                sector: Market sector name
-                n: Number of companies to return
-
-            Returns:
-                List of dictionaries with company information
-            """
-            # Sample data for demonstration
-            sector_companies = {
-                "Technology": [
-                    {"ticker": "AAPL", "name": "Apple Inc.", "market_cap": 2500000000000},
-                    {"ticker": "MSFT", "name": "Microsoft Corporation", "market_cap": 2300000000000},
-                    {"ticker": "GOOGL", "name": "Alphabet Inc.", "market_cap": 1800000000000},
-                    {"ticker": "AMZN", "name": "Amazon.com Inc.", "market_cap": 1600000000000},
-                    {"ticker": "META", "name": "Meta Platforms Inc.", "market_cap": 1000000000000},
-                    {"ticker": "NVDA", "name": "NVIDIA Corporation", "market_cap": 900000000000},
-                    {"ticker": "TSLA", "name": "Tesla, Inc.", "market_cap": 800000000000},
-                    {"ticker": "AVGO", "name": "Broadcom Inc.", "market_cap": 400000000000},
-                    {"ticker": "CSCO", "name": "Cisco Systems, Inc.", "market_cap": 200000000000},
-                    {"ticker": "INTC", "name": "Intel Corporation", "market_cap": 150000000000}
-                ],
-                "Healthcare": [
-                    {"ticker": "JNJ", "name": "Johnson & Johnson", "market_cap": 400000000000},
-                    {"ticker": "UNH", "name": "UnitedHealth Group Inc.", "market_cap": 380000000000},
-                    {"ticker": "PFE", "name": "Pfizer Inc.", "market_cap": 200000000000},
-                    {"ticker": "ABBV", "name": "AbbVie Inc.", "market_cap": 180000000000},
-                    {"ticker": "MRK", "name": "Merck & Co., Inc.", "market_cap": 170000000000},
-                    {"ticker": "LLY", "name": "Eli Lilly and Company", "market_cap": 160000000000},
-                    {"ticker": "TMO", "name": "Thermo Fisher Scientific Inc.", "market_cap": 150000000000},
-                    {"ticker": "ABT", "name": "Abbott Laboratories", "market_cap": 140000000000},
-                    {"ticker": "DHR", "name": "Danaher Corporation", "market_cap": 130000000000},
-                    {"ticker": "BMY", "name": "Bristol-Myers Squibb Company", "market_cap": 120000000000}
-                ],
-                # Add data for other sectors as needed
-            }
-
-            # Return companies for the requested sector
-            return sector_companies.get(sector, [])[:n]
-
-        if __name__ == "__main__":
-            run_reports_page()
+from StockAnalysisSystem.src.navigation import get_active_ticker
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.utils.export import (
+    EXPORT_FORMATS,
+    Report,
+    ReportGenerator,
+    available_formats,
+)
+from StockAnalysisSystem.src.utils.financial_data import build_financial_data, is_empty
+
+logger = logging.getLogger(__name__)
+
+RESULTS_KEY = "reports_results"
+DEFAULT_TICKER = "AAPL"
+MAX_COMPARISON = 8
+
+#: Report type -> description
+REPORT_TYPES: Dict[str, str] = {
+    "Company": "Overview, key metrics, price performance, financial statements, ratios, risk and valuation "
+               "for one company.",
+    "Valuation": "Sector-specific valuation with every method, assumptions, method details and the DCF "
+                 "cash-flow forecast.",
+    "Comparison": "Side-by-side fundamentals, price performance and valuation for up to "
+                  f"{MAX_COMPARISON} companies.",
+    "Sector": "Sector ETF performance against the market plus fundamentals of the sector's largest companies.",
+}
+
+FORMAT_ORDER = ["pdf", "excel", "csv", "json", "html"]
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,14}$")
+
+
+class _NoData(Exception):
+    """Raised inside cached loaders so empty results are not cached."""
+
+
+# ---------------------------------------------------------------------------
+# Data access
+# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def _get_data_loader() -> DataLoader:
+    return DataLoader()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
+    prices = _get_data_loader().get_historical_prices(ticker, start, end)
+    if prices is None or prices.empty:
+        raise _NoData(ticker)
+    return prices
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_statement(ticker: str, statement_type: str) -> pd.DataFrame:
+    frame = _get_data_loader().get_financial_statements(ticker, statement_type, "annual")
+    if frame is None or frame.empty:
+        raise _NoData(ticker)
+    return frame
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_info(ticker: str) -> Dict[str, Any]:
+    info = _get_data_loader().get_company_info(ticker)
+    if not info:
+        raise _NoData(ticker)
+    return dict(info)
+
+
+def _guarded(loader: Callable[..., Any], empty: Any, *args: Any) -> Any:
+    try:
+        return loader(*args)
+    except _NoData:
+        return empty
+    except Exception:
+        logger.exception("Data loading failed: %s%s", getattr(loader, "__name__", loader), args)
+        return empty
+
+
+def load_prices(ticker: str, years: float = 1.0) -> pd.DataFrame:
+    end = datetime.now()
+    start = end - timedelta(days=int(365.25 * years))
+    return _guarded(_cached_prices, pd.DataFrame(), ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+
+def load_company(ticker: str, years: float = 1.0) -> Dict[str, Any]:
+    """``{"ticker", "company_info", "price_data", "financial_data"}`` (pieces may be empty)."""
+    info = _guarded(_cached_info, {}, ticker)
+    prices = load_prices(ticker, years)
+    statements = {key: _guarded(_cached_statement, pd.DataFrame(), ticker, stype)
+                  for key, stype in (("income_statement", "income"), ("balance_sheet", "balance"),
+                                     ("cash_flow", "cash"))}
+    if not info:
+        record = lookup_company(ticker)
+        if record:
+            info = {"symbol": record["symbol"], "name": record["name"], "sector": record["sector"],
+                    "industry": record["subsector"]}
+    return {"ticker": ticker, "company_info": info, "price_data": prices,
+            "financial_data": build_financial_data(company_info=info, price_data=prices, **statements)}
+
+
+def has_data(bundle: Mapping[str, Any]) -> bool:
+    financial = bundle.get("financial_data") or {}
+    return not (is_empty(bundle.get("price_data")) and all(
+        is_empty(financial.get(k)) for k in ("income_statement", "balance_sheet", "cash_flow")))
+
+
+# ---------------------------------------------------------------------------
+# Analysis helpers (all defensive: failures are logged and skipped)
+# ---------------------------------------------------------------------------
+def run_valuation(bundle: Mapping[str, Any], **overrides: Any) -> Optional[Dict[str, Any]]:
+    try:
+        from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
+
+        result = ValuationFactory(_get_data_loader()).get_company_valuation(
+            bundle["ticker"], financial_data=bundle["financial_data"], **overrides)
+        return dict(result) if isinstance(result, Mapping) else None
+    except Exception:
+        logger.exception("Valuation failed for %s", bundle.get("ticker"))
+        return None
+
+
+def run_ratios(bundle: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
+
+        ratios = FinancialRatioAnalyzer().calculate_ratios(bundle["financial_data"])
+        return dict(ratios) if isinstance(ratios, Mapping) else None
+    except Exception:
+        logger.exception("Ratio analysis failed for %s", bundle.get("ticker"))
+        return None
+
+
+def run_risk(bundle: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        from StockAnalysisSystem.src.models.bankruptcy_models import BankruptcyAnalyzer
+
+        sector = (bundle.get("company_info") or {}).get("sector")
+        risk = BankruptcyAnalyzer().get_comprehensive_risk_assessment(bundle["financial_data"], sector)
+        return dict(risk) if isinstance(risk, Mapping) and not risk.get("error") else None
+    except Exception:
+        logger.exception("Risk analysis failed for %s", bundle.get("ticker"))
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Report builders (data loading + ReportGenerator)
+# ---------------------------------------------------------------------------
+def build_company_report(ticker: str, years: int = 3, include_valuation: bool = True, include_ratios: bool = True,
+                         include_risk: bool = True, include_statements: bool = True,
+                         include_charts: bool = True) -> Report:
+    bundle = load_company(ticker, years)
+    if not has_data(bundle):
+        raise LookupError(f"No data is available for {ticker}.")
+    return ReportGenerator().company_report(
+        ticker, bundle["company_info"], bundle["financial_data"], bundle["price_data"],
+        valuation=run_valuation(bundle) if include_valuation else None,
+        ratios=run_ratios(bundle) if include_ratios else None,
+        risk=run_risk(bundle) if include_risk else None,
+        include_statements=include_statements, include_charts=include_charts)
+
+
+def build_valuation_report(ticker: str, overrides: Optional[Mapping[str, Any]] = None,
+                           include_charts: bool = True) -> Report:
+    bundle = load_company(ticker, 1)
+    if not has_data(bundle):
+        raise LookupError(f"No data is available for {ticker}.")
+    valuation = run_valuation(bundle, **dict(overrides or {}))
+    if not valuation:
+        raise RuntimeError(f"The valuation of {ticker} could not be completed.")
+    return ReportGenerator().valuation_report(ticker, valuation, bundle["company_info"], bundle["price_data"],
+                                              financial_data=bundle["financial_data"],
+                                              include_charts=include_charts)
+
+
+def build_comparison_report(tickers: List[str], include_valuation: bool = True,
+                            include_charts: bool = True) -> Report:
+    companies: Dict[str, Dict[str, Any]] = {}
+    missing = []
+    for ticker in tickers:
+        bundle = load_company(ticker, 1)
+        if not has_data(bundle):
+            missing.append(ticker)
+            continue
+        if include_valuation:
+            bundle["valuation"] = run_valuation(bundle)
+        companies[ticker] = bundle
+    if len(companies) < 2:
+        raise LookupError("At least two companies with available data are needed"
+                          + (f" (no data for {', '.join(missing)})." if missing else "."))
+    report = ReportGenerator().comparison_report(companies, include_charts=include_charts)
+    if missing:
+        report.metadata["missing"] = missing
+    return report
+
+
+def build_sector_report(sector: str, count: int = 6, include_valuation: bool = False,
+                        include_charts: bool = True) -> Report:
+    sector = normalize_sector(sector)
+    records = get_sector_companies(sector)[:count]
+    if not records:
+        raise LookupError(f"No companies are listed for the {sector} sector.")
+    companies = []
+    for record in records:
+        bundle = load_company(record["symbol"], 1)
+        entry = {**record, **bundle}
+        if include_valuation and has_data(bundle):
+            entry["valuation"] = run_valuation(bundle)
+        companies.append(entry)
+    etf = get_sector_etf(sector)
+    return ReportGenerator().sector_report(
+        sector, companies, etf_ticker=etf, etf_prices=load_prices(etf, 1) if etf else None,
+        benchmark_ticker=MARKET_BENCHMARK, benchmark_prices=load_prices(MARKET_BENCHMARK, 1),
+        include_charts=include_charts)
+
+
+def render_report_files(report: Report) -> Dict[str, Any]:
+    """Render every available format; returns ``{"files": {fmt: bytes}, "errors": {fmt: message}}``."""
+    files, errors = report.render_all(available_formats())
+    for fmt in FORMAT_ORDER:
+        if fmt not in files and fmt not in errors:
+            errors[fmt] = "not available in this installation"
+    return {"files": files, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+def _results() -> Dict[str, Dict[str, Any]]:
+    if RESULTS_KEY not in st.session_state:
+        st.session_state[RESULTS_KEY] = {}
+    return st.session_state[RESULTS_KEY]
+
+
+def _ticker_input(key: str, label: str = "Ticker symbol") -> str:
+    if key not in st.session_state:
+        st.session_state[key] = get_active_ticker(DEFAULT_TICKER)
+    raw = st.text_input(label, key=key, max_chars=15)
+    ticker = str(raw or "").strip().upper()
+    if ticker and not _TICKER_PATTERN.match(ticker):
+        st.warning(f"'{raw}' does not look like a valid ticker symbol.")
+        return ""
+    return ticker
+
+
+def _generate(report_type: str, params: Mapping[str, Any], builder: Callable[[], Report]) -> None:
+    """Build and render a report, storing the outcome (or a friendly error) in session state."""
+    with st.spinner("Generating report ..."):
+        try:
+            report = builder()
+            outcome = {"report": report, "params": dict(params), **render_report_files(report)}
+        except (LookupError, RuntimeError) as exc:
+            outcome = {"error": str(exc), "params": dict(params)}
+        except Exception:
+            logger.exception("%s report generation failed", report_type)
+            outcome = {"error": "The report could not be generated because of an unexpected error.",
+                       "params": dict(params)}
+    _results()[report_type] = outcome
+
+
+def _company_form() -> None:
+    ticker = _ticker_input("reports_company_ticker")
+    years = st.select_slider("Price history (years)", options=[1, 2, 3, 5], value=3, key="reports_company_years")
+    cols = st.columns(5)
+    options = {
+        "valuation": cols[0].checkbox("Valuation", value=True, key="reports_company_inc_valuation"),
+        "ratios": cols[1].checkbox("Ratios", value=True, key="reports_company_inc_ratios"),
+        "risk": cols[2].checkbox("Risk", value=True, key="reports_company_inc_risk"),
+        "statements": cols[3].checkbox("Statements", value=True, key="reports_company_inc_statements"),
+        "charts": cols[4].checkbox("Charts", value=True, key="reports_company_inc_charts"),
+    }
+    params = {"ticker": ticker, "years": years, **options}
+    if st.button("Generate company report", type="primary", key="reports_company_generate", disabled=not ticker):
+        _generate("Company", params, lambda: build_company_report(
+            ticker, years, options["valuation"], options["ratios"], options["risk"], options["statements"],
+            options["charts"]))
+    _render_result("Company", params)
+
+
+def _valuation_form() -> None:
+    ticker = _ticker_input("reports_valuation_ticker")
+    override = st.toggle("Override DCF assumptions", value=False, key="reports_valuation_override")
+    overrides: Dict[str, Any] = {}
+    if override:
+        cols = st.columns(3)
+        overrides["discount_rate"] = cols[0].slider("Discount rate (%)", 5.0, 20.0, 10.0, 0.5,
+                                                    key="reports_valuation_discount") / 100
+        overrides["terminal_growth"] = cols[1].slider("Terminal growth (%)", 0.0, 5.0, 2.5, 0.1,
+                                                      key="reports_valuation_terminal") / 100
+        overrides["forecast_years"] = cols[2].slider("Forecast years", 3, 10, 5,
+                                                     key="reports_valuation_years")
+    charts = st.checkbox("Include charts", value=True, key="reports_valuation_charts")
+    params = {"ticker": ticker, "overrides": overrides, "charts": charts}
+    if st.button("Generate valuation report", type="primary", key="reports_valuation_generate", disabled=not ticker):
+        _generate("Valuation", params, lambda: build_valuation_report(ticker, overrides, charts))
+    _render_result("Valuation", params)
+
+
+def _comparison_form() -> None:
+    symbols = [c["symbol"] for c in UNIVERSE]
+    names = {c["symbol"]: c["name"] for c in UNIVERSE}
+    if "reports_comparison_tickers" not in st.session_state:
+        active = get_active_ticker(DEFAULT_TICKER)
+        default = [active] if active in symbols else []
+        default += [s for s in ("AAPL", "MSFT", "GOOGL") if s not in default]
+        st.session_state["reports_comparison_tickers"] = default[:3]
+    selected = st.multiselect("Companies", options=symbols, key="reports_comparison_tickers",
+                              format_func=lambda s: f"{s} - {names.get(s, s)}",
+                              max_selections=MAX_COMPARISON)
+    extra_raw = st.text_input("Other tickers (comma separated)", key="reports_comparison_extra",
+                              placeholder="e.g. SHOP, ASML")
+    extra = [t.strip().upper() for t in str(extra_raw or "").split(",") if t.strip()]
+    invalid = [t for t in extra if not _TICKER_PATTERN.match(t)]
+    if invalid:
+        st.warning("Ignoring invalid tickers: " + ", ".join(invalid))
+    tickers = list(dict.fromkeys(list(selected) + [t for t in extra if t not in invalid]))[:MAX_COMPARISON]
+    cols = st.columns(2)
+    valuation = cols[0].checkbox("Include valuation", value=True, key="reports_comparison_valuation")
+    charts = cols[1].checkbox("Include charts", value=True, key="reports_comparison_charts")
+    params = {"tickers": tickers, "valuation": valuation, "charts": charts}
+    if len(tickers) < 2:
+        st.caption("Select at least two companies.")
+    if st.button("Generate comparison report", type="primary", key="reports_comparison_generate",
+                 disabled=len(tickers) < 2):
+        _generate("Comparison", params, lambda: build_comparison_report(tickers, valuation, charts))
+    _render_result("Comparison", params)
+
+
+def _sector_form() -> None:
+    sector = st.selectbox("Sector", SECTORS, key="reports_sector_name")
+    available = len(get_sector_companies(sector))
+    count = st.slider("Companies", min_value=2, max_value=max(available, 2), value=min(6, max(available, 2)),
+                      key="reports_sector_count")
+    cols = st.columns(2)
+    valuation = cols[0].checkbox("Include valuations (slower)", value=False, key="reports_sector_valuation")
+    charts = cols[1].checkbox("Include charts", value=True, key="reports_sector_charts")
+    params = {"sector": sector, "count": count, "valuation": valuation, "charts": charts}
+    if st.button("Generate sector report", type="primary", key="reports_sector_generate"):
+        _generate("Sector", params, lambda: build_sector_report(sector, count, valuation, charts))
+    _render_result("Sector", params)
+
+
+def _render_result(report_type: str, current_params: Mapping[str, Any]) -> None:
+    outcome = _results().get(report_type)
+    if not outcome:
+        return
+    prefix = f"reports_{report_type.lower()}"
+    if dict(outcome.get("params") or {}) != dict(current_params):
+        st.info("Showing the last generated report. Click the generate button to apply the current settings.")
+    if outcome.get("error"):
+        st.warning(outcome["error"])
+        return
+    report: Report = outcome["report"]
+    files: Dict[str, bytes] = outcome.get("files") or {}
+    st.success(f"Report ready: {report.title}")
+    if report.metadata.get("missing"):
+        st.caption("No data for: " + ", ".join(report.metadata["missing"]))
+    formats = [f for f in FORMAT_ORDER if f in files]
+    columns = st.columns(max(len(formats), 1) + 1)
+    generator = ReportGenerator()
+    for column, fmt in zip(columns, formats):
+        spec = EXPORT_FORMATS[fmt]
+        column.download_button(spec.label, data=files[fmt], file_name=generator.file_name(report, fmt),
+                               mime=spec.mime, key=f"{prefix}_download_{fmt}", on_click="ignore",
+                               icon=":material/download:")
+    if columns[-1].button("Clear", key=f"{prefix}_clear"):
+        _results().pop(report_type, None)
+        st.rerun()
+    unavailable = {f: e for f, e in (outcome.get("errors") or {}).items()}
+    if unavailable:
+        st.caption("Unavailable formats: " + "; ".join(f"{EXPORT_FORMATS[f].label} ({e})"
+                                                       for f, e in unavailable.items()))
+    with st.expander("Preview", expanded=True):
+        _preview(report, prefix)
+
+
+def _preview(report: Report, prefix: str) -> None:
+    st.markdown(f"### {report.title}")
+    if report.subtitle:
+        st.caption(report.subtitle)
+    for i, section in enumerate(report.sections):
+        st.markdown(f"#### {section.title}")
+        for text in section.text:
+            st.markdown(text)
+        if section.metrics:
+            metrics = section.formatted_metrics()
+            st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}),
+                         hide_index=True, key=f"{prefix}_preview_metrics_{i}")
+        table = section.display_table()
+        if table is not None:
+            st.dataframe(table, hide_index=not section.table_index, key=f"{prefix}_preview_table_{i}")
+        if section.image:
+            st.image(section.image, caption=section.image_caption or None)
+    if report.appendix:
+        st.caption("Also included in the Excel, CSV and JSON downloads: " + ", ".join(report.appendix))
+    st.caption(report.disclaimer)
+
+
+def run_reports_page() -> None:
+    """Render the reports page."""
+    st.title("Reports")
+    st.markdown("Generate analysis reports and download them as PDF, Excel, CSV, JSON or HTML.")
+    report_type = st.radio("Report type", list(REPORT_TYPES), horizontal=True, key="reports_type")
+    st.caption(REPORT_TYPES[report_type])
+    forms = {"Company": _company_form, "Valuation": _valuation_form, "Comparison": _comparison_form,
+             "Sector": _sector_form}
+    try:
+        forms[report_type]()
+    except Exception:  # never show a traceback to users
+        logger.exception("Reports page failed")
+        st.error("The reports page encountered an unexpected error. Please try different settings.")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    run_reports_page()

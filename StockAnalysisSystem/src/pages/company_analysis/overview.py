@@ -1,956 +1,460 @@
-import os
-import sys
+"""
+Company overview tab.
+
+Rendered by the app shell below its company header (name, ticker, sector,
+price metrics, market cap), so this page starts directly with sections:
+price chart, key statistics, business description, financial snapshot, key
+ratios versus sector benchmarks, performance versus the sector ETF and
+technical indicators.
+"""
+
+from __future__ import annotations
+
 import logging
-import pandas as pd
+from typing import Any, Dict, List, Optional
+
 import numpy as np
+import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-# Import project modules
-from config import COLORS, UI_SETTINGS
-from utils.data_loader import DataLoader
-from utils.visualization import FinancialVisualizer
-from models.ratio_analysis import FinancialRatioAnalyzer
-from models.financial_statements import FinancialStatementAnalyzer
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from StockAnalysisSystem.src.industry.universe import SECTOR_ETFS
+from StockAnalysisSystem.src.pages.company_analysis.charts import (
+    benchmark_bar_chart,
+    financial_bars_chart,
+    is_empty_figure,
+    price_chart,
+    rebased_performance_chart,
+    show_chart,
 )
-logger = logging.getLogger('company_overview')
+from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
+    NEGATIVE,
+    NEUTRAL,
+    POSITIVE,
+    benchmark_table,
+    canonical_sector,
+    close_series,
+    fmt_money,
+    fmt_number,
+    fmt_pct,
+    fmt_price,
+    fmt_ratio,
+    fmt_shares,
+    free_cash_flow_series,
+    get_company_ratios,
+    get_sector_benchmarks,
+    get_statement,
+    item_series,
+    market_snapshot,
+    normalized_prices,
+)
+from StockAnalysisSystem.src.utils.financial_data import get_latest, safe_divide, to_float
+
+logger = logging.getLogger("company_overview")
+
+KEY = "ov_"
+
+#: Price chart ranges -> pandas offset (None = full history, "YTD" handled separately)
+RANGES: Dict[str, Optional[pd.DateOffset]] = {
+    "1M": pd.DateOffset(months=1), "3M": pd.DateOffset(months=3), "6M": pd.DateOffset(months=6),
+    "YTD": None, "1Y": pd.DateOffset(years=1), "3Y": pd.DateOffset(years=3), "5Y": pd.DateOffset(years=5),
+    "Max": None,
+}
+
+#: Trailing return periods
+RETURN_PERIODS: Dict[str, Optional[pd.DateOffset]] = {
+    "1W": pd.DateOffset(weeks=1), "1M": pd.DateOffset(months=1), "3M": pd.DateOffset(months=3),
+    "6M": pd.DateOffset(months=6), "YTD": None, "1Y": pd.DateOffset(years=1),
+    "3Y": pd.DateOffset(years=3), "5Y": pd.DateOffset(years=5),
+}
+
+OVERVIEW_RATIOS = ["pe_ratio", "ps_ratio", "pb_ratio", "ev_ebitda", "gross_margin", "operating_margin",
+                   "net_margin", "roe", "roa", "current_ratio", "debt_to_equity", "interest_coverage"]
 
 
 def render_company_overview(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
-                            price_data: pd.DataFrame, sector_data: Optional[Dict] = None):
+                            price_data: pd.DataFrame, sector_data: Optional[pd.DataFrame] = None) -> None:
     """
-    Render the company overview page
+    Render the company overview tab.
 
     Args:
-        ticker: Company ticker symbol
-        financial_data: Dictionary containing financial statement data
-        company_info: Dictionary containing company information
-        price_data: DataFrame with historical price data
-        sector_data: Dictionary containing sector data (optional)
+        ticker: Company ticker symbol.
+        financial_data: Canonical financial data bundle (see ``utils.financial_data``).
+        company_info: Normalised company information dict.
+        price_data: Daily OHLCV price history.
+        sector_data: Daily price history of the sector ETF (optional).
     """
-    # Display company header
-    st.header(f"{company_info.get('name', ticker)} ({ticker})")
+    company_info = company_info or {}
+    financial_data = financial_data or {}
+    sector = canonical_sector(company_info, financial_data)
+    prices = normalized_prices(price_data)
+    sector_prices = normalized_prices(sector_data) if isinstance(sector_data, pd.DataFrame) else pd.DataFrame()
 
-    # Get sector and industry
-    sector = company_info.get('sector', 'Unknown')
-    industry = company_info.get('industry', 'Unknown')
+    _render_price_chart(ticker, company_info, prices)
+    _render_key_statistics(financial_data, company_info, prices, sector_prices, sector)
+    _render_business_description(company_info)
+    _render_financial_snapshot(financial_data)
+    _render_key_ratios(financial_data, company_info, price_data, sector)
+    _render_sector_performance(ticker, prices, sector_prices, sector)
+    _render_technical_indicators(prices)
 
-    # Company metadata row with custom styling
-    col1, col2, col3, col4 = st.columns(4)
 
+# ---------------------------------------------------------------------------
+# Price chart
+# ---------------------------------------------------------------------------
+def _slice_range(df: pd.DataFrame, choice: str) -> pd.DataFrame:
+    if df.empty or choice == "Max":
+        return df
+    end = df.index[-1]
+    if choice == "YTD":
+        start = pd.Timestamp(year=end.year, month=1, day=1)
+    else:
+        start = end - RANGES[choice]
+    sliced = df[df.index >= start]
+    return sliced if len(sliced) >= 2 else df
+
+
+def _render_price_chart(ticker: str, company_info: Dict[str, Any], prices: pd.DataFrame) -> None:
+    st.subheader("Price History")
+    if prices.empty:
+        st.info("No price history is available for this company.")
+        return
+
+    currency = company_info.get("currency") or "USD"
+    col1, col2, col3, col4 = st.columns([3, 2, 3, 1.4])
     with col1:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Sector</div>
-                <div class="metric-value" style="color: {COLORS['sectors'].get(sector, COLORS['secondary'])}">
-                    {sector}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        range_choice = st.radio("Range", list(RANGES), index=4, horizontal=True, key=f"{KEY}range")
     with col2:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Industry</div>
-                <div class="metric-value">{industry}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        has_ohlc = all(c in prices.columns for c in ("Open", "High", "Low"))
+        chart_options = ["Candlestick", "Line"] if has_ohlc else ["Line"]
+        chart_type = st.radio("Chart type", chart_options, horizontal=True, key=f"{KEY}chart_type")
     with col3:
-        exchange = company_info.get('exchange', 'N/A')
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Exchange</div>
-                <div class="metric-value">{exchange}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        ma_periods = st.multiselect("Moving averages (days)", [20, 50, 100, 200], default=[50, 200],
+                                    key=f"{KEY}ma")
     with col4:
-        currency = company_info.get('currency', 'USD')
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Currency</div>
-                <div class="metric-value">{currency}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        show_volume = st.toggle("Volume", value=True, key=f"{KEY}volume")
 
-    # Price metrics row
-    latest_price = price_data['Close'].iloc[-1] if not price_data.empty else None
-    price_change = price_data['Close'].pct_change().iloc[-1] * 100 if not price_data.empty else None
-    price_change_30d = price_data['Close'].pct_change(30).iloc[-1] * 100 if not price_data.empty and len(
-        price_data) > 30 else None
+    # Moving averages use the full history so long windows are defined at the range start
+    moving_averages = {p: prices["Close"].rolling(window=p).mean() for p in sorted(ma_periods)}
+    view = _slice_range(prices, range_choice)
+    name = company_info.get("name") or ticker
+    fig = price_chart(view, title=f"{name} ({ticker}) — {range_choice} price", chart_type=chart_type,
+                      moving_averages=moving_averages, show_volume=show_volume, currency=currency)
+    show_chart(fig, key=f"{KEY}price_chart")
 
-    col1, col2, col3, col4 = st.columns(4)
 
+# ---------------------------------------------------------------------------
+# Key statistics
+# ---------------------------------------------------------------------------
+def trailing_return(close: pd.Series, period: str) -> Optional[float]:
+    """Total price return over ``period`` (key of RETURN_PERIODS) or None if history is too short."""
+    if close.empty or len(close) < 2:
+        return None
+    end_date = close.index[-1]
+    if period == "YTD":
+        prior = close[close.index < pd.Timestamp(year=end_date.year, month=1, day=1)]
+        start_value = prior.iloc[-1] if not prior.empty else None
+    else:
+        start_date = end_date - RETURN_PERIODS[period]
+        if close.index[0] > start_date + pd.Timedelta(days=5):
+            return None
+        start_value = close[close.index <= start_date].iloc[-1] if (close.index <= start_date).any() \
+            else close.iloc[0]
+    return safe_divide(close.iloc[-1], start_value, None) - 1 if start_value else None
+
+
+def annualized_volatility(close: pd.Series, window: int = 252) -> Optional[float]:
+    returns = close.pct_change().dropna().tail(window)
+    return float(returns.std() * np.sqrt(252)) if len(returns) > 20 else None
+
+
+def _render_key_statistics(financial_data: Dict[str, Any], company_info: Dict[str, Any], prices: pd.DataFrame,
+                           sector_prices: pd.DataFrame, sector: str) -> None:
+    st.subheader("Key Statistics")
+    close = close_series(prices)
+    income = get_statement(financial_data, "income_statement")
+    snap = market_snapshot(financial_data, company_info, prices)
+
+    last_year = close[close.index >= close.index[-1] - pd.DateOffset(years=1)] if not close.empty else close
+    high_52w = float(last_year.max()) if not last_year.empty else to_float(company_info.get("fifty_two_week_high"))
+    low_52w = float(last_year.min()) if not last_year.empty else to_float(company_info.get("fifty_two_week_low"))
+    last = float(close.iloc[-1]) if not close.empty else snap["price"]
+    from_high = safe_divide(last, high_52w) - 1 if last and high_52w else None
+
+    avg_volume = None
+    if "Volume" in prices.columns and not prices.empty:
+        avg_volume = to_float(prices["Volume"].tail(63).mean())
+    avg_volume = avg_volume or to_float(company_info.get("average_volume"))
+
+    eps = get_latest(income, "diluted_eps")
+    if eps is None:
+        eps = safe_divide(get_latest(income, "net_income"), snap["shares"])
+    pe = to_float(company_info.get("pe_ratio"))
+    if pe is None and eps and eps > 0 and last:
+        pe = last / eps
+
+    stats = [
+        ("52-Week High", fmt_price(high_52w), None),
+        ("52-Week Low", fmt_price(low_52w), None),
+        ("From 52-Week High", fmt_pct(from_high, signed=True), "Distance of the last close from the 52-week high."),
+        ("Avg. Volume (3M)", fmt_shares(avg_volume), "Average daily shares traded over ~63 sessions."),
+        ("Beta", fmt_number(snap["beta"]), "Sensitivity of the stock to market moves (1.0 = market)."),
+        ("Dividend Yield", fmt_pct(snap["dividend_yield"], decimals=2), None),
+        ("P/E (TTM)", fmt_ratio(pe), "Price divided by trailing diluted EPS."),
+        ("Forward P/E", fmt_ratio(company_info.get("forward_pe")), "Price divided by expected next-year EPS."),
+        ("Diluted EPS", fmt_price(eps), "Latest fiscal-year diluted earnings per share."),
+        ("Shares Outstanding", fmt_shares(snap["shares"]), None),
+        ("Volatility (1Y, ann.)", fmt_pct(annualized_volatility(close)),
+         "Annualised standard deviation of daily returns over the last year."),
+        ("Employees", f"{int(company_info['employees']):,}" if to_float(company_info.get("employees")) else "N/A",
+         None),
+    ]
+    for start in range(0, len(stats), 4):
+        cols = st.columns(4)
+        for col, (label, value, help_text) in zip(cols, stats[start:start + 4]):
+            col.metric(label, value, help=help_text)
+
+    if close.empty:
+        return
+    sector_close = close_series(sector_prices)
+    etf = SECTOR_ETFS.get(sector)
+    rows = []
+    for period in RETURN_PERIODS:
+        stock_ret = trailing_return(close, period)
+        row = {"Period": period, "Stock": fmt_pct(stock_ret, signed=True)}
+        if not sector_close.empty:
+            etf_ret = trailing_return(sector_close, period)
+            row[f"Sector ETF ({etf or 'ETF'})"] = fmt_pct(etf_ret, signed=True)
+            diff = stock_ret - etf_ret if stock_ret is not None and etf_ret is not None else None
+            row["Difference (pp)"] = f"{diff * 100:+.1f}" if diff is not None else "N/A"
+        if stock_ret is not None:
+            rows.append(row)
+    if rows:
+        st.markdown("**Trailing price returns**")
+        st.dataframe(pd.DataFrame(rows), hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Business description
+# ---------------------------------------------------------------------------
+def _render_business_description(company_info: Dict[str, Any]) -> None:
+    st.subheader("Business Description")
+    description = (company_info.get("description") or company_info.get("longBusinessSummary") or "").strip()
+    if description:
+        if len(description) > 700:
+            cut = description[:700].rsplit(" ", 1)[0]
+            st.write(cut + " …")
+            with st.expander("Read full description"):
+                st.write(description)
+        else:
+            st.write(description)
+    else:
+        st.info("No business description is available for this company.")
+
+    facts = [
+        ("Country", company_info.get("country")),
+        ("Exchange", company_info.get("exchange")),
+        ("Currency", company_info.get("currency")),
+        ("Website", company_info.get("website")),
+    ]
+    facts = [(label, value) for label, value in facts if value]
+    if facts:
+        st.markdown(" · ".join(f"**{label}:** {value}" for label, value in facts))
+
+
+# ---------------------------------------------------------------------------
+# Financial snapshot
+# ---------------------------------------------------------------------------
+def _latest_and_change(series: pd.Series) -> tuple:
+    if series.empty:
+        return None, None
+    latest = float(series.iloc[-1])
+    if len(series) < 2 or series.iloc[-2] == 0:
+        return latest, None
+    return latest, (latest - series.iloc[-2]) / abs(series.iloc[-2])
+
+
+def _render_financial_snapshot(financial_data: Dict[str, Any]) -> None:
+    st.subheader("Financial Snapshot")
+    income = get_statement(financial_data, "income_statement")
+    balance = get_statement(financial_data, "balance_sheet")
+    cash_flow = get_statement(financial_data, "cash_flow")
+    if income.empty and balance.empty and cash_flow.empty:
+        st.info("Financial statements are not available for this company.")
+        return
+
+    revenue = item_series(income, "revenue")
+    net_income = item_series(income, "net_income")
+    fcf = free_cash_flow_series(cash_flow)
+    cash = item_series(balance, "cash_and_short_term_investments")
+    debt = item_series(balance, "total_debt")
+
+    cols = st.columns(5)
+    for col, (label, series) in zip(cols, [("Revenue", revenue), ("Net Income", net_income),
+                                           ("Free Cash Flow", fcf), ("Cash & ST Investments", cash),
+                                           ("Total Debt", debt)]):
+        latest, change = _latest_and_change(series)
+        col.metric(label, fmt_money(latest), delta=fmt_pct(change, signed=True) if change is not None else None,
+                   delta_color="inverse" if label == "Total Debt" else "normal",
+                   help="Latest fiscal year; delta is the change versus the prior year.")
+
+    if revenue.empty and net_income.empty:
+        st.info("Revenue and net income history are not available.")
+        return
+    margin = net_income.reindex(revenue.index) / revenue.replace(0, np.nan) if not revenue.empty \
+        else pd.Series(dtype=float)
+    fig = financial_bars_chart({"Revenue": revenue, "Net Income": net_income, "Free Cash Flow": fcf},
+                               title="Revenue, earnings and free cash flow",
+                               line=("Net margin", margin), line_axis_title="Net margin")
+    show_chart(fig, key=f"{KEY}financial_snapshot")
+
+
+# ---------------------------------------------------------------------------
+# Key ratios vs sector benchmarks
+# ---------------------------------------------------------------------------
+def _render_key_ratios(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
+                       sector: str) -> None:
+    st.subheader("Key Ratios vs Sector Benchmark")
+    ratios = get_company_ratios(financial_data, company_info, price_data)
+    if not any(ratios.values()):
+        st.info("Not enough financial data to calculate key ratios.")
+        return
+    benchmarks = get_sector_benchmarks(sector)
+    table = benchmark_table(ratios, benchmarks, OVERVIEW_RATIOS)
+    if table.empty:
+        st.info("Not enough financial data to calculate key ratios.")
+        return
+    label = sector if sector != "Unknown" else "general market"
+    st.caption(f"Benchmarks: typical {label} values. Lower is better for valuation multiples and leverage; "
+               "higher is better for margins, returns, liquidity and coverage.")
+    col1, col2 = st.columns([1.1, 1])
     with col1:
-        price_color = COLORS['primary']
-        price_display = f"${latest_price:.2f}" if latest_price else "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Current Price</div>
-                <div class="metric-value" style="color: {price_color}">{price_display}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        st.dataframe(table, hide_index=True)
     with col2:
-        if price_change is not None:
-            change_color = COLORS['primary'] if price_change >= 0 else COLORS['accent']
-            change_icon = "↗" if price_change >= 0 else "↘"
-            change_display = f"{change_icon} {price_change:.2f}%"
+        fig = benchmark_bar_chart(ratios, benchmarks, OVERVIEW_RATIOS, "Premium / discount to sector")
+        if is_empty_figure(fig):
+            st.info("No sector benchmarks are available for these ratios.")
         else:
-            change_color = COLORS['info']
-            change_display = "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">1-Day Change</div>
-                <div class="metric-value" style="color: {change_color}">{change_display}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col3:
-        if price_change_30d is not None:
-            change_color = COLORS['primary'] if price_change_30d >= 0 else COLORS['accent']
-            change_icon = "↗" if price_change_30d >= 0 else "↘"
-            change_display = f"{change_icon} {price_change_30d:.2f}%"
-        else:
-            change_color = COLORS['info']
-            change_display = "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">30-Day Change</div>
-                <div class="metric-value" style="color: {change_color}">{change_display}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col4:
-        market_cap = company_info.get('market_cap')
-        if market_cap:
-            if market_cap >= 1e12:
-                cap_display = f"${market_cap / 1e12:.2f}T"
-            elif market_cap >= 1e9:
-                cap_display = f"${market_cap / 1e9:.2f}B"
-            elif market_cap >= 1e6:
-                cap_display = f"${market_cap / 1e6:.2f}M"
-            else:
-                cap_display = f"${market_cap:.2f}"
-        else:
-            cap_display = "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-label">Market Cap</div>
-                <div class="metric-value">{cap_display}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # Create tabs for different sections
-    tabs = st.tabs(["Overview", "Price Chart", "Key Financials", "About"])
-
-    # Tab: Overview
-    with tabs[0]:
-        # Two columns layout
-        col1, col2 = st.columns([3, 2])
-
-        with col1:
-            # Overview card with quick stats
-            st.subheader("Quick Overview")
-
-            # Create financial ratio analyzer
-            ratio_analyzer = FinancialRatioAnalyzer()
-
-            # Calculate key financial ratios
-            ratios = ratio_analyzer.calculate_ratios(financial_data)
-
-            # Get sector benchmarks if sector is known
-            if sector != 'Unknown':
-                sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector)
-            else:
-                sector_benchmarks = None
-
-            # Display key ratios in a dashboard
-            key_metrics = [
-                {
-                    "category": "Valuation",
-                    "metrics": [
-                        {"name": "P/E Ratio", "key": "pe_ratio", "category": "valuation", "format": ".2f"},
-                        {"name": "P/S Ratio", "key": "ps_ratio", "category": "valuation", "format": ".2f"},
-                        {"name": "P/B Ratio", "key": "pb_ratio", "category": "valuation", "format": ".2f"}
-                    ]
-                },
-                {
-                    "category": "Profitability",
-                    "metrics": [
-                        {"name": "Gross Margin", "key": "gross_margin", "category": "profitability", "format": ".1%"},
-                        {"name": "Operating Margin", "key": "operating_margin", "category": "profitability",
-                         "format": ".1%"},
-                        {"name": "Net Margin", "key": "net_margin", "category": "profitability", "format": ".1%"}
-                    ]
-                },
-                {
-                    "category": "Returns",
-                    "metrics": [
-                        {"name": "ROE", "key": "roe", "category": "profitability", "format": ".1%"},
-                        {"name": "ROA", "key": "roa", "category": "profitability", "format": ".1%"}
-                    ]
-                },
-                {
-                    "category": "Financial Health",
-                    "metrics": [
-                        {"name": "Current Ratio", "key": "current_ratio", "category": "liquidity", "format": ".2f"},
-                        {"name": "Debt-to-Equity", "key": "debt_to_equity", "category": "leverage", "format": ".2f"}
-                    ]
-                }
-            ]
-
-            # Display metric categories
-            for metric_group in key_metrics:
-                # Display category header
-                st.markdown(f"<div class='section-header'><h4>{metric_group['category']}</h4></div>",
-                            unsafe_allow_html=True)
-
-                # Create columns for metrics
-                metric_cols = st.columns(len(metric_group["metrics"]))
-
-                # Display metrics in columns
-                for i, metric in enumerate(metric_group["metrics"]):
-                    with metric_cols[i]:
-                        # Get metric value
-                        value = ratios.get(metric["category"], {}).get(metric["key"])
-                        benchmark = sector_benchmarks.get(metric["category"], {}).get(
-                            metric["key"]) if sector_benchmarks else None
-
-                        # Format value
-                        if value is not None:
-                            if "%" in metric["format"]:
-                                # Percentage format
-                                formatted_value = f"{value:{metric['format']}}"
-                            else:
-                                # Regular format
-                                formatted_value = f"{value:{metric['format']}}"
-                        else:
-                            formatted_value = "N/A"
-
-                        # Compare to benchmark
-                        if benchmark is not None and value is not None:
-                            # Determine if higher or lower is better for this metric
-                            higher_is_better = True
-                            # Valuation metrics where lower is better
-                            if metric["category"] == "valuation" or (
-                                    metric["category"] == "leverage" and metric["key"] == "debt_to_equity"):
-                                higher_is_better = False
-
-                            # Calculate percentage difference
-                            perc_diff = (value / benchmark - 1) * 100
-
-                            # Determine color based on comparison
-                            if (higher_is_better and perc_diff > 10) or (not higher_is_better and perc_diff < -10):
-                                color = COLORS["primary"]  # positive
-                            elif (higher_is_better and perc_diff < -10) or (not higher_is_better and perc_diff > 10):
-                                color = COLORS["accent"]  # negative
-                            else:
-                                color = COLORS["warning"]  # neutral
-
-                            # Create comparison indicator
-                            comparison = f"<span style='color:{color};font-size:12px;'>{perc_diff:+.1f}% vs sector</span>"
-                        else:
-                            comparison = ""
-
-                        # Display metric card
-                        st.markdown(
-                            f"""
-                            <div class="metric-card">
-                                <div class="metric-value">{formatted_value}</div>
-                                <div class="metric-label">{metric["name"]}</div>
-                                {comparison}
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-
-            # Display company description (truncated)
-            st.subheader("Business Description")
-            description = company_info.get('description', "No description available.")
-            if len(description) > 500:
-                st.markdown(f"{description[:500]}...")
-                st.markdown(f"<span style='color:{COLORS['info']};cursor:pointer;'>Read more</span>",
-                            unsafe_allow_html=True)
-            else:
-                st.markdown(description)
-
-        with col2:
-            # Recent performance card
-            st.subheader("Performance")
-
-            # Create performance table
-            if not price_data.empty:
-                # Calculate performance metrics
-                perf_data = {
-                    "Period": ["1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "YTD"],
-                    "Return": [
-                        price_data['Close'].pct_change(5).iloc[-1] * 100 if len(price_data) > 5 else None,
-                        price_data['Close'].pct_change(20).iloc[-1] * 100 if len(price_data) > 20 else None,
-                        price_data['Close'].pct_change(60).iloc[-1] * 100 if len(price_data) > 60 else None,
-                        price_data['Close'].pct_change(125).iloc[-1] * 100 if len(price_data) > 125 else None,
-                        price_data['Close'].pct_change(252).iloc[-1] * 100 if len(price_data) > 252 else None,
-                        price_data['Close'].iloc[-1] /
-                        price_data[price_data.index.year == price_data.index[-1].year].iloc[0]['Close'] * 100 - 100
-                    ]
-                }
-
-                # Create DataFrame
-                perf_df = pd.DataFrame(perf_data)
-
-                # Remove None values
-                perf_df = perf_df.dropna()
-
-                # Format return column
-                perf_df["Color"] = perf_df["Return"].apply(lambda x: COLORS["primary"] if x >= 0 else COLORS["accent"])
-                perf_df["Formatted Return"] = perf_df.apply(
-                    lambda
-                        row: f"<span style='color:{row['Color']}'>{'+' if row['Return'] >= 0 else ''}{row['Return']:.2f}%</span>",
-                    axis=1
-                )
-
-                # Display formatted table
-                for i, row in perf_df.iterrows():
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid #333;">
-                            <span>{row['Period']}</span>
-                            {row['Formatted Return']}
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.info("No price data available to calculate performance.")
-
-            # Trading information
-            st.subheader("Trading Information")
-
-            trading_info = [
-                {"label": "52-Week High", "value": company_info.get('fifty_two_week_high')},
-                {"label": "52-Week Low", "value": company_info.get('fifty_two_week_low')},
-                {"label": "Average Volume", "value": company_info.get('average_volume')},
-                {"label": "Beta", "value": company_info.get('beta')},
-                {"label": "Dividend Yield", "value": company_info.get('dividend_yield')}
-            ]
-
-            # Display trading information
-            for info in trading_info:
-                if info["value"] is not None:
-                    # Format value based on type
-                    if isinstance(info["value"], float):
-                        if info["label"] == "Dividend Yield" and info["value"] > 0:
-                            formatted_value = f"{info['value']:.2%}"
-                        elif info["label"] in ["52-Week High", "52-Week Low"]:
-                            formatted_value = f"${info['value']:.2f}"
-                        elif info["label"] == "Average Volume":
-                            formatted_value = f"{info['value']:,.0f}"
-                        else:
-                            formatted_value = f"{info['value']:.2f}"
-                    else:
-                        formatted_value = str(info["value"])
-
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid #333;">
-                            <span>{info['label']}</span>
-                            <span>{formatted_value}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-    # Tab: Price Chart
-    with tabs[1]:
-        # Create visualizer
-        visualizer = FinancialVisualizer()
-
-        # Configure chart options
-        st.subheader("Stock Price Chart")
-
-        # Chart controls
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            chart_type = st.selectbox("Chart Type:", ["Line", "Candlestick", "OHLC"], index=0)
-
-        with col2:
-            show_volume = st.checkbox("Show Volume", value=True)
-
-        with col3:
-            show_ma = st.checkbox("Show Moving Averages", value=True)
-
-        # MA periods if selected
-        if show_ma:
-            ma_periods = st.multiselect("Moving Average Periods:", [5, 10, 20, 50, 100, 200], default=[50, 200])
-        else:
-            ma_periods = []
-
-        # Plot stock price chart
-        if not price_data.empty:
-            fig = visualizer.plot_stock_price(
-                price_data,
-                ticker,
-                company_name=company_info.get('name'),
-                chart_type=chart_type.lower(),
-                ma_periods=ma_periods,
-                volume=show_volume,
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No price data available to display chart.")
-
-        # Technical indicators (simplified)
-        if not price_data.empty and len(price_data) > 14:
-            st.subheader("Technical Indicators")
-
-            # Calculate RSI
-            delta = price_data['Close'].diff()
-            gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-            loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-
-            # Calculate MACD
-            ema12 = price_data['Close'].ewm(span=12, adjust=False).mean()
-            ema26 = price_data['Close'].ewm(span=26, adjust=False).mean()
-            macd = ema12 - ema26
-            signal = macd.ewm(span=9, adjust=False).mean()
-
-            # Calculate Bollinger Bands
-            sma20 = price_data['Close'].rolling(window=20).mean()
-            std20 = price_data['Close'].rolling(window=20).std()
-            upper_band = sma20 + (std20 * 2)
-            lower_band = sma20 - (std20 * 2)
-
-            # Get last values
-            last_rsi = rsi.iloc[-1]
-            last_macd = macd.iloc[-1]
-            last_signal = signal.iloc[-1]
-            last_upper = upper_band.iloc[-1]
-            last_lower = lower_band.iloc[-1]
-            last_close = price_data['Close'].iloc[-1]
-
-            # Display indicators
-            indicators_col1, indicators_col2, indicators_col3 = st.columns(3)
-
-            with indicators_col1:
-                # RSI
-                rsi_color = COLORS["accent"] if last_rsi > 70 else COLORS["primary"] if last_rsi < 30 else COLORS[
-                    "warning"]
-                rsi_status = "Overbought" if last_rsi > 70 else "Oversold" if last_rsi < 30 else "Neutral"
-
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value" style="color: {rsi_color}">{last_rsi:.1f}</div>
-                        <div class="metric-label">RSI (14) - {rsi_status}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-            with indicators_col2:
-                # MACD
-                macd_color = COLORS["primary"] if last_macd > last_signal else COLORS["accent"]
-                macd_status = "Bullish" if last_macd > last_signal else "Bearish"
-
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value" style="color: {macd_color}">{last_macd:.2f}</div>
-                        <div class="metric-label">MACD - {macd_status}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-            with indicators_col3:
-                # Bollinger Bands
-                bb_position = (last_close - last_lower) / (last_upper - last_lower) * 100
-                bb_color = COLORS["accent"] if bb_position > 80 else COLORS["primary"] if bb_position < 20 else COLORS[
-                    "warning"]
-                bb_status = "Upper Band" if bb_position > 80 else "Lower Band" if bb_position < 20 else "Middle"
-
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value" style="color: {bb_color}">{bb_position:.1f}%</div>
-                        <div class="metric-label">BB Position - {bb_status}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-    # Tab: Key Financials
-    with tabs[2]:
-        # Financials overview
-        st.subheader("Financial Summary")
-
-        # Create statement analyzer
-        statement_analyzer = FinancialStatementAnalyzer()
-
-        # Extract financial statements
-        income_stmt = financial_data.get('income_statement')
-        balance_sheet = financial_data.get('balance_sheet')
-        cash_flow = financial_data.get('cash_flow')
-
-        # Check if we have financial data
-        if income_stmt is not None and not income_stmt.empty:
-            # Analyze income statement
-            income_analysis = statement_analyzer.analyze_income_statement(income_stmt)
-
-            # Display income statement summary
-            st.markdown('<div class="section-header"><h4>Revenue & Earnings</h4></div>', unsafe_allow_html=True)
-
-            # Extract key metrics
-            last_periods = min(4, income_stmt.shape[1])
-            periods = income_stmt.columns[:last_periods]
-
-            # Get key income metrics
-            metrics = [
-                {"name": "Revenue", "row": "Total Revenue"},
-                {"name": "Gross Profit", "row": "Gross Profit"},
-                {"name": "Operating Income", "row": "Operating Income"},
-                {"name": "Net Income", "row": "Net Income"}
-            ]
-
-            # Create dataframe for display
-            income_df = pd.DataFrame(index=[m["name"] for m in metrics])
-
-            # Fill data
-            for period in periods:
-                period_data = []
-                for metric in metrics:
-                    if metric["row"] in income_stmt.index:
-                        period_data.append(income_stmt.loc[metric["row"], period])
-                    else:
-                        period_data.append(None)
-                income_df[period] = period_data
-
-            # Format for display
-            income_display = income_df.copy()
-            for col in income_display.columns:
-                # Format values in millions/billions
-                income_display[col] = income_display[col].apply(
-                    lambda x: f"${x / 1e9:.2f}B" if abs(x) >= 1e9 else f"${x / 1e6:.2f}M" if abs(
-                        x) >= 1e6 else f"${x:.2f}" if x is not None else "N/A"
-                )
-
-            # Calculate growth rate
-            if len(periods) >= 2:
-                growth_data = []
-                for metric in metrics:
-                    if metric["row"] in income_stmt.index:
-                        current = income_stmt.loc[metric["row"], periods[0]]
-                        previous = income_stmt.loc[metric["row"], periods[1]]
-                        if current is not None and previous is not None and previous != 0:
-                            growth_rate = (current / previous - 1) * 100
-                            growth_data.append(f"{growth_rate:+.1f}%")
-                        else:
-                            growth_data.append("N/A")
-                    else:
-                        growth_data.append("N/A")
-
-                # Add growth column
-                income_display["YoY Growth"] = growth_data
-
-            # Display the table
-            st.dataframe(income_display, use_container_width=True)
-
-            # Plot revenue trend
-            revenue_data = income_stmt.loc["Total Revenue"] if "Total Revenue" in income_stmt.index else None
-            net_income_data = income_stmt.loc["Net Income"] if "Net Income" in income_stmt.index else None
-
-            if revenue_data is not None and net_income_data is not None:
-                # Create visualizer
-                visualizer = FinancialVisualizer()
-
-                # Create DataFrame for plotting
-                plot_data = pd.DataFrame({
-                    "Revenue": revenue_data,
-                    "Net Income": net_income_data
-                })
-
-                # Plot financial trends
-                fig = visualizer.plot_financial_trends(
-                    plot_data,
-                    title="Revenue & Net Income Trend",
-                    height=350
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No income statement data available.")
-
-        # Balance Sheet Summary
-        if balance_sheet is not None and not balance_sheet.empty:
-            # Balance sheet analysis
-            balance_analysis = statement_analyzer.analyze_balance_sheet(balance_sheet)
-
-            # Display balance sheet summary
-            st.markdown('<div class="section-header"><h4>Balance Sheet Summary</h4></div>', unsafe_allow_html=True)
-
-            # Key balance sheet metrics
-            bs_metrics = [
-                {"name": "Total Assets", "row": "Total Assets"},
-                {"name": "Total Liabilities", "row": "Total Liabilities"},
-                {"name": "Shareholders' Equity", "row": "Total Stockholder Equity"},
-                {"name": "Debt-to-Equity", "type": "calculated"}
-            ]
-
-            # Last period for display
-            last_period = balance_sheet.columns[0]
-
-            # Create columns for display
-            bs_col1, bs_col2 = st.columns(2)
-
-            # Display metrics in columns
-            with bs_col1:
-                for i in range(0, len(bs_metrics) // 2 + len(bs_metrics) % 2):
-                    metric = bs_metrics[i]
-                    if metric["type"] == "calculated" and metric["name"] == "Debt-to-Equity":
-                        # Calculate D/E ratio
-                        if "Total Liabilities" in balance_sheet.index and "Total Stockholder Equity" in balance_sheet.index:
-                            liabilities = balance_sheet.loc["Total Liabilities", last_period]
-                            equity = balance_sheet.loc["Total Stockholder Equity", last_period]
-                            if equity != 0:
-                                value = liabilities / equity
-                                formatted_value = f"{value:.2f}"
-                            else:
-                                formatted_value = "N/A"
-                        else:
-                            formatted_value = "N/A"
-                    else:
-                        # Regular metric
-                        if metric["row"] in balance_sheet.index:
-                            value = balance_sheet.loc[metric["row"], last_period]
-                            if abs(value) >= 1e9:
-                                formatted_value = f"${value / 1e9:.2f}B"
-                            elif abs(value) >= 1e6:
-                                formatted_value = f"${value / 1e6:.2f}M"
-                            else:
-                                formatted_value = f"${value:.2f}"
-                        else:
-                            formatted_value = "N/A"
-
-                    # Display metric
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{formatted_value}</div>
-                            <div class="metric-label">{metric["name"]}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-            # Display metrics in second column
-            with bs_col2:
-                for i in range(len(bs_metrics) // 2 + len(bs_metrics) % 2, len(bs_metrics)):
-                    metric = bs_metrics[i]
-                    if metric["type"] == "calculated":
-                        # Custom calculation
-                        formatted_value = "N/A"
-                    else:
-                        # Regular metric
-                        if metric["row"] in balance_sheet.index:
-                            value = balance_sheet.loc[metric["row"], last_period]
-                            if abs(value) >= 1e9:
-                                formatted_value = f"${value / 1e9:.2f}B"
-                            elif abs(value) >= 1e6:
-                                formatted_value = f"${value / 1e6:.2f}M"
-                            else:
-                                formatted_value = f"${value:.2f}"
-                        else:
-                            formatted_value = "N/A"
-
-                    # Display metric
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{formatted_value}</div>
-                            <div class="metric-label">{metric["name"]}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-            # Add asset composition chart
-            if "Total Assets" in balance_sheet.index and balance_sheet.loc["Total Assets", last_period] > 0:
-                # Find key asset components
-                asset_components = {
-                    "Current Assets": balance_sheet.loc[
-                        "Total Current Assets", last_period] if "Total Current Assets" in balance_sheet.index else 0,
-                    "Property & Equipment": balance_sheet.loc[
-                        "Property Plant and Equipment", last_period] if "Property Plant and Equipment" in balance_sheet.index else 0,
-                    "Intangible Assets": balance_sheet.loc[
-                        "Intangible Assets", last_period] if "Intangible Assets" in balance_sheet.index else 0,
-                    "Investments": balance_sheet.loc[
-                        "Investments", last_period] if "Investments" in balance_sheet.index else 0,
-                    "Other Assets": 0  # Calculate as remainder
-                }
-
-                # Calculate Other Assets
-                total_assets = balance_sheet.loc["Total Assets", last_period]
-                specified_assets = sum(asset_components.values())
-                asset_components["Other Assets"] = max(0, total_assets - specified_assets)
-
-                # Create pie chart
-                fig = visualizer.plot_balance_sheet_composition(
-                    asset_components,
-                    "Asset Composition",
-                    height=300
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No balance sheet data available.")
-
-        # Cash Flow Summary
-        if cash_flow is not None and not cash_flow.empty:
-            # Cash flow analysis
-            cf_analysis = statement_analyzer.analyze_cash_flow(cash_flow)
-
-            # Display cash flow summary
-            st.markdown('<div class="section-header"><h4>Cash Flow Summary</h4></div>', unsafe_allow_html=True)
-
-            # Key cash flow metrics
-            cf_metrics = [
-                {"name": "Operating Cash Flow", "row": "Operating Cash Flow"},
-                {"name": "Capital Expenditure", "row": "Capital Expenditure"},
-                {"name": "Free Cash Flow", "type": "calculated"},
-                {"name": "Dividends Paid", "row": "Dividends Paid"}
-            ]
-
-            # Last periods for display
-            last_periods = min(2, cash_flow.shape[1])
-            cf_periods = cash_flow.columns[:last_periods]
-
-            # Create dataframe for display
-            cf_df = pd.DataFrame(index=[m["name"] for m in cf_metrics])
-
-            # Fill data
-            for period in cf_periods:
-                period_data = []
-                for metric in cf_metrics:
-                    if metric["type"] == "calculated" and metric["name"] == "Free Cash Flow":
-                        # Calculate FCF
-                        if "Operating Cash Flow" in cash_flow.index and "Capital Expenditure" in cash_flow.index:
-                            ocf = cash_flow.loc["Operating Cash Flow", period]
-                            capex = cash_flow.loc["Capital Expenditure", period]
-                            fcf = ocf - abs(capex)
-                            period_data.append(fcf)
-                        else:
-                            period_data.append(None)
-                    elif metric["row"] in cash_flow.index:
-                        period_data.append(cash_flow.loc[metric["row"], period])
-                    else:
-                        period_data.append(None)
-                cf_df[period] = period_data
-
-            # Format for display
-            cf_display = cf_df.copy()
-            for col in cf_display.columns:
-                # Format values in millions/billions
-                cf_display[col] = cf_display[col].apply(
-                    lambda x: f"${x / 1e9:.2f}B" if abs(x) >= 1e9 else f"${x / 1e6:.2f}M" if abs(
-                        x) >= 1e6 else f"${x:.2f}" if x is not None else "N/A"
-                )
-
-            # Calculate growth rate
-            if len(cf_periods) >= 2:
-                growth_data = []
-                for metric in cf_metrics:
-                    if metric["type"] == "calculated" and metric["name"] == "Free Cash Flow":
-                        # Calculate FCF growth
-                        if "Operating Cash Flow" in cash_flow.index and "Capital Expenditure" in cash_flow.index:
-                            ocf_current = cash_flow.loc["Operating Cash Flow", cf_periods[0]]
-                            capex_current = cash_flow.loc["Capital Expenditure", cf_periods[0]]
-                            fcf_current = ocf_current - abs(capex_current)
-
-                            ocf_previous = cash_flow.loc["Operating Cash Flow", cf_periods[1]]
-                            capex_previous = cash_flow.loc["Capital Expenditure", cf_periods[1]]
-                            fcf_previous = ocf_previous - abs(capex_previous)
-
-                            if fcf_previous != 0:
-                                growth_rate = (fcf_current / fcf_previous - 1) * 100
-                                growth_data.append(f"{growth_rate:+.1f}%")
-                            else:
-                                growth_data.append("N/A")
-                        else:
-                            growth_data.append("N/A")
-                    elif metric["row"] in cash_flow.index:
-                        current = cash_flow.loc[metric["row"], cf_periods[0]]
-                        previous = cash_flow.loc[metric["row"], cf_periods[1]]
-                        if current is not None and previous is not None and previous != 0:
-                            growth_rate = (current / previous - 1) * 100
-                            growth_data.append(f"{growth_rate:+.1f}%")
-                        else:
-                            growth_data.append("N/A")
-                    else:
-                        growth_data.append("N/A")
-
-                # Add growth column
-                cf_display["YoY Growth"] = growth_data
-
-            # Display the table
-            st.dataframe(cf_display, use_container_width=True)
-
-            # Plot cash flow components
-            ocf_data = cash_flow.loc["Operating Cash Flow"] if "Operating Cash Flow" in cash_flow.index else None
-            capex_data = cash_flow.loc["Capital Expenditure"] if "Capital Expenditure" in cash_flow.index else None
-
-            if ocf_data is not None and capex_data is not None:
-                # Create DataFrame for plotting
-                fcf_data = ocf_data - abs(capex_data)
-                plot_data = pd.DataFrame({
-                    "Operating Cash Flow": ocf_data,
-                    "Capital Expenditure": abs(capex_data),
-                    "Free Cash Flow": fcf_data
-                })
-
-                # Plot cash flow trends
-                fig = visualizer.plot_cash_flow_trends(
-                    plot_data,
-                    title="Cash Flow Components",
-                    height=350
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No cash flow data available.")
-
-    # Tab: About Company
-    with tabs[3]:
-        # Company description
-        st.subheader("Company Profile")
-        description = company_info.get('description', "No description available.")
-        st.markdown(description)
-
-        # Company metadata
-        st.subheader("Company Information")
-
-        # Create columns for info display
-        info_col1, info_col2 = st.columns(2)
-
-        # Define company info details
-        company_details = [
-            {"label": "Company Name", "value": company_info.get('name')},
-            {"label": "Ticker", "value": ticker},
-            {"label": "Sector", "value": sector},
-            {"label": "Industry", "value": industry},
-            {"label": "Exchange", "value": company_info.get('exchange')},
-            {"label": "Currency", "value": company_info.get('currency')},
-            {"label": "Country", "value": company_info.get('country')},
-            {"label": "Website", "value": company_info.get('website')},
-            {"label": "Employees", "value": company_info.get('employees')},
-            {"label": "CEO", "value": company_info.get('ceo')},
-            {"label": "Founded", "value": company_info.get('founded')}
-        ]
-
-        # Display company details in two columns
-        for i, detail in enumerate(company_details):
-            # Choose column based on index
-            col = info_col1 if i < len(company_details) // 2 + len(company_details) % 2 else info_col2
-
-            # Format value
-            value = detail["value"] if detail["value"] is not None else "N/A"
-            if detail["label"] == "Employees" and isinstance(value, (int, float)):
-                value = f"{value:,.0f}"
-
-            # Display as table row
-            with col:
-                st.markdown(
-                    f"""
-                    <div style="display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid #333;">
-                        <span style="color:#a0a0a0;">{detail["label"]}</span>
-                        <span>{value}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-        # Add company address if available
-        address_parts = [
-            company_info.get('address'),
-            company_info.get('city'),
-            company_info.get('state'),
-            company_info.get('zip'),
-            company_info.get('country')
-        ]
-
-        # Filter out None values and join with comma
-        address = ', '.join([part for part in address_parts if part])
-
-        if address:
-            st.subheader("Address")
-            st.markdown(address)
-
-
-if __name__ == "__main__":
-    # For direct testing
-    # Dummy data for testing
-    import yfinance as yf
-
-    ticker = "AAPL"
-    ticker_obj = yf.Ticker(ticker)
-
-    company_info = {
-        'name': 'Apple Inc.',
-        'sector': 'Technology',
-        'industry': 'Consumer Electronics',
-        'exchange': 'NASDAQ',
-        'currency': 'USD',
-        'market_cap': 2800000000000,
-        'description': 'Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.'
-    }
-
-    price_data = ticker_obj.history(period="1y")
-    income_stmt = ticker_obj.income_stmt
-    balance_sheet = ticker_obj.balance_sheet
-    cash_flow = ticker_obj.cashflow
-
-    financial_data = {
-        'income_statement': income_stmt,
-        'balance_sheet': balance_sheet,
-        'cash_flow': cash_flow,
-    }
-
-    render_company_overview(ticker, financial_data, company_info, price_data)
+            show_chart(fig, key=f"{KEY}ratio_vs_sector")
+
+
+# ---------------------------------------------------------------------------
+# Performance vs sector ETF
+# ---------------------------------------------------------------------------
+def _render_sector_performance(ticker: str, prices: pd.DataFrame, sector_prices: pd.DataFrame,
+                               sector: str) -> None:
+    etf = SECTOR_ETFS.get(sector)
+    st.subheader(f"Performance vs Sector ETF{f' ({etf})' if etf else ''}")
+    stock = close_series(prices)
+    bench = close_series(sector_prices)
+    if stock.empty:
+        st.info("No price history is available for this company.")
+        return
+    if bench.empty:
+        st.info("Sector ETF price data is not available, so the sector comparison is skipped.")
+        return
+
+    choice = st.selectbox("Comparison period", ["3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"], index=3,
+                          key=f"{KEY}perf_range")
+    joined = pd.concat([stock.rename("stock"), bench.rename("etf")], axis=1, join="inner").dropna()
+    joined = _slice_range(joined.rename(columns={"stock": "Close"}), choice).rename(columns={"Close": "stock"})
+    if len(joined) < 5:
+        st.info("The company and sector ETF price histories do not overlap enough for a comparison.")
+        return
+
+    fig = rebased_performance_chart({ticker: joined["stock"], etf or "Sector ETF": joined["etf"]},
+                                    title=f"Growth of 100 — {ticker} vs {etf or 'sector ETF'} ({choice})")
+    show_chart(fig, key=f"{KEY}sector_performance")
+
+    stock_ret = joined["stock"].iloc[-1] / joined["stock"].iloc[0] - 1
+    etf_ret = joined["etf"].iloc[-1] / joined["etf"].iloc[0] - 1
+    daily = joined.pct_change().dropna()
+    correlation = to_float(daily["stock"].corr(daily["etf"])) if len(daily) > 5 else None
+    beta = safe_divide(daily["stock"].cov(daily["etf"]), daily["etf"].var()) if len(daily) > 5 else None
+    cols = st.columns(5)
+    cols[0].metric(f"{ticker} return", fmt_pct(stock_ret, signed=True))
+    cols[1].metric(f"{etf or 'ETF'} return", fmt_pct(etf_ret, signed=True))
+    excess = stock_ret - etf_ret
+    cols[2].metric("Excess return", f"{excess * 100:+.1f} pp", delta=f"{excess * 100:+.1f} pp",
+                   help="Stock return minus sector ETF return over the period (percentage points).")
+    cols[3].metric("Correlation", fmt_number(correlation), help="Correlation of daily returns.")
+    cols[4].metric("Beta vs sector", fmt_number(beta),
+                   help="Sensitivity of the stock's daily returns to the sector ETF's daily returns.")
+
+
+# ---------------------------------------------------------------------------
+# Technical indicators
+# ---------------------------------------------------------------------------
+def technical_indicators(close: pd.Series) -> Dict[str, Optional[float]]:
+    """RSI(14), MACD(12, 26, 9), Bollinger %B(20, 2) and the 50/200-day moving averages."""
+    result: Dict[str, Optional[float]] = {"rsi": None, "macd": None, "signal": None, "bb_pct": None,
+                                          "ma50": None, "ma200": None}
+    if len(close) < 30:
+        return result
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    last_gain, last_loss = gain.iloc[-1], loss.iloc[-1]
+    if pd.notna(last_gain) and pd.notna(last_loss):
+        result["rsi"] = 100.0 if last_loss == 0 else float(100 - 100 / (1 + last_gain / last_loss))
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    result["macd"] = float(macd.iloc[-1])
+    result["signal"] = float(macd.ewm(span=9, adjust=False).mean().iloc[-1])
+    sma20, std20 = close.rolling(20).mean().iloc[-1], close.rolling(20).std().iloc[-1]
+    if pd.notna(std20) and std20 > 0:
+        result["bb_pct"] = float((close.iloc[-1] - (sma20 - 2 * std20)) / (4 * std20))
+    if len(close) >= 50:
+        result["ma50"] = float(close.rolling(50).mean().iloc[-1])
+    if len(close) >= 200:
+        result["ma200"] = float(close.rolling(200).mean().iloc[-1])
+    return result
+
+
+def _render_technical_indicators(prices: pd.DataFrame) -> None:
+    close = close_series(prices)
+    if len(close) < 30:
+        return
+    st.subheader("Technical Indicators")
+    ind = technical_indicators(close)
+    cols = st.columns(4)
+
+    rsi = ind["rsi"]
+    rsi_status = "N/A" if rsi is None else ("Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral")
+    cols[0].metric("RSI (14)", fmt_number(rsi, 1), help="Relative Strength Index: >70 overbought, <30 oversold.")
+    _status(cols[0], rsi_status, NEGATIVE if rsi_status == "Overbought" else
+            POSITIVE if rsi_status == "Oversold" else NEUTRAL)
+
+    macd, signal = ind["macd"], ind["signal"]
+    bullish = macd is not None and signal is not None and macd > signal
+    cols[1].metric("MACD (12/26/9)", fmt_number(macd), help="MACD line minus its 9-day signal line "
+                                                            "indicates momentum direction.")
+    _status(cols[1], "Bullish momentum" if bullish else "Bearish momentum", POSITIVE if bullish else NEGATIVE)
+
+    bb = ind["bb_pct"]
+    bb_status = "N/A" if bb is None else ("Near upper band" if bb > 0.8 else "Near lower band" if bb < 0.2
+                                          else "Mid-range")
+    cols[2].metric("Bollinger %B (20, 2σ)", fmt_pct(bb, 0), help="Position of the price within the Bollinger "
+                                                                   "bands (0% = lower band, 100% = upper band).")
+    _status(cols[2], bb_status, NEGATIVE if bb_status == "Near upper band" else
+            POSITIVE if bb_status == "Near lower band" else NEUTRAL)
+
+    ma50, ma200 = ind["ma50"], ind["ma200"]
+    if ma50 is not None and ma200 is not None:
+        trend_up = ma50 > ma200
+        cols[3].metric("50 / 200-day MA", f"{fmt_price(ma50)} / {fmt_price(ma200)}",
+                       help="A 50-day average above the 200-day average (golden cross) signals an uptrend.")
+        _status(cols[3], "Uptrend (golden cross)" if trend_up else "Downtrend (death cross)",
+                POSITIVE if trend_up else NEGATIVE)
+    elif ma50 is not None:
+        above = close.iloc[-1] > ma50
+        cols[3].metric("50-day MA", fmt_price(ma50))
+        _status(cols[3], "Price above 50-day MA" if above else "Price below 50-day MA",
+                POSITIVE if above else NEGATIVE)
+    st.caption("Technical indicators describe recent price behaviour only and are not a valuation signal.")
+
+
+def _status(container: Any, text: str, color: str) -> None:
+    container.markdown(f"<span style='color:{color};font-size:0.9rem'>{text}</span>", unsafe_allow_html=True)
+
+
+__all__: List[str] = ["render_company_overview", "trailing_return", "technical_indicators",
+                      "annualized_volatility"]
