@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["StockAnalysisSystem/tests"]
+pythonpath = ["."]
+addopts = "-ra -q"
+filterwarnings = [
+    "ignore::DeprecationWarning:yfinance.*",
+    "ignore::DeprecationWarning:pandas_datareader.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".idea"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "F811", "F821", "F841", "F401"]
