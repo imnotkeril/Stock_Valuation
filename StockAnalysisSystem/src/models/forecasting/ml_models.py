@@ -1,13 +1,12 @@
-import os
 import logging
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Union, Any, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # Commented out for now - can be enabled if needed
@@ -20,10 +19,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 # except ImportError:
 #     TENSORFLOW_AVAILABLE = False
 
-import sys
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 
 # Setup logging

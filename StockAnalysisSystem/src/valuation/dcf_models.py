@@ -22,7 +22,6 @@ from StockAnalysisSystem.src.valuation.base_valuation import (
     BaseValuation,
     clamp,
     clean_result,
-    compound,
     growth_path,
 )
 

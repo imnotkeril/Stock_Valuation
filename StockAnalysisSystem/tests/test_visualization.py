@@ -71,6 +71,9 @@ def call_all_methods(viz, aapl, ratio_data, returns_by_ticker):
             pd.DataFrame({"Metric": ["Gross Margin", "Net Margin"], "Value": [46.2, 24.0]}), is_percent=True),
         "plot_bar_comparison": viz.plot_bar_comparison({"net_margin": [0.24, 0.36], "roe": [1.5, 0.35]},
                                                        ["Apple", "Microsoft"], primary_index=0),
+        "plot_growth_comparison": viz.plot_growth_comparison(
+            {"AAPL": {"revenue_growth": 0.02, "net_income_growth": -0.03}, "MSFT": {"revenue_growth": 0.16}},
+            {"AAPL": "Apple", "MSFT": "Microsoft"}, primary_ticker="AAPL"),
         "plot_radar_comparison": viz.plot_radar_comparison(
             {"AAPL": {"pe_ratio": 40, "roe": 90, "net_margin": 70}, "MSFT": {"pe_ratio": 60, "roe": 50}},
             primary_ticker="AAPL", radial_range=(0, 100)),
@@ -154,6 +157,7 @@ EMPTY_CALLS = {
                               ({"valuation": {"pe_ratio": 1.0}}, "liquidity")],
     "plot_metrics_bar_chart": [(pd.DataFrame(),), (pd.DataFrame({"Metric": ["a"], "Value": [np.nan]}),), ({},)],
     "plot_bar_comparison": [({}, []), ({"roe": [np.nan, None]}, ["A", "B"]), (None, None)],
+    "plot_growth_comparison": [({},), (None,), ({"A": {"revenue_growth": np.nan}},)],
     "plot_radar_comparison": [({},), ({"A": {"x": np.nan, "y": None}},), ({"A": {"x": 1.0}},)],
     "plot_company_comparison": [({}, []), ({"A": {"x": np.nan}}, ["x"])],
     "plot_metrics_heatmap": [(pd.DataFrame(),), (pd.DataFrame({"P/E": [np.nan, np.inf]}),), (None,)],
@@ -269,6 +273,13 @@ def test_bar_comparison_percent_inference(viz):
     assert fig.layout.yaxis.ticksuffix == "%"
     fig = viz.plot_bar_comparison({"pe_ratio": [30.0, 20.0]}, ["A", "B"])
     assert fig.data[0].y[0] == pytest.approx(30.0)
+
+
+def test_growth_comparison_shows_percent_and_highlights_primary(viz):
+    fig = viz.plot_growth_comparison({"AAPL": {"revenue_growth": 0.02}, "MSFT": {"revenue_growth": 0.16}},
+                                     {"AAPL": "Apple", "MSFT": "Microsoft"}, primary_ticker="AAPL")
+    assert [trace.name for trace in fig.data] == ["AAPL", "Microsoft"]
+    assert fig.data[1].y[0] == pytest.approx(16.0)
 
 
 def test_sector_performance_accepts_series_mapping(viz, returns_by_ticker):

@@ -8,14 +8,8 @@ that returns the standardised result documented in
 """
 
 import logging
-import os
-import sys
 from typing import Any, Dict, List, Optional, Type
 
-# Add the repository root to the Python path when executed directly
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 from StockAnalysisSystem.src.config import normalize_sector
 from StockAnalysisSystem.src.utils.data_loader import DataLoader

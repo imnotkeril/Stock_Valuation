@@ -656,6 +656,36 @@ class FinancialVisualizer:
         return fig
 
     @_safe_chart("comparison")
+    def plot_growth_comparison(self,
+                               growth_data: Mapping[str, Mapping[str, Any]],
+                               company_names: Optional[Mapping[str, str]] = None,
+                               primary_ticker: Optional[str] = None,
+                               title: str = "Growth Comparison",
+                               height: Optional[int] = None,
+                               width: Optional[int] = None) -> go.Figure:
+        """
+        Grouped growth-rate bars per company.
+
+        Args:
+            growth_data: ``{ticker: {metric: growth as a fraction}}``.
+            company_names: Optional ``{ticker: display name}`` (tickers are shown otherwise).
+            primary_ticker: Company to highlight.
+        """
+        if not isinstance(growth_data, Mapping) or not growth_data:
+            return self._empty_chart("No growth data available", height)
+        tickers = list(growth_data)
+        metrics: List[str] = []
+        for values in growth_data.values():
+            for metric in (values or {}):
+                if metric not in metrics:
+                    metrics.append(metric)
+        bar_data = {metric: [(growth_data[t] or {}).get(metric) for t in tickers] for metric in metrics}
+        names = company_names if isinstance(company_names, Mapping) else {}
+        labels = [names.get(t, t) if t != primary_ticker else t for t in tickers]
+        primary_index = tickers.index(primary_ticker) if primary_ticker in tickers else None
+        return self.plot_bar_comparison(bar_data, labels, primary_index=primary_index, title=title, height=height,
+                                        width=width, is_percent=True)
+
     def plot_bar_comparison(self,
                             bar_data: Mapping[str, Sequence[Any]],
                             companies: Sequence[str],

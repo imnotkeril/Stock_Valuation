@@ -211,7 +211,8 @@ def _render_parameter(name: str, spec: Dict[str, Any], key: str, disabled: bool)
 
 
 @st.cache_resource(show_spinner=False)
-def _get_factory() -> ValuationFactory:
+def get_valuation_factory() -> ValuationFactory:
+    """Shared, cached ValuationFactory."""
     return ValuationFactory()
 
 
@@ -410,7 +411,7 @@ def render_sector_valuation(ticker: str, financial_data: Dict[str, Any], company
     """
     company_info = company_info or {}
     sector = normalize_sector(company_info.get("sector"))
-    factory = factory or _get_factory()
+    factory = factory or get_valuation_factory()
     model = factory.get_valuation_model(sector, company_info.get("industry"))
     prefix = f"{key_prefix}_{ticker}"
 

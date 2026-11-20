@@ -496,6 +496,9 @@ def _render_price_result(current_params: Optional[Mapping[str, Any]] = None) -> 
         cols[0].metric("P(price higher)", _fmt(result.get("prob_up"), "pct"))
         cols[1].metric(f"P(> +{params.get('target', 10):.0f}%)", _fmt(prob_change.get("prob_above"), "pct"))
         cols[2].metric(f"P(< -{params.get('target', 10):.0f}%)", _fmt(prob_change.get("prob_below"), "pct"))
+        st.caption("Monte Carlo simulation of geometric Brownian motion with the volatility and drift of the "
+                   "selected price history (drift capped at ±30 % a year). It reflects the dispersion of outcomes "
+                   "and can differ from the model ensemble's central path.")
         if prob_change:
             st.plotly_chart(charts.distribution_chart(prob_change.get("percentiles"), current_price=current,
                                                       expected_price=prob_change.get("expected_price")),
