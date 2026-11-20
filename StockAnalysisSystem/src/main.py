@@ -105,7 +105,7 @@ CUSTOM_CSS = f"""
     }}
     .stTabs [data-baseweb="tab"] {{
         height: 44px;
-        padding: 0 16px;
+        padding: 0 16px !important;
         background-color: #1f1f1f;
         color: #e0e0e0;
         border-radius: 8px;
@@ -281,7 +281,8 @@ def render_company_header(bundle: Dict[str, Any]) -> None:
     cols[0].metric("Price", _format_price(to_float(market.get('share_price'))),
                    delta=f"{day_change:+.2f}% 1D" if day_change is not None else None)
     cols[1].metric("1-month change", f"{month_change:+.2f}%" if month_change is not None else "N/A")
-    cols[2].metric(f"Change since {bundle['start_date']}", f"{range_change:+.2f}%" if range_change is not None else "N/A")
+    first_date = f"{pd.Timestamp(close.index[0]):%Y-%m-%d}" if not close.empty else bundle['start_date']
+    cols[2].metric(f"Change since {first_date}", f"{range_change:+.2f}%" if range_change is not None else "N/A")
     cols[3].metric("Market cap", format_large_number(market.get('market_cap')))
     pe = to_float(info.get('pe_ratio'))
     cols[4].metric("P/E (TTM)", f"{pe:.1f}" if pe else "N/A")
@@ -457,7 +458,7 @@ def render_sidebar_navigation() -> str:
 
 def render_sidebar_footer() -> None:
     with st.sidebar:
-        st.divider()
+        st.write("")
         with st.expander("Data & settings"):
             if config.OFFLINE_MODE:
                 st.caption("Offline mode: only cached data is used.")
