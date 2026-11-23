@@ -37,15 +37,29 @@ Each task: owner · check. Tick when the check passes.
 - [ ] O2 Branches: make `claude/peaceful-euler-aq2j08` the main line (PR into `master`);
       archive `chore/audit` without merging (its work is superseded, see summary).
       Push/PR only on your yes.
-- [ ] O3 Scope of SPEC §5 (APV, sentiment, EDGAR, stress testing, SOTP for all sectors):
-      confirm "not in MVP" or pick items for v2.
+- [x] O3 Scope of SPEC §5: owner decided 2026-11-23 - build ALL original ideas (v2 below),
+      including the ones that need paid or keyed data sources.
 - [ ] O4 Old folder `E:\Main\Dev\Python\In Development\Stock_Valuation`: delete or archive
       after O2 (its docs are copied to `docs/sources/in-development/`).
 
-## Later (v2 backlog, only after O3)
+## v2 - original README ideas (owner decision O3: build all)
+Order: free sources first. Every provider is optional: without its key the feature shows
+"add <KEY> to .env" instead of failing. Each task: tests offline with recorded fixtures.
 - [x] Saved custom screener templates (idea from In Development `screener_engine.py`)
 - [x] Multi-sector comparison view (idea from In Development `industry_benchmarking.py`)
-- [ ] SEC EDGAR provider for filings depth
-- [ ] SOTP for remaining sectors
-- [ ] Wider stress testing / market risk simulation
-- [ ] User guide and CHANGELOG
+- [ ] V1 SEC EDGAR provider (free, needs only a User-Agent with contact): company facts
+      (XBRL) as a fallback/extra source for statements; filings list on Overview · dev
+- [ ] V2 APV (adjusted present value) method in the generic valuation (unlevered DCF +
+      PV of tax shield) · quant · hand-calculated test
+- [ ] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,
+      Healthcare, Communication) via segment data where available · quant
+- [ ] V4 Stress testing / market risk simulation: rate, margin and multiple shocks, historical
+      scenarios (2008, 2020, 2022) on price and fair value · quant
+- [ ] V5 Finnhub provider (free key `FINNHUB_API_KEY`): peers, metrics, company news · dev
+- [ ] V6 News sentiment: Finnhub news + Alpha Vantage NEWS_SENTIMENT (keys), score per
+      company over time; new tab on Company Analysis · ai/dev
+- [ ] V7 Precedent transactions: M&A deals by sector (FMP key, `FINANCIAL_MODELING_PREP_API_KEY`;
+      fallback: curated CSV of public deals) → EV/Revenue, EV/EBITDA deal multiples · quant
+- [ ] V8 Deep-learning forecasts as an optional extra (`requirements-ml.txt`: torch-based model,
+      lazy import; page hides it when not installed) · quant
+- [ ] V9 User guide and CHANGELOG (after V1-V8)

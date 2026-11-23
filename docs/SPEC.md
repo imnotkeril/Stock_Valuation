@@ -138,7 +138,7 @@ CSV, JSON downloads.
 | Market risk simulation / stress testing beyond revenue stress + VaR | backlog |
 | SOTP for every sector | Partial: Energy and Retail only |
 
-Default proposal: keep all of these out of MVP; the owner confirms or picks items for v2.
+Decision (owner, 2026-11-23): build all of these as v2 - see `docs/plan.md` V1-V8. Keyed sources (Finnhub, Alpha Vantage news, FMP) stay optional: missing key = feature explains what to add, never an error.
 
 ## 6. Out of scope
 User accounts, portfolios, live trading, non-US markets, database storage, hosted

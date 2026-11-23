@@ -9,7 +9,7 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 - 2026-11-23 v2: saved custom screener templates (save/reapply/delete, JSON in src/data/user) and Compare sectors view on Sector Analysis (ETF performance, median fundamentals, leaders). 13 new tests; checked live in browser.
 
 ## Next
-- User guide + CHANGELOG (backlog). SEC EDGAR, SOTP for all sectors, wider stress testing wait for owner scope decision O3.
+- Owner decided O3: build all original ideas. Start v2 V1 (SEC EDGAR) in docs/plan.md, then V2-V9.
 
 ## Needed from owner
 - O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.

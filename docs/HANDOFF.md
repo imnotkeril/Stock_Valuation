@@ -17,16 +17,17 @@ state in this folder, merging everything useful from the old copy in
 
 ## Decisions
 - Nothing from `chore/audit` code was ported except the keys guard test - its library modules are covered here in tested form; two ideas went to the v2 backlog.
+- Owner decided O3: build ALL original README ideas (SPEC section 5) as v2 V1-V8, paid/keyed ones too.
 - Owner tasks (key rotation, branches, push) are postponed by the user until the work is finished - do not ask about them again before then.
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. Write `docs/USER_GUIDE.md` (every page, from the real UI) and `CHANGELOG.md` (from git log since master), link both from README.
-2. Ask the owner about SPEC section 5 scope (O3); if approved, start with SEC EDGAR provider or SOTP for remaining sectors.
-3. When the user says the work is finished, go through owner items O1-O4 (rotation, PR into master, old folder).
+1. Start v2 task V1 in `docs/plan.md`: SEC EDGAR provider (free; companyfacts XBRL API, User-Agent required) as a new module under `src/utils/`, offline tests with a recorded fixture, filings list on Company Analysis Overview.
+2. Continue V2 (APV) -> V3 (SOTP) -> V4 (stress tests): free, no keys needed. One commit per task, tick plan, line in STATE.
+3. Before V5-V7 ask the user for free keys in `.env` (FINNHUB_API_KEY, ALPHA_VANTAGE_API_KEY, FINANCIAL_MODELING_PREP_API_KEY); build with recorded fixtures either way.
 
 ## Open questions
-- Scope of SPEC section 5 (APV, sentiment, EDGAR, stress testing): default is "not in MVP" until the user decides.
+- Keys for V5-V7 (Finnhub, Alpha Vantage, FMP): the user will add them to `.env`; values must never be printed.
 
 ## Traps
 - Global `~/.gitignore_global` ignores `*_secret*` and `.env.*`: name files accordingly (that is why the test is `test_no_hardcoded_keys.py`).
