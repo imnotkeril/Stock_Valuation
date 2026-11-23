@@ -53,6 +53,27 @@ de-facto spec, and the audit plus handoff are the plan.
 | Root `requirements.txt` freeze with CVEs | This copy uses a minimal list in `StockAnalysisSystem/requirements.txt` | pip-audit still to run (plan) |
 | Hard-coded Alpha Vantage and FMP keys | Removed from code, **still in git history** of `master` and both branches | owner must rotate (plan) |
 | Audit §2 "README claims features that do not exist" | Rewritten README is honest; unimplemented ideas listed in `docs/SPEC.md` §5 | decide scope (plan) |
+| Test "no hard-coded keys" (`tests/unit/test_config.py`) | Missing | **ported** as `tests/test_no_hardcoded_keys.py` (scans all of `src/`) |
 
-Conclusion: nothing from `chore/audit` needs to be ported in code. Its value is the audit
-findings and the owner tasks, carried into `docs/SPEC.md` and `docs/plan.md`.
+## Library modules that exist only in In Development (~6.8k lines)
+
+These came from the uncommitted "v2 layout" that `chore/audit` snapshotted (`b66f8a5`); they
+were never on `master`, so this branch was built without them. This branch implements the
+same features differently (logic in pages + `industry/`, all covered by AppTest tests).
+None of them was ever run live in In Development.
+
+| Module (lines) | What it does | Equivalent here | Decision |
+|---|---|---|---|
+| `comparison/peer_finder.py` (684) | Peer search, peer metrics/performance | `industry/universe.get_sector_peers`, Peer Comparison page | covered, not ported |
+| `comparison/peer_comparison.py` (1399) | Peer comparison library | Peer Comparison page | covered, not ported |
+| `comparison/industry_benchmarking.py` (1528) | Company-in-sector, sector report, compare sectors, industry trends | Sector Analysis page, `industry/benchmarks.py` | mostly covered; multi-sector compare → backlog |
+| `screening/screener_engine.py` (613), `filters.py` (942), `strategies.py` (70) | Filter engine, built-in templates, **saved custom templates** | Stock Screener page with strategy presets | covered except saving custom templates → backlog |
+| `valuation/sector_specific/materials_sector.py` (815) | Materials analyzer | `ManufacturingSectorValuation` subsectors chemicals, metals & mining | covered, not ported |
+| `valuation/sector_specific/utilities_sector.py` (687) | Utilities analyzer | `EnergySectorValuation` subsector utilities (regulated asset base) | covered, not ported |
+| `utils/helpers.py` (66), `pages/common.py` (24) | Small helpers | `pages/company_analysis/page_helpers.py` | not needed |
+
+## Conclusion
+Code ported: only the secrets guard test. The rest of `chore/audit` is either already here in
+a tested form or superseded. Two ideas from its library go to the backlog: saved custom
+screener templates and multi-sector comparison. Audit findings and owner tasks are carried
+into `docs/SPEC.md` and `docs/plan.md`.

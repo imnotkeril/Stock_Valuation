@@ -491,16 +491,20 @@ def _render_cash_flow(ticker: str, financial_data: Dict[str, Any], company_info:
                         _assess(fcf_yield, 0.05, 0.02, labels=("Attractive", "Moderate", "Low")),
                         help_text="Latest free cash flow / market capitalisation.")
 
-    _render_fcf_sustainability(fcf)
+    _render_fcf_sustainability(fcf, canonical_sector(company_info, financial_data))
     _render_capital_allocation(cash_flow, ocf)
     _raw_statement_expander(ticker, cash_flow, "cash flow statement", "cash_flow")
 
 
-def _render_fcf_sustainability(fcf: pd.Series) -> None:
+def _render_fcf_sustainability(fcf: pd.Series, sector: str = "") -> None:
     values = fcf.dropna()
     if len(values) < 2:
         return
     st.markdown("**Free cash flow sustainability**")
+    if sector == "Financials":
+        st.caption("Banks and insurers fund lending and investments through operating cash flow, so free "
+                   "cash flow swings with the balance sheet and is not a sustainability signal.")
+        return
     positive_periods = int((values > 0).sum())
     share_positive = positive_periods / len(values)
     mean = float(values.mean())

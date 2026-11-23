@@ -118,7 +118,7 @@ CSV, JSON downloads.
 - Works without network in tests (`STOCK_ANALYSIS_OFFLINE=1`); CI green on 3.11–3.13.
 - `ruff check` clean; no secrets in code or new commits.
 - Pages render in a few seconds for one ticker after first download (cache warm).
-- Local-only by default: the server should listen on localhost (see plan).
+- Local-only by default: the server listens on localhost; Docker binds 0.0.0.0.
 
 ## 5. Original ideas not built (from the original README)
 

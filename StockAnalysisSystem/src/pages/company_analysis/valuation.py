@@ -182,6 +182,8 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     net_debt = snapshot.get("net_debt")
     shares = snapshot.get("shares")
     if base_fcf <= 0:
+        if sector == "Financials":  # already explained above; bank FCF is routinely negative
+            return
         st.warning(f"Starting free cash flow is negative ({fmt_money(base_fcf)}): a DCF on current cash flow "
                    "would imply no value. Try the multi-year average or the Sector Model tab.")
         return

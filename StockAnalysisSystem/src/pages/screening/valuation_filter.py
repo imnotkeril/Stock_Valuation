@@ -334,7 +334,7 @@ def run_valuation_filter_page():
                     # Apply styling
                     styled_df = summary_df.style.map(color_upside, subset=['Upside'])
 
-                    st.dataframe(styled_df, use_container_width=True)
+                    st.dataframe(styled_df, width="stretch")
 
                     # Add export option
                     st.download_button(
@@ -411,7 +411,7 @@ def run_valuation_filter_page():
                                 title=f"Valuation Breakdown for {selected_symbol}",
                                 height=400
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
 
                         # Display valuation parameters
                         if "valuation_parameters" in stock_data:
@@ -514,7 +514,7 @@ def run_valuation_filter_page():
                                     company_name=stock_data.get("name", ""),
                                     height=500
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
                             else:
                                 st.warning(f"No price data available for {selected_symbol}.")
                         except Exception as e:
@@ -550,7 +550,7 @@ def run_valuation_filter_page():
                         title="Sector Distribution of Undervalued Stocks",
                         height=500
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                     # Display sector breakdown with average upside
                     st.subheader("Average Upside by Sector")
@@ -582,7 +582,7 @@ def run_valuation_filter_page():
                     upside_df = upside_df.sort_values("Average Upside", ascending=False)
 
                     # Display the DataFrame
-                    st.dataframe(upside_df, use_container_width=True)
+                    st.dataframe(upside_df, width="stretch")
 
                     # Display stocks by sector
                     st.subheader("Undervalued Stocks by Sector")
@@ -614,7 +614,7 @@ def run_valuation_filter_page():
                             # Apply upside coloring
                             styled_df = sector_df.style.map(color_upside, subset=['Upside'])
 
-                            st.dataframe(styled_df, use_container_width=True)
+                            st.dataframe(styled_df, width="stretch")
 
                 # Tab 4: Fair Value Distribution
                 with tabs[3]:
@@ -629,7 +629,7 @@ def run_valuation_filter_page():
                         title="Distribution of Upside Potential (%)",
                         height=500
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                     # Display statistics
                     mean_upside = np.mean(upside_data)
@@ -673,7 +673,7 @@ def run_valuation_filter_page():
                         title="Valuation Method Distribution",
                         height=400
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
             except Exception as e:
                 logger.exception("Valuation analysis failed")

@@ -245,7 +245,7 @@ def run_peer_comparison_page():
                             title=f"Price Performance ({selected_period})",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No price data available for comparison.")
 
@@ -286,7 +286,7 @@ def run_peer_comparison_page():
 
                         st.dataframe(
                             performance_df.style.apply(highlight_primary, axis=1),
-                            use_container_width=True
+                            width="stretch"
                         )
                     else:
                         st.warning("No performance data available.")
@@ -316,7 +316,7 @@ def run_peer_comparison_page():
                             title="Valuation Metrics Comparison",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No valuation metrics available for comparison.")
 
@@ -357,7 +357,7 @@ def run_peer_comparison_page():
 
                         st.dataframe(
                             valuation_df.style.apply(highlight_primary, axis=1),
-                            use_container_width=True
+                            width="stretch"
                         )
                     else:
                         st.warning("No valuation data available.")
@@ -412,7 +412,7 @@ def run_peer_comparison_page():
                                     title=f"{category.capitalize()} Metrics Comparison",
                                     height=400
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
 
                             # Display metrics table
                             st.subheader(f"{category.capitalize()} Metrics Details")
@@ -452,7 +452,7 @@ def run_peer_comparison_page():
 
                                 st.dataframe(
                                     metric_df.style.apply(highlight_primary, axis=1),
-                                    use_container_width=True
+                                    width="stretch"
                                 )
                             else:
                                 st.warning(f"No {category} data available.")
@@ -481,7 +481,7 @@ def run_peer_comparison_page():
                             title="Growth Metrics Comparison",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         # Display growth metrics table
                         st.subheader("Growth Metrics Details")
@@ -514,7 +514,7 @@ def run_peer_comparison_page():
 
                             st.dataframe(
                                 growth_df.style.apply(highlight_primary, axis=1),
-                                use_container_width=True
+                                width="stretch"
                             )
                         else:
                             st.warning("No growth data available.")
@@ -587,7 +587,7 @@ def run_peer_comparison_page():
                         styled_df = valuation_df.style.apply(highlight_primary, axis=1)
                         styled_df = styled_df.map(color_upside, subset=['Upside/Downside'])
 
-                        st.dataframe(styled_df, use_container_width=True)
+                        st.dataframe(styled_df, width="stretch")
 
                         # Create bar chart for upside/downside
                         upside_data = {}
@@ -604,7 +604,7 @@ def run_peer_comparison_page():
                                 title="Valuation Upside/Downside",
                                 height=400
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No valuation data available.")
 

@@ -16,15 +16,19 @@ Each task: owner · check. Tick when the check passes.
 - [x] T1 Duplicate sidebar navigation: Streamlit auto-lists `src/pages/` above the app menu.
       Fix: `client.showSidebarNavigation = false` in `.streamlit/config.toml`.
       · dev · browser: only the app menu is shown
-- [ ] T2 Live smoke test: one ticker per sector (AAPL, JPM, XOM, NEE, AMZN, PG, CAT, PLD, JNJ,
+- [x] T2 Live smoke test: one ticker per sector (AAPL, JPM, XOM, NEE, AMZN, PG, CAT, PLD, JNJ,
       GOOGL), every Company Analysis tab, Peer/Sector/Screener/Filter/Forecasting/Reports;
       fix what breaks. · qa · notes in `docs/QA.md`, no tracebacks
-- [ ] T3 Dependency audit: `pip-audit -r StockAnalysisSystem/requirements.txt`; raise
+- [x] T3 Dependency audit: `pip-audit -r StockAnalysisSystem/requirements.txt`; raise
       minimums where CVEs are found. · dev · pip-audit clean
-- [ ] T4 Bind to localhost by default (logs show Network/External URLs; `enableCORS=false`).
+- [x] T4 Bind to localhost by default (logs show Network/External URLs; `enableCORS=false`).
       Keep Docker on `0.0.0.0` via its own flag. · dev · local run shows Local URL only;
       Docker still reachable
-- [ ] T5 Verify Docker image: `docker build` + `docker run`, health `ok`. · devops · output pasted
+- [x] T5 Verify Docker image: `docker build` + `docker run`, health `ok`. · devops · output pasted
+- [x] T6 Replace deprecated `use_container_width` (33 places) · dev · no deprecation warnings
+- [x] T7 Port hard-coded-keys guard test from `chore/audit` · dev · `tests/test_no_hardcoded_keys.py` passes
+- [x] T8 Financials: hide or explain FCF DCF on the generic Valuation tab for banks/insurers
+      (QA observation) · dev · JPM Valuation tab shows no negative-FCF warning
 
 ## Owner (needs your decision or action)
 - [ ] O1 **Rotate Alpha Vantage and FMP keys**: they were hard-coded in old `config.py` and
@@ -39,6 +43,8 @@ Each task: owner · check. Tick when the check passes.
       after O2 (its docs are copied to `docs/sources/in-development/`).
 
 ## Later (v2 backlog, only after O3)
+- [ ] Saved custom screener templates (idea from In Development `screener_engine.py`)
+- [ ] Multi-sector comparison view (idea from In Development `industry_benchmarking.py`)
 - [ ] SEC EDGAR provider for filings depth
 - [ ] SOTP for remaining sectors
 - [ ] Wider stress testing / market risk simulation

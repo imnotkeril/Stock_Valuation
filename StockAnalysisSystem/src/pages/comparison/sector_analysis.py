@@ -184,7 +184,7 @@ def run_sector_analysis_page():
                             title=f"{selected_sector} Performance vs S&P 500 ({selected_period})",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("Could not load market benchmark data.")
 
@@ -219,7 +219,7 @@ def run_sector_analysis_page():
                             f"{selected_sector} Sector": list(sector_metrics.values())
                         })
 
-                        st.dataframe(metrics_df, use_container_width=True)
+                        st.dataframe(metrics_df, width="stretch")
                     else:
                         st.warning("Could not calculate performance metrics.")
 
@@ -274,7 +274,7 @@ def run_sector_analysis_page():
                         display_df["Sharpe Ratio"] = display_df["Sharpe Ratio"].apply(lambda x: f"{x:.2f}")
 
                         # Display table
-                        st.dataframe(display_df, use_container_width=True)
+                        st.dataframe(display_df, width="stretch")
 
                         # Create market cap treemap
                         fig = visualizer.plot_market_cap_treemap(
@@ -282,7 +282,7 @@ def run_sector_analysis_page():
                             title=f"Market Cap Distribution - {sector_title}",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         # Create performance comparison chart
                         st.subheader(f"Performance Comparison - Top {min(5, len(companies_df))} Companies")
@@ -321,7 +321,7 @@ def run_sector_analysis_page():
                                 title=f"Top Companies Performance ({selected_period})",
                                 height=500
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                         else:
                             st.warning("Could not load performance data for companies.")
                     else:
@@ -410,10 +410,10 @@ def run_sector_analysis_page():
                                         height=600,
                                         is_percent=True
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(prof_df.T.style.format("{:.2f}%"), use_container_width=True)
+                                    st.dataframe(prof_df.T.style.format("{:.2f}%"), width="stretch")
                                 else:
                                     st.warning("No profitability metrics available.")
 
@@ -436,10 +436,10 @@ def run_sector_analysis_page():
                                         height=600,
                                         is_percent=True
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(ret_df.T.style.format("{:.2f}%"), use_container_width=True)
+                                    st.dataframe(ret_df.T.style.format("{:.2f}%"), width="stretch")
                                 else:
                                     st.warning("No return metrics available.")
 
@@ -460,10 +460,10 @@ def run_sector_analysis_page():
                                         colorscale="RdBu_r"
                                         # Reversed so higher values are red (potentially overvalued)
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(val_df.T.style.format("{:.2f}x"), use_container_width=True)
+                                    st.dataframe(val_df.T.style.format("{:.2f}x"), width="stretch")
                                 else:
                                     st.warning("No valuation metrics available.")
 
@@ -482,10 +482,10 @@ def run_sector_analysis_page():
                                         title="Liquidity & Leverage Metrics",
                                         height=600
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(ll_df.T.style.format("{:.2f}x"), use_container_width=True)
+                                    st.dataframe(ll_df.T.style.format("{:.2f}x"), width="stretch")
                                 else:
                                     st.warning("No liquidity or leverage metrics available.")
                         else:
@@ -542,7 +542,7 @@ def run_sector_analysis_page():
                                 title=f"{sector_title} Valuation Heatmap",
                                 height=800
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
 
                             # Display valuation metrics table
                             st.subheader("Valuation Metrics Table")
@@ -556,7 +556,7 @@ def run_sector_analysis_page():
                                 display_df[col] = display_df[col].apply(
                                     lambda x: f"{x:.2f}x" if pd.notnull(x) else "N/A")
 
-                            st.dataframe(display_df, use_container_width=True)
+                            st.dataframe(display_df, width="stretch")
                         else:
                             st.warning("Could not load valuation data for sector companies.")
                     else:
