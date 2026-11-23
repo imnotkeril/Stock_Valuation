@@ -133,9 +133,9 @@ CSV, JSON downloads.
 |---|---|
 | Adjusted Present Value (APV) | backlog or drop |
 | Precedent transactions method | drop (no free data source) |
-| News / sentiment analysis | backlog or drop (needs a news API) |
+| News / sentiment analysis | Done (V5-V6): News tab - Finnhub news (lexicon-scored) + Alpha Vantage NEWS_SENTIMENT, daily sentiment, peers; keys optional |
 | SEC EDGAR data source | backlog (free, would add filings depth) |
-| Finnhub data source | drop (Alpha Vantage covers the fallback) |
+| Finnhub data source | Done (V5): `utils/news_sentiment.py` - news, metrics, peers with `FINNHUB_API_KEY` |
 | Deep-learning forecasts (TensorFlow, pytorch-forecasting) | drop (heavy, sklearn ML is in place) |
 | Market risk simulation / stress testing beyond revenue stress + VaR | Done (V4): Risk tab scenario analysis - 5 macro shocks on EV/EBITDA with interest cover, 2008/2020/2022 beta-implied and actual drawdowns |
 | SOTP for every sector | Done (V3): two-segment SOTP with user-set split and multiples in every sector model; explicit `segments=[...]` override |

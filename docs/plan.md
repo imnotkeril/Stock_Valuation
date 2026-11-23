@@ -57,8 +57,8 @@ Order: free sources first. Every provider is optional: without its key the featu
       Healthcare, Communication) via segment data where available · quant
 - [x] V4 Stress testing / market risk simulation: rate, margin and multiple shocks, historical
       scenarios (2008, 2020, 2022) on price and fair value · quant
-- [ ] V5 Finnhub provider (free key `FINNHUB_API_KEY`): peers, metrics, company news · dev
-- [ ] V6 News sentiment: Finnhub news + Alpha Vantage NEWS_SENTIMENT (keys), score per
+- [x] V5 Finnhub provider (free key `FINNHUB_API_KEY`): peers, metrics, company news · dev
+- [x] V6 News sentiment: Finnhub news + Alpha Vantage NEWS_SENTIMENT (keys), score per
       company over time; new tab on Company Analysis · ai/dev
 - [ ] V7 Precedent transactions: M&A deals by sector (FMP key, `FINANCIAL_MODELING_PREP_API_KEY`;
       fallback: curated CSV of public deals) → EV/Revenue, EV/EBITDA deal multiples · quant

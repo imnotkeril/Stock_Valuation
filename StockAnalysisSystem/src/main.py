@@ -71,6 +71,7 @@ COMPANY_TABS = {
     "Financials": ("StockAnalysisSystem.src.pages.company_analysis.financials", "render_company_financials"),
     "Valuation": ("StockAnalysisSystem.src.pages.company_analysis.valuation", "render_company_valuation"),
     "Risk": ("StockAnalysisSystem.src.pages.company_analysis.risk", "render_company_risk"),
+    "News": ("StockAnalysisSystem.src.pages.company_analysis.news", "render_company_news"),
 }
 
 REQUEST_KEY = "company_request"
