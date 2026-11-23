@@ -24,6 +24,8 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 V9 docs/USER_GUIDE.md + CHANGELOG.md, linked from README. All v2 tasks V1-V9 done; 363 tests pass.
 
+- 2026-11-24 branch claude/peaceful-euler-aq2j08 pushed to origin (user approved); no PR, master untouched.
+
 ## Next
 - Owner decided O3: build all original ideas. All plan tasks done. Remaining: live checks of V1/V5-V7 with the user's keys; owner items O1, O2, O4.
 

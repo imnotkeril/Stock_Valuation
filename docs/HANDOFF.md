@@ -20,7 +20,7 @@ state in this folder, merging everything useful from the old copy in
 - Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
 - Done: plan tasks T1-T8 (sidebar nav, live smoke of all pages, pip-audit, localhost binding, Docker, Streamlit deprecations, keys guard test, Financials FCF messages).
 - Running: Streamlit dev server on http://localhost:8501 (may be gone; restart with the command in Verify).
-- Branch/commit: claude/peaceful-euler-aq2j08, latest local commit, tree clean, nothing pushed.
+- Branch/commit: claude/peaceful-euler-aq2j08 @ 032cd11, pushed to origin 2026-11-24 (user approved); no PR yet, master untouched.
 
 ## Decisions
 - Nothing from `chore/audit` code was ported except the keys guard test - its library modules are covered here in tested form; two ideas went to the v2 backlog.
@@ -30,7 +30,7 @@ state in this folder, merging everything useful from the old copy in
 
 ## Next
 1. All plan tasks (T1-T8, v2 V1-V9) are done. Ask the user for `SEC_EDGAR_USER_AGENT`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY` in `.env` (never print values) and live-check Overview > SEC, News tab, Valuation > Precedents feed; record results in `docs/QA.md`.
-2. When the user says to finish: owner items O1 (rotate old Alpha Vantage / FMP keys), O2 (push branch, PR into master - only on explicit yes), O4 (old In Development folder).
+2. When the user says to finish: owner items O1 (rotate old Alpha Vantage / FMP keys), O2 (PR into master - only on explicit yes; branch already pushed), O4 (old In Development folder).
 3. Optional polish: `/repo-polish` skill before publishing.
 
 ## Open questions
