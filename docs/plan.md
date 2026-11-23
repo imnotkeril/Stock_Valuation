@@ -51,7 +51,7 @@ Order: free sources first. Every provider is optional: without its key the featu
       (XBRL) as a fallback/extra source for statements; filings list on Overview · dev
       Done: `utils/sec_edgar.py`, Overview section, 9 offline tests. Live run pending the user's
       `SEC_EDGAR_USER_AGENT` (SEC rejects anonymous clients with 403).
-- [ ] V2 APV (adjusted present value) method in the generic valuation (unlevered DCF +
+- [x] V2 APV (adjusted present value) method in the generic valuation (unlevered DCF +
       PV of tax shield) · quant · hand-calculated test
 - [ ] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,
       Healthcare, Communication) via segment data where available · quant

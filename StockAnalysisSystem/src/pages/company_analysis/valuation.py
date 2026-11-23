@@ -76,16 +76,18 @@ def render_company_valuation(ticker: str, financial_data: Dict[str, Any], compan
         sector_data: Sector ETF prices (unused; accepted for a uniform signature).
     """
     snapshot = market_snapshot(financial_data, company_info, price_data)
-    tabs = st.tabs(["Fair Value Summary", "DCF", "Relative", "Asset-Based", "Sector Model"])
+    tabs = st.tabs(["Fair Value Summary", "DCF", "APV", "Relative", "Asset-Based", "Sector Model"])
     with tabs[0]:
         render_section("Fair value summary", _render_summary, ticker, financial_data, company_info)
     with tabs[1]:
         render_section("DCF", _render_dcf, ticker, financial_data, company_info, snapshot)
     with tabs[2]:
-        render_section("Relative valuation", _render_relative, financial_data, company_info, price_data, snapshot)
+        render_section("APV", _render_apv, ticker, financial_data, company_info, snapshot)
     with tabs[3]:
-        render_section("Asset-based valuation", _render_asset_based, financial_data, snapshot)
+        render_section("Relative valuation", _render_relative, financial_data, company_info, price_data, snapshot)
     with tabs[4]:
+        render_section("Asset-based valuation", _render_asset_based, financial_data, snapshot)
+    with tabs[5]:
         render_section("Sector model", render_sector_valuation, ticker, financial_data, company_info, price_data,
                        key_prefix=f"{KEY}sector")
 
@@ -228,6 +230,82 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     show_chart(sensitivity_heatmap(z, discount_grid, terminal_grid, "Sensitivity: value per share",
                                    "Discount rate", "Terminal growth", current_price=price),
                key=f"{KEY}dcf_sensitivity")
+
+
+# ---------------------------------------------------------------------------
+# Adjusted present value
+# ---------------------------------------------------------------------------
+def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]]) -> Dict[str, float]:
+    """Default APV inputs from the statements: tax rate, cost of debt, debt, cash, beta."""
+    income = get_statement(financial_data, "income_statement")
+    pretax = get_latest(income, "pretax_income")
+    tax = get_latest(income, "tax_provision")
+    tax_rate = min(max(safe_divide(tax, pretax) or 0.21, 0.0), 0.35) if pretax and pretax > 0 else 0.21
+    interest = abs(get_latest(income, "interest_expense") or 0.0)
+    debt = snapshot.get("total_debt") or 0.0
+    cost_of_debt = min(max(safe_divide(interest, debt) or 0.05, 0.02), 0.15) if debt else 0.05
+    return {"tax_rate": tax_rate, "interest": interest, "debt": debt, "cash": snapshot.get("cash") or 0.0,
+            "cost_of_debt": cost_of_debt, "beta": snapshot.get("beta") or 1.0}
+
+
+def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                snapshot: Dict[str, Optional[float]]) -> None:
+    from StockAnalysisSystem.src.valuation.apv import apv_valuation, unlevered_cost_of_equity, unlevered_fcf
+
+    st.subheader("Adjusted present value (APV)")
+    st.caption("Value as if the company had no debt (unlevered free cash flow at the unlevered cost of equity) "
+               "plus the present value of interest tax shields. Useful when leverage is changing, e.g. LBOs and "
+               "recapitalisations.")
+    sector = canonical_sector(company_info, financial_data)
+    if sector == "Financials":
+        st.info("APV is not meaningful for banks and insurers: debt is part of operations. Use the Sector Model tab.")
+        return
+    fcf = free_cash_flow_series(get_statement(financial_data, "cash_flow"))
+    shares, market_cap = snapshot.get("shares"), snapshot.get("market_cap")
+    if fcf.empty or not shares:
+        st.info("Free cash flow history or shares outstanding are unavailable, so APV cannot be computed.")
+        return
+    inputs = _apv_inputs(financial_data, snapshot)
+    defaults = _dcf_defaults(sector, fcf)
+    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"])
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        growth = st.slider("UFCF growth", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5, format="%.1f%%",
+                           key=f"{KEY}apv_growth") / 100
+        years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}apv_years")
+    with col2:
+        ku = st.slider("Unlevered cost of equity", 4.0, 20.0, round(ku_default * 100, 2), 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Hamada) x equity risk premium.") / 100
+        terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
+                             format="%.2f%%", key=f"{KEY}apv_terminal") / 100
+    with col3:
+        kd = st.slider("Cost of debt", 1.0, 15.0, round(inputs["cost_of_debt"] * 100, 2), 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt.") / 100
+        tax_rate = st.slider("Tax rate", 0.0, 35.0, round(inputs["tax_rate"] * 100, 1), 0.5, format="%.1f%%",
+                             key=f"{KEY}apv_tax", help="Default: effective tax rate of the last year.") / 100
+
+    base = unlevered_fcf(float(fcf.tail(3).mean()), inputs["interest"], tax_rate)
+    if base <= 0:
+        st.warning(f"Average unlevered free cash flow is not positive ({fmt_money(base)}), so APV implies no value.")
+        return
+    if ku <= terminal:
+        st.warning("The unlevered cost of equity must be higher than terminal growth.")
+        return
+    result = apv_valuation(base, growth, years, terminal, ku, inputs["debt"], kd, tax_rate, inputs["cash"], shares)
+    price = snapshot.get("price")
+    value = result["value_per_share"]
+    cols = st.columns(4)
+    cols[0].metric("APV per share", fmt_price(value),
+                   delta=fmt_pct(value / price - 1, signed=True) if price and value else None)
+    cols[1].metric("Unlevered firm value", fmt_money(result["unlevered_value"]))
+    cols[2].metric("PV of tax shields", fmt_money(result["tax_shield_value"]))
+    cols[3].metric("Equity value", fmt_money(result["equity_value"]))
+    st.caption(f"Base unlevered FCF {fmt_money(base)} (3-year average FCF + after-tax interest) · debt "
+               f"{fmt_money(inputs['debt'])} · cash {fmt_money(inputs['cash'])}.")
+    show_chart(donut_chart(["PV of forecast UFCF", "PV of terminal value", "PV of tax shields"],
+                           [result["pv_forecast_fcf"], result["pv_terminal_value"], result["tax_shield_value"]],
+                           "APV composition"), key=f"{KEY}apv_donut")
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,8 @@ Tabs:
   performance vs. sector ETF, change since first available price.
 - **Financials**: income statement, balance sheet, cash flow; margins; growth/CAGR;
   common-size statements; financial health score.
-- **Valuation**: weighted fair value summary; interactive DCF with sensitivity grid;
+- **Valuation**: weighted fair value summary; interactive DCF with sensitivity grid; APV
+  (unlevered FCF at Hamada unlevered cost of equity + PV of interest tax shields; n/a for Financials);
   multiples vs. sector; asset-based value; sector model; recommendation.
 - **Risk**: health score; Altman Z (variant by sector), Springate, Zmijewski; red flags;
   liquidity/solvency vs. sector; revenue stress test; volatility, drawdown, VaR.

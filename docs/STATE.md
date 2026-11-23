@@ -10,8 +10,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-23 V1 SEC EDGAR: utils/sec_edgar.py (CIK, filings, 10-year XBRL history, day cache), Overview section on demand, 9 offline tests; 304 tests pass. Live check pending SEC_EDGAR_USER_AGENT from the user.
 
+- 2026-11-24 V2 APV: valuation/apv.py + APV tab on Valuation (n/a for Financials), 8 tests incl. hand calculation; live AAPL/XOM/JPM/PLD ok.
+
 ## Next
-- Owner decided O3: build all original ideas. Next: V2 (APV) in docs/plan.md, then V3-V9.
+- Owner decided O3: build all original ideas. Next: V3 (SOTP) in docs/plan.md, then V4-V9.
 
 ## Needed from owner
 - O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.

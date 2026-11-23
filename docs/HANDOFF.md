@@ -10,6 +10,7 @@ state in this folder, merging everything useful from the old copy in
 
 ## State
 - Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
+- Done: V2 APV tab (valuation/apv.py).
 - Done: V1 SEC EDGAR (offline-tested; live needs SEC_EDGAR_USER_AGENT).
 - Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
 - Done: plan tasks T1-T8 (sidebar nav, live smoke of all pages, pip-audit, localhost binding, Docker, Streamlit deprecations, keys guard test, Financials FCF messages).
@@ -23,9 +24,9 @@ state in this folder, merging everything useful from the old copy in
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. V2 in `docs/plan.md`: APV method in `src/valuation/base_valuation.py` generic methods (unlevered FCF DCF at unlevered cost of equity + PV of interest tax shield), shown on the Valuation tab; hand-calculated test.
-2. V3 SOTP for remaining sectors, then V4 stress tests (free, no keys). One commit per task, tick plan, line in STATE.
-3. Ask the user for `SEC_EDGAR_USER_AGENT` (their own name + e-mail) to live-check V1, and for Finnhub/Alpha Vantage/FMP keys before V5-V7.
+1. V3 in `docs/plan.md`: SOTP for Technology, Financials, Manufacturing, Real Estate, Healthcare, Communication models (`src/valuation/sector_specific/*`, shared `SectorValuationMixin`); segment weights as user-adjustable parameters when yfinance has no segment data; tests per sector with synthetic companies (`tests/synthetic.py`).
+2. V4 stress tests (rate/margin/multiple shocks + 2008/2020/2022 scenarios) on the Risk tab, then V5-V8 with recorded fixtures (keys optional), then V9 docs.
+3. Ask the user for `SEC_EDGAR_USER_AGENT` to live-check V1, and keys before live-checking V5-V7.
 
 ## Open questions
 - Keys for V5-V7 (Finnhub, Alpha Vantage, FMP): the user will add them to `.env`; values must never be printed.
@@ -38,5 +39,5 @@ state in this folder, merging everything useful from the old copy in
 - Old Alpha Vantage / FMP keys are still in git history - never print them.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 304 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `.venv\Scripts\python.exe -m pytest -q` (expect 312 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
 - `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok
