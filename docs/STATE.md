@@ -26,8 +26,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 branch claude/peaceful-euler-aq2j08 pushed to origin (user approved); no PR, master untouched.
 
+- 2026-11-24 owner skipped live checks of V1/V5-V7 (no keys in .env); moving to finalize (O1, O2, O4). 363 tests pass, ruff clean.
+
 ## Next
-- Owner decided O3: build all original ideas. All plan tasks done. Remaining: live checks of V1/V5-V7 with the user's keys; owner items O1, O2, O4.
+- Owner decided O3: build all original ideas. All plan tasks done. Live checks of V1/V5-V7 skipped by owner (optional, need keys). Finalizing: owner items O1, O2, O4.
 
 ## Needed from owner
 - O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.

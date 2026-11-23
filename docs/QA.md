@@ -53,4 +53,5 @@ are covered offline by `tests/test_app.py` and `tests/test_pages_interaction.py`
 
 Not live-checked (need the user's settings): SEC EDGAR (`SEC_EDGAR_USER_AGENT`), News
 (`FINNHUB_API_KEY` / `ALPHA_VANTAGE_API_KEY`), FMP M&A feed. All three are covered offline with
-responses in the providers' JSON formats.
+responses in the providers' JSON formats. 2026-11-24: owner chose to skip these live checks
+and finalize; they stay open until keys are added to `.env`.
