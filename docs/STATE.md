@@ -28,6 +28,8 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 owner skipped live checks of V1/V5-V7 (no keys in .env); moving to finalize (O1, O2, O4). 363 tests pass, ruff clean.
 
+- 2026-11-24 O2: PR https://github.com/imnotkeril/Stock_Valuation/pull/1 (already open) updated with latest commits; merge is the owner's. O4 held: old folder has untracked StockAnalysisSystem/.env.txt with API keys + 13 cache files, owner to decide.
+
 ## Next
 - Owner decided O3: build all original ideas. All plan tasks done. Live checks of V1/V5-V7 skipped by owner (optional, need keys). Finalizing: owner items O1, O2, O4.
 
