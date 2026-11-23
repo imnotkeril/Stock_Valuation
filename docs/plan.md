@@ -55,7 +55,7 @@ Order: free sources first. Every provider is optional: without its key the featu
       PV of tax shield) · quant · hand-calculated test
 - [x] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,
       Healthcare, Communication) via segment data where available · quant
-- [ ] V4 Stress testing / market risk simulation: rate, margin and multiple shocks, historical
+- [x] V4 Stress testing / market risk simulation: rate, margin and multiple shocks, historical
       scenarios (2008, 2020, 2022) on price and fair value · quant
 - [ ] V5 Finnhub provider (free key `FINNHUB_API_KEY`): peers, metrics, company news · dev
 - [ ] V6 News sentiment: Finnhub news + Alpha Vantage NEWS_SENTIMENT (keys), score per

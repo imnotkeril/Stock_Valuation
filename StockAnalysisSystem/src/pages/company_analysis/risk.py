@@ -80,6 +80,7 @@ def render_company_risk(ticker: str, financial_data: Dict[str, Any], company_inf
         render_section("Liquidity and solvency", _render_liquidity, financial_data, company_info, price_data,
                        sector)
         render_section("Stress test", _render_stress_test, financial_data)
+        render_section("Scenario analysis", _render_scenarios, financial_data, company_info, price_data, sector)
     else:
         st.info("Financial statements are unavailable, so only market risk can be assessed.")
     render_section("Market risk", _render_market_risk, price_data, financial_data)
@@ -199,6 +200,60 @@ def _render_liquidity(financial_data: Dict[str, Any], company_info: Dict[str, An
     if sector == "Financials":
         st.caption("For banks and insurers, current ratio and debt-based leverage are not meaningful: "
                    "deposits and policy reserves are operating liabilities, not financing.")
+
+
+def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
+                      sector: str) -> None:
+    """Macro shock scenarios on an EV/EBITDA valuation and historical crisis drawdowns."""
+    from StockAnalysisSystem.src.models.stress_testing import historical_scenarios, scenario_valuations
+    from StockAnalysisSystem.src.pages.company_analysis.page_helpers import market_snapshot
+
+    st.subheader("Scenario analysis")
+    snapshot = market_snapshot(financial_data, company_info, price_data)
+    price = snapshot.get("price")
+
+    st.markdown("**Macro shocks** - equity value per share from latest EBITDA at the current EV/EBITDA, "
+                "after each shock")
+    income = get_statement(financial_data, "income_statement")
+    revenue, ebitda = get_latest(income, "revenue"), get_latest(income, "ebitda")
+    ev = snapshot.get("enterprise_value")
+    if sector == "Financials":
+        st.info("EBITDA-based scenarios do not apply to banks and insurers; see the historical crises below.")
+    elif not (revenue and ebitda and ebitda > 0 and ev and ev > 0 and snapshot.get("shares")):
+        st.info("Revenue, positive EBITDA, enterprise value and shares are required for the macro scenarios.")
+    else:
+        table = scenario_valuations(revenue, ebitda, ev / ebitda, snapshot.get("net_debt") or 0.0,
+                                    snapshot["shares"], snapshot.get("total_debt") or 0.0,
+                                    get_latest(income, "interest_expense") or 0.0)
+        display = pd.DataFrame({
+            "Scenario": table["scenario"],
+            "Value / share": table["value_per_share"].map(lambda v: f"${v:,.2f}"),
+            "Change": table["change"].map(lambda v: fmt_pct(v, signed=True)),
+            "EBITDA margin": table["ebitda_margin"].map(fmt_pct),
+            "EV/EBITDA": table["ev_ebitda"].map(lambda v: f"{v:.1f}x"),
+            "Interest cover": table["interest_coverage"].map(lambda v: f"{v:.1f}x" if v is not None and v == v else "n/a"),
+            "Assumptions": table["description"],
+        })
+        st.dataframe(display, width="stretch", hide_index=True)
+        worst = table.iloc[1:].sort_values("change").iloc[0]
+        st.caption(f"Worst case: **{worst['scenario']}** ({fmt_pct(worst['change'], signed=True)}). The base case "
+                   "values the company at its current multiple, so it equals the market price up to the EV bridge. "
+                   "Rate shocks scale the multiple by (r - g) / (r + shock - g) with r = 9 %, g = 2.5 %.")
+
+    st.markdown("**Historical crises** - S&P 500 peak-to-trough drawdowns")
+    beta = to_float(snapshot.get("beta"))
+    crises = historical_scenarios(beta, price_data, price)
+    display = pd.DataFrame({
+        "Crisis": crises["crisis"], "Window": crises["window"],
+        "S&P 500": crises["market_drawdown"].map(fmt_pct),
+        "Beta-implied": crises["beta_implied"].map(lambda v: fmt_pct(v) if v is not None and v == v else "n/a"),
+        "Implied price": crises["implied_price"].map(lambda v: f"${v:,.2f}" if v is not None and v == v else "n/a"),
+        "Actual drawdown": crises["actual_drawdown"].map(
+            lambda v: fmt_pct(v) if v is not None and v == v else "not in loaded history"),
+    })
+    st.dataframe(display, width="stretch", hide_index=True)
+    st.caption(f"Beta {fmt_number(beta)}. Beta-implied moves assume the stock follows its average market "
+               "sensitivity; actual drawdowns come from the loaded price history.")
 
 
 def _render_stress_test(financial_data: Dict[str, Any]) -> None:
