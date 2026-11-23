@@ -138,7 +138,7 @@ CSV, JSON downloads.
 | Finnhub data source | drop (Alpha Vantage covers the fallback) |
 | Deep-learning forecasts (TensorFlow, pytorch-forecasting) | drop (heavy, sklearn ML is in place) |
 | Market risk simulation / stress testing beyond revenue stress + VaR | backlog |
-| SOTP for every sector | Partial: Energy and Retail only |
+| SOTP for every sector | Done (V3): two-segment SOTP with user-set split and multiples in every sector model; explicit `segments=[...]` override |
 
 Decision (owner, 2026-11-23): build all of these as v2 - see `docs/plan.md` V1-V8. Keyed sources (Finnhub, Alpha Vantage news, FMP) stay optional: missing key = feature explains what to add, never an error.
 

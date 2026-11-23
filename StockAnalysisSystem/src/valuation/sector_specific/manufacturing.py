@@ -19,6 +19,7 @@ from StockAnalysisSystem.src.config import normalize_sector
 from StockAnalysisSystem.src.utils.financial_data import safe_divide
 from StockAnalysisSystem.src.valuation.dcf_models import AdvancedDCFValuation
 from StockAnalysisSystem.src.valuation.sector_specific.common import (
+    enable_parametric_sotp,
     SectorValuationMixin,
     ValuationContext,
     average_margin,
@@ -206,3 +207,6 @@ class ManufacturingSectorValuation(SectorValuationMixin, AdvancedDCFValuation):
         except Exception as exc:
             logger.warning(f"Manufacturing ratios failed for {ticker}: {exc}")
             return {"error": str(exc)}
+
+
+enable_parametric_sotp(ManufacturingSectorValuation, ("Core manufacturing", "Services & aftermarket"), (10.0, 14.0))

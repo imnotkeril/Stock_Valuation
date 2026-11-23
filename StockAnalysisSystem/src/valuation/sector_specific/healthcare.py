@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 from StockAnalysisSystem.src.utils.financial_data import get_series, safe_divide, to_float
 from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 from StockAnalysisSystem.src.valuation.sector_specific.common import (
+    enable_parametric_sotp,
     SectorValuationMixin,
     ValuationContext,
     core_parameters,
@@ -195,3 +196,6 @@ class HealthcareValuation(SectorValuationMixin, BaseValuation):
                            **kwargs) -> Dict:
         return self.run_method("pipeline_rnpv", ticker, financial_data, kwargs.pop("subsector", None),
                                pipeline_data=pipeline_data, **kwargs)
+
+
+enable_parametric_sotp(HealthcareValuation, ("Core franchise", "Devices, diagnostics & services"), (12.0, 16.0))

@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 from StockAnalysisSystem.src.valuation.sector_specific.common import (
+    enable_parametric_sotp,
     SectorValuationMixin,
     ValuationContext,
     average_margin,
@@ -174,3 +175,6 @@ class CommunicationValuation(SectorValuationMixin, BaseValuation):
 
     def user_based_valuation(self, ticker: str, financial_data: Dict, user_metrics: Dict) -> Dict:
         return self.run_method("user_based", ticker, financial_data, "interactive_media", user_metrics=user_metrics)
+
+
+enable_parametric_sotp(CommunicationValuation, ("Connectivity / core", "Media & content"), (7.0, 12.0))

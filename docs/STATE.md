@@ -12,8 +12,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 V2 APV: valuation/apv.py + APV tab on Valuation (n/a for Financials), 8 tests incl. hand calculation; live AAPL/XOM/JPM/PLD ok.
 
+- 2026-11-24 V3 SOTP in all sector models: common.parametric_sum_of_parts / blended_sotp, off by default (segment share 0), 22 tests; 334 pass, live 6 sectors ok.
+
 ## Next
-- Owner decided O3: build all original ideas. Next: V3 (SOTP) in docs/plan.md, then V4-V9.
+- Owner decided O3: build all original ideas. Next: V4 (stress tests) in docs/plan.md, then V5-V9.
 
 ## Needed from owner
 - O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.

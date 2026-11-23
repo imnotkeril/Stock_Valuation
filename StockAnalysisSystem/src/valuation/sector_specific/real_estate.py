@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 from StockAnalysisSystem.src.utils.financial_data import safe_divide
 from StockAnalysisSystem.src.valuation.base_valuation import BaseValuation
 from StockAnalysisSystem.src.valuation.sector_specific.common import (
+    enable_parametric_sotp,
     SectorValuationMixin,
     ValuationContext,
     core_parameters,
@@ -180,3 +181,6 @@ class RealEstateValuation(SectorValuationMixin, BaseValuation):
         nav = result.get("value_per_share")
         return {"company": ticker, "nav_per_share": nav, "premium_to_nav": result.get("premium_to_nav"),
                 "error": result.get("error") or (None if nav else result.get("note"))}
+
+
+enable_parametric_sotp(RealEstateValuation, ("Rental portfolio", "Development & services"), (18.0, 10.0))

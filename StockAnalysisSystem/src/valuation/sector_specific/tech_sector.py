@@ -17,6 +17,7 @@ from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.financial_data import get_latest, get_series, get_value, safe_divide
 from StockAnalysisSystem.src.valuation.base_valuation import clamp, growth_path
 from StockAnalysisSystem.src.valuation.dcf_models import SectorSpecificDCF
+from StockAnalysisSystem.src.valuation.sector_specific.common import blended_sotp, enable_blended_sotp
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ class TechnologySectorValuation(SectorSpecificDCF):
                                                                label=self.METHODS['ev_ebitda']),
                 'pe_multiple': lambda: self._multiples_valuation(ticker, data, {'pe': multiples['pe']},
                                                                  label=self.METHODS['pe_multiple']),
+                'sum_of_parts': lambda: blended_sotp(self, ticker, data, overrides, 'ev_ebitda'),
             }
             if key != 'early_stage' and metrics['sbc_pct_revenue']:
                 notes.append(f"Free cash flow is reduced by {haircut:.0%} of stock-based compensation "
@@ -359,3 +361,6 @@ class TechnologySectorValuation(SectorSpecificDCF):
         """Chronological revenue series (oldest first)."""
         income, _, _ = self._statements(financial_data)
         return get_series(income, 'revenue', ascending=True)
+
+
+enable_blended_sotp(TechnologySectorValuation, ("Products & hardware", "Services & software"), (12.0, 22.0), 'ev_ebitda', ["saas", "hardware", "semiconductors", "internet", "it_services"])

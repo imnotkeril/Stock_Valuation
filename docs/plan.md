@@ -53,7 +53,7 @@ Order: free sources first. Every provider is optional: without its key the featu
       `SEC_EDGAR_USER_AGENT` (SEC rejects anonymous clients with 403).
 - [x] V2 APV (adjusted present value) method in the generic valuation (unlevered DCF +
       PV of tax shield) · quant · hand-calculated test
-- [ ] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,
+- [x] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,
       Healthcare, Communication) via segment data where available · quant
 - [ ] V4 Stress testing / market risk simulation: rate, margin and multiple shocks, historical
       scenarios (2008, 2020, 2022) on price and fair value · quant

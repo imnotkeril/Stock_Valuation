@@ -1053,3 +1053,124 @@ def legacy_summary(result: Dict[str, Any], method_name: str, safety_margin: floa
         **extra,
     })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Parametric sum of the parts (two segments split by EBITDA or earnings share)
+# ---------------------------------------------------------------------------
+SOTP_METHOD = "sum_of_parts"
+SOTP_LABEL = "Sum of the Parts"
+SOTP_WEIGHT = 0.15
+
+
+def sotp_parameters(segments: Tuple[str, str], multiples: Tuple[float, float], basis: str = "EV/EBITDA") -> Dict[str, Any]:
+    """Slider declarations for a two-segment SOTP (second-segment share 0 = method not run)."""
+    first, second = segments
+    metric = "EBITDA" if basis == "EV/EBITDA" else "net income"
+    return {
+        "sotp_second_share": percent_param(
+            f"SOTP: {second} share of {metric}", 0.0, 0.9, 0.0,
+            f"Share of {metric} earned by {second}. 0 = sum of the parts not run (use the segment note "
+            "of the annual report).", step=0.05, optional=True),
+        "sotp_multiple_first": number_param(f"SOTP: {first} {basis}", 1, 60, multiples[0],
+                                            f"{basis} multiple applied to {first}.", step=0.5),
+        "sotp_multiple_second": number_param(f"SOTP: {second} {basis}", 1, 60, multiples[1],
+                                             f"{basis} multiple applied to {second}.", step=0.5),
+    }
+
+
+def parametric_sum_of_parts(ctx: ValuationContext, segments: Tuple[str, str], basis: str = "EV/EBITDA") -> Dict[str, Any]:
+    """
+    Two-segment SOTP. Explicit ``segments=[...]`` (see :func:`sum_of_parts`) win; otherwise the
+    latest EBITDA (EV/EBITDA basis) or net income (P/E basis, equity value directly) is split
+    by ``sotp_second_share`` and each part is valued at its own multiple.
+    """
+    explicit = ctx.inputs.get("segments")
+    if explicit:
+        return sum_of_parts(ctx, explicit, ctx.inputs.get("corporate_costs"))
+    share = to_float(ctx.params.get("sotp_second_share"), 0.0) or 0.0
+    if share <= 0:
+        return not_applicable(f"Set the {segments[1]} share in the assumptions (or pass segments=[...]) "
+                              "to run a sum-of-the-parts valuation.")
+    multiples = (to_float(ctx.params.get("sotp_multiple_first")), to_float(ctx.params.get("sotp_multiple_second")))
+    if not all(m and m > 0 for m in multiples):
+        return not_applicable("Both segment multiples must be positive.")
+    metric = latest_metric(ctx, "ebitda" if basis == "EV/EBITDA" else "net_income")
+    if not metric or metric <= 0:
+        return not_applicable(f"Positive {'EBITDA' if basis == 'EV/EBITDA' else 'net income'} is required.")
+    weights = (1 - share, share)
+    parts = [{"name": name, "basis": basis, "metric_value": metric * w, "multiple": m,
+              "enterprise_value": metric * w * m} for name, w, m in zip(segments, weights, multiples)]
+    total = sum(p["enterprise_value"] for p in parts)
+    if basis == "EV/EBITDA":
+        bridge = equity_bridge(total, ctx.capital)
+        equity = bridge["equity_value"]
+    else:  # P/E: parts are equity values
+        bridge = {"equity_value": total}
+        equity = total
+    return {**bridge, "parts": parts, "segment_share": share, "value_per_share": ctx.per_share(equity),
+            "note": "Segment split from the assumption sliders; replace with reported segment data when available."}
+
+
+def enable_parametric_sotp(cls: type, segments: Tuple[str, str], multiples: Tuple[float, float],
+                           basis: str = "EV/EBITDA", weight: float = SOTP_WEIGHT) -> type:
+    """Add the ``sum_of_parts`` method, its sliders and weights to a sector model class."""
+    cls.METHODS = {**cls.METHODS, SOTP_METHOD: SOTP_LABEL}
+    cls.SUBSECTOR_METHODS = {k: list(v) + ([SOTP_METHOD] if SOTP_METHOD not in v else [])
+                             for k, v in cls.SUBSECTOR_METHODS.items()}
+    cls.DEFAULT_METHOD_WEIGHTS = {**cls.DEFAULT_METHOD_WEIGHTS, SOTP_METHOD: weight}
+    cls.SUBSECTOR_WEIGHTS = {k: {**v, SOTP_METHOD: v.get(SOTP_METHOD, weight)} for k, v in cls.SUBSECTOR_WEIGHTS.items()}
+    cls.PARAMETERS = {**cls.PARAMETERS, **sotp_parameters(segments, multiples, basis)}
+    cls.EXTRA_INPUTS = tuple(dict.fromkeys(tuple(cls.EXTRA_INPUTS) + ("segments", "corporate_costs")))
+    cls.SOTP_SEGMENTS = segments
+    original = cls._method_runners
+
+    def _method_runners(self):
+        runners = dict(original(self))
+        runners.setdefault(SOTP_METHOD, lambda ctx: parametric_sum_of_parts(ctx, segments, basis))
+        return runners
+
+    cls._method_runners = _method_runners
+    return cls
+
+
+def blended_sotp(model: Any, ticker: str, data: Dict[str, Any], overrides: Dict[str, Any], basis: str) -> Dict[str, Any]:
+    """
+    Two-segment SOTP for models built on ``_multiples_valuation`` (Technology, Financials).
+
+    Splitting one earnings figure into two parts valued at their own multiples equals valuing
+    the whole at the share-weighted multiple, so the blended multiple goes through the
+    model's own multiples path (net debt bridge for EV/EBITDA, direct equity for P/E).
+    """
+    segments, defaults = model.SOTP_SEGMENTS, model.SOTP_MULTIPLES
+    share = to_float(overrides.get("sotp_second_share"), 0.0) or 0.0
+    if share <= 0:
+        return not_applicable(f"Set the {segments[1]} share in the assumptions to run a sum-of-the-parts valuation.")
+    first = to_float(overrides.get("sotp_multiple_first"), defaults[0]) or defaults[0]
+    second = to_float(overrides.get("sotp_multiple_second"), defaults[1]) or defaults[1]
+    blended = (1 - share) * first + share * second
+    result = model._multiples_valuation(ticker, data, {basis: blended}, label=SOTP_LABEL)
+    result["parts"] = [{"name": segments[0], "share": 1 - share, "multiple": first},
+                       {"name": segments[1], "share": share, "multiple": second}]
+    result["blended_multiple"] = blended
+    result["note"] = "Segment split from the assumption sliders; replace with reported segment data when available."
+    return result
+
+
+def enable_blended_sotp(cls: type, segments: Tuple[str, str], multiples: Tuple[float, float], basis: str,
+                        subsectors: Optional[List[str]] = None, weight: float = SOTP_WEIGHT) -> type:
+    """Declare the ``sum_of_parts`` method on a ``_multiples_valuation``-based model (runner added in the model)."""
+    label_basis = "EV/EBITDA" if basis == "ev_ebitda" else "P/E"
+    keys = subsectors or list(cls.SUBSECTOR_METHODS)
+    cls.METHODS = {**cls.METHODS, SOTP_METHOD: SOTP_LABEL}
+    cls.SUBSECTOR_METHODS = {k: list(v) + ([SOTP_METHOD] if k in keys and SOTP_METHOD not in v else [])
+                             for k, v in cls.SUBSECTOR_METHODS.items()}
+    cls.DEFAULT_METHOD_WEIGHTS = {**cls.DEFAULT_METHOD_WEIGHTS, SOTP_METHOD: weight}
+    cls.SUBSECTOR_WEIGHTS = {k: {**v, SOTP_METHOD: weight} if k in keys else dict(v)
+                             for k, v in cls.SUBSECTOR_WEIGHTS.items()}
+    params = sotp_parameters(segments, multiples, label_basis)
+    for spec in params.values():
+        spec["subsectors"] = keys
+    cls.PARAMETERS = {**cls.PARAMETERS, **params}
+    cls.SOTP_SEGMENTS, cls.SOTP_MULTIPLES = segments, multiples
+    return cls

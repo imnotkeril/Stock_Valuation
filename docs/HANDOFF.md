@@ -10,6 +10,7 @@ state in this folder, merging everything useful from the old copy in
 
 ## State
 - Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
+- Done: V3 SOTP in every sector model.
 - Done: V2 APV tab (valuation/apv.py).
 - Done: V1 SEC EDGAR (offline-tested; live needs SEC_EDGAR_USER_AGENT).
 - Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
@@ -24,8 +25,7 @@ state in this folder, merging everything useful from the old copy in
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. V3 in `docs/plan.md`: SOTP for Technology, Financials, Manufacturing, Real Estate, Healthcare, Communication models (`src/valuation/sector_specific/*`, shared `SectorValuationMixin`); segment weights as user-adjustable parameters when yfinance has no segment data; tests per sector with synthetic companies (`tests/synthetic.py`).
-2. V4 stress tests (rate/margin/multiple shocks + 2008/2020/2022 scenarios) on the Risk tab, then V5-V8 with recorded fixtures (keys optional), then V9 docs.
+1. V4 stress tests (rate/margin/multiple shocks + 2008/2020/2022 scenarios) on the Risk tab, then V5-V8 with recorded fixtures (keys optional), then V9 docs.
 3. Ask the user for `SEC_EDGAR_USER_AGENT` to live-check V1, and keys before live-checking V5-V7.
 
 ## Open questions
@@ -39,5 +39,5 @@ state in this folder, merging everything useful from the old copy in
 - Old Alpha Vantage / FMP keys are still in git history - never print them.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 312 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `.venv\Scripts\python.exe -m pytest -q` (expect 334 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
 - `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok

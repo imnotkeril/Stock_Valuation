@@ -18,6 +18,7 @@ from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.financial_data import find_row, get_latest, safe_divide
 from StockAnalysisSystem.src.valuation.base_valuation import clamp
 from StockAnalysisSystem.src.valuation.dcf_models import SectorSpecificDCF
+from StockAnalysisSystem.src.valuation.sector_specific.common import blended_sotp, enable_blended_sotp
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ class FinancialSectorValuation(SectorSpecificDCF):
         def prepare(data, key, overrides, notes):
             profile = self._financial_profile(data, overrides)
             runners = {
+                'sum_of_parts': lambda: blended_sotp(self, ticker, data, overrides, 'pe'),
                 'excess_return': lambda: self._excess_return_method(ticker, data, profile),
                 'justified_pb': lambda: self._justified_pb_method(ticker, data, profile),
                 'pe_multiple': lambda: self._multiples_valuation(ticker, data, {'pe': PEER_PE[key]},
@@ -296,3 +298,6 @@ class FinancialSectorValuation(SectorSpecificDCF):
             forecast_years=profile['forecast_years'], growth_rate=growth,
             cost_of_equity=profile['cost_of_equity'], payout_ratio=overrides.get('payout_ratio'),
             stable_roe=max(profile['sustainable_roe'], profile['terminal_growth'] + 0.01))
+
+
+enable_blended_sotp(FinancialSectorValuation, ("Banking & lending", "Asset & wealth management"), (10.0, 16.0), 'pe', None)
