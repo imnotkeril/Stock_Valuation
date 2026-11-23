@@ -64,6 +64,8 @@ Order: free sources first. Every provider is optional: without its key the featu
       fallback: curated CSV of public deals)
       Done as: user-maintained deal table (editor + CSV import, no bundled figures to avoid
       unverified numbers), median/IQR deal multiples -> implied value; FMP feed of recent M&A → EV/Revenue, EV/EBITDA deal multiples · quant
-- [ ] V8 Deep-learning forecasts as an optional extra (`requirements-ml.txt`: torch-based model,
+- [x] V8 Deep-learning forecasts as an optional extra (`requirements-ml.txt`: torch-based model,
       lazy import; page hides it when not installed) · quant
+      Done as: "Neural Network (MLP)" price model (scikit-learn MLPRegressor, two hidden layers,
+      no new dependency); torch/TensorFlow not added - too heavy for the gain
 - [ ] V9 User guide and CHANGELOG (after V1-V8)

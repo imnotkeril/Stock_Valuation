@@ -73,6 +73,7 @@ PRICE_MODELS: Dict[str, str] = {
     "linear": "Linear Trend",
     "random_walk": "Random Walk (drift)",
     "ml": "Machine Learning",
+    "neural": "Neural Network (MLP)",
 }
 if PROPHET_AVAILABLE:
     PRICE_MODELS["prophet"] = "Prophet"
@@ -95,6 +96,8 @@ MODEL_DESCRIPTIONS: Dict[str, str] = {
     "linear": "Linear trend: least-squares trend line extended into the future.",
     "random_walk": "Random walk with drift: the statistical baseline for efficient markets.",
     "ml": "Machine learning regression on lagged returns and technical features.",
+    "neural": "Two-layer neural network (multi-layer perceptron) on the last 10 standardised daily log-returns, "
+              "forecast recursively; band from in-sample residuals.",
     "prophet": "Prophet: additive trend + seasonality model (optional dependency).",
 }
 

@@ -31,7 +31,7 @@ from scipy import stats
 
 logger = logging.getLogger("forecast_engine")
 
-PRICE_MODELS = ("arima", "ets", "linear", "random_walk", "ml")
+PRICE_MODELS = ("arima", "ets", "linear", "random_walk", "ml", "neural")
 METRIC_MODELS = ("linear", "cagr", "ets", "arima")
 INDICATOR_MODELS = ("arima", "ml")
 #: Price history used for fitting (about two years of trading days)
@@ -199,6 +199,36 @@ def _fit_ml(values: np.ndarray, horizon: int, confidence: float, lags: int = 5):
     return mean, mean - spread, mean + spread
 
 
+def _fit_neural(values: np.ndarray, horizon: int, confidence: float, lags: int = 10, seed: int = 0):
+    """
+    Multi-layer perceptron (two hidden layers) on standardised lagged changes, forecast
+    recursively; the band comes from the in-sample residual spread growing with sqrt(h).
+    """
+    from sklearn.neural_network import MLPRegressor
+
+    steps = np.diff(values)
+    if len(steps) <= lags + 30:
+        raise ValueError("Not enough history for the neural network model")
+    scale = float(np.std(steps)) or 1.0
+    scaled = steps / scale
+    X = np.column_stack([scaled[i:len(scaled) - lags + i] for i in range(lags)])
+    y = scaled[lags:]
+    model = MLPRegressor(hidden_layer_sizes=(32, 16), activation="tanh", alpha=1e-3, learning_rate_init=1e-3,
+                         max_iter=400, early_stopping=True, validation_fraction=0.15, n_iter_no_change=20,
+                         random_state=seed).fit(X, y)
+    sigma = float(np.std(y - model.predict(X), ddof=1)) * scale
+    window, level, mean = list(scaled[-lags:]), values[-1], []
+    for _ in range(horizon):
+        step = float(model.predict(np.array(window[-lags:]).reshape(1, -1))[0])
+        step = float(np.clip(step, -3.0, 3.0))  # keep the recursion from running away
+        level += step * scale
+        mean.append(level)
+        window.append(step)
+    mean = np.array(mean)
+    spread = _z(confidence) * sigma * np.sqrt(np.arange(1, horizon + 1))
+    return mean, mean - spread, mean + spread
+
+
 def _fit_cagr(values: np.ndarray, horizon: int, confidence: float):
     if len(values) < 2 or values[0] <= 0 or values[-1] <= 0:
         raise ValueError("CAGR requires positive first and last values")
@@ -221,7 +251,8 @@ def _fit_prophet(series: pd.Series, horizon: int, confidence: float):  # pragma:
 
 
 PRICE_FITTERS: Dict[str, Callable] = {"arima": _fit_arima, "ets": _fit_ets, "linear": _fit_linear,
-                                      "random_walk": _fit_random_walk, "ml": _fit_ml}
+                                      "random_walk": _fit_random_walk, "ml": _fit_ml,
+                                      "neural": _fit_neural}
 METRIC_FITTERS: Dict[str, Callable] = {"linear": _fit_linear, "cagr": _fit_cagr, "ets": _fit_ets,
                                        "arima": _fit_arima}
 
