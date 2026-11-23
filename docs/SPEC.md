@@ -132,7 +132,7 @@ CSV, JSON downloads.
 | Idea | Decision needed |
 |---|---|
 | Adjusted Present Value (APV) | backlog or drop |
-| Precedent transactions method | drop (no free data source) |
+| Precedent transactions method | Done (V7): Valuation > Precedents - user-maintained deal table (no bundled figures), median/IQR deal multiples, optional FMP M&A feed |
 | News / sentiment analysis | Done (V5-V6): News tab - Finnhub news (lexicon-scored) + Alpha Vantage NEWS_SENTIMENT, daily sentiment, peers; keys optional |
 | SEC EDGAR data source | backlog (free, would add filings depth) |
 | Finnhub data source | Done (V5): `utils/news_sentiment.py` - news, metrics, peers with `FINNHUB_API_KEY` |

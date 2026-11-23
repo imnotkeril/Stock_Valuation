@@ -36,6 +36,9 @@ def _offline(monkeypatch, tmp_path):
     from StockAnalysisSystem.src.pages.screening import stock_screener
 
     monkeypatch.setattr(stock_screener, "TEMPLATES_FILE", tmp_path / "user" / "screener_templates.json")
+    from StockAnalysisSystem.src.models import precedent_transactions
+
+    monkeypatch.setattr(precedent_transactions, "DEALS_FILE", tmp_path / "user" / "precedent_deals.csv")
 
     def _no_network(*args, **kwargs):
         raise RuntimeError("Network access is disabled in tests")

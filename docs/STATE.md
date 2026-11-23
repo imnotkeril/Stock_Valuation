@@ -18,8 +18,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 V5+V6: utils/news_sentiment.py (Finnhub news/metrics/peers, Alpha Vantage NEWS_SENTIMENT, lexicon scorer, 6h cache, keys never in cache names) + News tab; 12 tests; 352 pass. Live needs keys.
 
+- 2026-11-24 V7 precedent transactions: models/precedent_transactions.py + Valuation > Precedents (deal editor, CSV import, deal multiples, FMP feed); 5 tests.
+
 ## Next
-- Owner decided O3: build all original ideas. Next: V7 (precedent transactions) in docs/plan.md, then V8-V9.
+- Owner decided O3: build all original ideas. Next: V8 (neural-network forecast) in docs/plan.md, then V9 docs.
 
 ## Needed from owner
 - O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.

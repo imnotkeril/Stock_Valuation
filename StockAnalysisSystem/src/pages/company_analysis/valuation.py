@@ -16,6 +16,7 @@ Sub-tabs:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -76,7 +77,9 @@ def render_company_valuation(ticker: str, financial_data: Dict[str, Any], compan
         sector_data: Sector ETF prices (unused; accepted for a uniform signature).
     """
     snapshot = market_snapshot(financial_data, company_info, price_data)
-    tabs = st.tabs(["Fair Value Summary", "DCF", "APV", "Relative", "Asset-Based", "Sector Model"])
+    tabs = st.tabs(["Fair Value Summary", "DCF", "APV", "Relative", "Asset-Based", "Sector Model", "Precedents"])
+    with tabs[6]:
+        render_section("Precedent transactions", _render_precedents, financial_data, company_info, snapshot)
     with tabs[0]:
         render_section("Fair value summary", _render_summary, ticker, financial_data, company_info)
     with tabs[1]:
@@ -306,6 +309,69 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     show_chart(donut_chart(["PV of forecast UFCF", "PV of terminal value", "PV of tax shields"],
                            [result["pv_forecast_fcf"], result["pv_terminal_value"], result["tax_shield_value"]],
                            "APV composition"), key=f"{KEY}apv_donut")
+
+
+# ---------------------------------------------------------------------------
+# Precedent transactions
+# ---------------------------------------------------------------------------
+def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                       snapshot: Dict[str, Optional[float]]) -> None:
+    from StockAnalysisSystem.src.models import precedent_transactions as pt
+
+    st.subheader("Precedent transactions")
+    st.caption("Value the company at the multiples acquirers paid in comparable deals (these include a control "
+               "premium, so they usually exceed trading multiples). Enter deals from press releases, merger proxies "
+               "or fairness opinions; the table is saved locally and shared by all companies.")
+    sector = canonical_sector(company_info, financial_data)
+    deals = pt.load_deals()
+    edited = st.data_editor(
+        deals if not deals.empty else pt.empty_deals(), num_rows="dynamic", width="stretch", hide_index=True,
+        key=f"{KEY}deals_editor",
+        column_config={"date": st.column_config.TextColumn("Date (YYYY-MM-DD)"),
+                       "sector": st.column_config.TextColumn("Sector", help=f"e.g. {sector}"),
+                       "ev_billions": st.column_config.NumberColumn("EV ($B)", format="%.2f"),
+                       "ev_revenue": st.column_config.NumberColumn("EV/Revenue", format="%.2f"),
+                       "ev_ebitda": st.column_config.NumberColumn("EV/EBITDA", format="%.2f"),
+                       "source": st.column_config.TextColumn("Source")})
+    col_save, col_upload = st.columns([1, 3], vertical_alignment="bottom")
+    with col_save:
+        if st.button("Save deals", key=f"{KEY}deals_save", icon=":material/save:"):
+            st.success(f"Saved {pt.save_deals(edited)} deals.")
+            deals = pt.load_deals()
+    with col_upload:
+        upload = st.file_uploader("Or import a CSV with the same columns", type="csv", key=f"{KEY}deals_upload")
+        if upload is not None and st.button("Import CSV", key=f"{KEY}deals_import"):
+            imported = pt.clean_deals(pd.read_csv(upload))
+            st.success(f"Imported {pt.save_deals(pd.concat([deals, imported], ignore_index=True))} deals.")
+            deals = pt.load_deals()
+
+    scope = st.radio("Deals to use", [f"{sector} only", "All sectors"], horizontal=True, key=f"{KEY}deals_scope")
+    multiples = pt.deal_multiples(deals, sector if scope.endswith("only") else None)
+    if not multiples["deals"]:
+        st.info("No matching deals with multiples yet - add some above and click **Save deals**.")
+    else:
+        income = get_statement(financial_data, "income_statement")
+        rows = pt.implied_values(multiples, get_latest(income, "revenue"), get_latest(income, "ebitda"),
+                                 snapshot.get("net_debt") or 0.0, snapshot.get("shares"))
+        if not rows:
+            st.info("Revenue / EBITDA or shares are unavailable for this company.")
+        else:
+            price = snapshot.get("price")
+            cols = st.columns(len(rows))
+            for col, row in zip(cols, rows):
+                value = row["value_per_share"]
+                col.metric(f"{row['method']} ({row['multiple']:.1f}x, {row['deals']} deals)", fmt_price(value),
+                           delta=fmt_pct(value / price - 1, signed=True) if price and value else None)
+                if row["low"] is not None and row["high"] is not None:
+                    col.caption(f"Interquartile range {fmt_price(row['low'])} - {fmt_price(row['high'])}")
+
+    feed = pt.fmp_recent_deals()
+    if not feed.empty:
+        with st.expander("Recent M&A announcements (Financial Modeling Prep)"):
+            st.dataframe(feed, width="stretch", hide_index=True,
+                         column_config={"link": st.column_config.LinkColumn("Filing", display_text="Open")})
+    elif not os.environ.get(pt.FMP_ENV):
+        st.caption(f"Tip: add `{pt.FMP_ENV}` to `.env` to list recent M&A announcements here.")
 
 
 # ---------------------------------------------------------------------------

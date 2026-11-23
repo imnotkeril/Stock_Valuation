@@ -60,8 +60,10 @@ Order: free sources first. Every provider is optional: without its key the featu
 - [x] V5 Finnhub provider (free key `FINNHUB_API_KEY`): peers, metrics, company news · dev
 - [x] V6 News sentiment: Finnhub news + Alpha Vantage NEWS_SENTIMENT (keys), score per
       company over time; new tab on Company Analysis · ai/dev
-- [ ] V7 Precedent transactions: M&A deals by sector (FMP key, `FINANCIAL_MODELING_PREP_API_KEY`;
-      fallback: curated CSV of public deals) → EV/Revenue, EV/EBITDA deal multiples · quant
+- [x] V7 Precedent transactions: M&A deals by sector (FMP key, `FINANCIAL_MODELING_PREP_API_KEY`;
+      fallback: curated CSV of public deals)
+      Done as: user-maintained deal table (editor + CSV import, no bundled figures to avoid
+      unverified numbers), median/IQR deal multiples -> implied value; FMP feed of recent M&A → EV/Revenue, EV/EBITDA deal multiples · quant
 - [ ] V8 Deep-learning forecasts as an optional extra (`requirements-ml.txt`: torch-based model,
       lazy import; page hides it when not installed) · quant
 - [ ] V9 User guide and CHANGELOG (after V1-V8)
