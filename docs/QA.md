@@ -55,3 +55,17 @@ Not live-checked (need the user's settings): SEC EDGAR (`SEC_EDGAR_USER_AGENT`),
 (`FINNHUB_API_KEY` / `ALPHA_VANTAGE_API_KEY`), FMP M&A feed. All three are covered offline with
 responses in the providers' JSON formats. 2026-11-24: owner chose to skip these live checks
 and finalize; they stay open until keys are added to `.env`.
+
+## Live check with keys (2026-11-24)
+Keys migrated from the old folder's `.env.txt` into `.env` (values never printed).
+
+| Check | Result |
+|---|---|
+| Finnhub: news / metrics / peers for AAPL | OK: 248 articles, 133 metrics, 10 peers |
+| Alpha Vantage NEWS_SENTIMENT | not available: premium endpoint on the free key; News tab works on Finnhub alone |
+| FMP M&A feed | was empty: free plan rejects `limit` > 5 with HTTP 402. Fixed: retry with limit 5 -> 5 deals; new test |
+| Live AppTest, Company Analysis AAPL | no exceptions, no `st.error`; News tab and "Recent M&A announcements" expander render |
+| SEC EDGAR | not checked: old file had only a placeholder User-Agent; needs `SEC_EDGAR_USER_AGENT` from the owner |
+
+364 tests pass, ruff clean.
+

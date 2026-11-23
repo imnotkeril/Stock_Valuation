@@ -25,6 +25,7 @@ DEALS_FILE = DATA_DIR / "user" / "precedent_deals.csv"
 COLUMNS = ["date", "acquirer", "target", "sector", "ev_billions", "ev_revenue", "ev_ebitda", "source"]
 FMP_ENV = "FINANCIAL_MODELING_PREP_API_KEY"
 FMP_MA_URL = "https://financialmodelingprep.com/stable/mergers-acquisitions-latest"
+FMP_FREE_LIMIT = 5
 
 
 def empty_deals() -> pd.DataFrame:
@@ -107,6 +108,9 @@ def fmp_recent_deals(limit: int = 50) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     try:
         response = requests.get(FMP_MA_URL, params={"page": 0, "limit": limit, "apikey": key}, timeout=20)
+        if response.status_code == 402 and limit > FMP_FREE_LIMIT:  # free plan caps limit at 5
+            response = requests.get(FMP_MA_URL, params={"page": 0, "limit": FMP_FREE_LIMIT, "apikey": key},
+                                    timeout=20)
         response.raise_for_status()
         data = response.json()
     except Exception as exc:  # network / plan limits

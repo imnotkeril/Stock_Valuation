@@ -17,8 +17,9 @@ def render_company_news(ticker: str, financial_data: Dict[str, Any], company_inf
     st.subheader("News and sentiment")
     providers = ns.available_providers()
     if not providers:
-        st.info(f"Add `{ns.FINNHUB_ENV}` (free at finnhub.io) and/or `{ns.ALPHA_VANTAGE_ENV}` (free at "
-                "alphavantage.co) to `.env` to load company news with sentiment scores.", icon=":material/info:")
+        st.info(f"Add `{ns.FINNHUB_ENV}` (free at finnhub.io) and/or `{ns.ALPHA_VANTAGE_ENV}` (news sentiment "
+                "needs a premium Alpha Vantage plan) to `.env` to load company news with sentiment scores.",
+                icon=":material/info:")
         return
     flag = f"news_loaded_{ticker}"
     if not st.session_state.get(flag):

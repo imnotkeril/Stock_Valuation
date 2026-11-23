@@ -51,6 +51,34 @@ def test_fmp_feed_needs_key(monkeypatch):
     assert pt.fmp_recent_deals().empty
 
 
+def test_fmp_feed_retries_with_free_plan_limit(monkeypatch):
+    monkeypatch.setenv(pt.FMP_ENV, "test-key")
+    limits = []
+
+    class Resp:
+        def __init__(self, status, data):
+            self.status_code, self._data = status, data
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+        def json(self):
+            return self._data
+
+    def fake_get(url, params, timeout):
+        limits.append(params["limit"])
+        if params["limit"] > pt.FMP_FREE_LIMIT:
+            return Resp(402, "Premium Query Parameter")
+        return Resp(200, [{"transactionDate": "2026-11-20", "companyName": "Buyer Inc",
+                           "targetedCompanyName": "Target Inc", "link": "https://example.com"}])
+
+    monkeypatch.setattr(pt.requests, "get", fake_get)
+    feed = pt.fmp_recent_deals()
+    assert limits == [50, pt.FMP_FREE_LIMIT]
+    assert feed.iloc[0]["target"] == "Target Inc"
+
+
 def test_precedents_tab_renders():
     pt.save_deals(DEALS)
     at = AppTest.from_file(MAIN, default_timeout=600)

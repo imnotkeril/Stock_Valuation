@@ -36,11 +36,11 @@ Each task: owner · check. Tick when the check passes.
       history afterwards (owner decision).
 - [ ] O2 Branches: make `claude/peaceful-euler-aq2j08` the main line (PR into `master`);
       archive `chore/audit` without merging (its work is superseded, see summary).
-      Push/PR only on your yes.
+      Push/PR only on your yes. 2026-11-24: PR #1 open and up to date; merge is yours.
 - [x] O3 Scope of SPEC §5: owner decided 2026-11-23 - build ALL original ideas (v2 below),
       including the ones that need paid or keyed data sources.
-- [ ] O4 Old folder `E:\Main\Dev\Python\In Development\Stock_Valuation`: delete or archive
-      after O2 (its docs are copied to `docs/sources/in-development/`).
+- [x] O4 Old folder `E:\Main\Dev\Python\In Development\Stock_Valuation`: delete or archive
+      after O2 (its docs are copied to `docs/sources/in-development/`). Done 2026-11-24: keys moved to `.env`, folder sent to Recycle Bin.
 
 ## v2 - original README ideas (owner decision O3: build all)
 Order: free sources first. Every provider is optional: without its key the feature shows

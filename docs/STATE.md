@@ -30,8 +30,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 O2: PR https://github.com/imnotkeril/Stock_Valuation/pull/1 (already open) updated with latest commits; merge is the owner's. O4 held: old folder has untracked StockAnalysisSystem/.env.txt with API keys + 13 cache files, owner to decide.
 
+- 2026-11-24 keys moved from old .env.txt to .env; old In Development folder sent to Recycle Bin (O4). Live: Finnhub ok, FMP fixed (free-plan limit 5), AV news is premium, SEC needs owner's User-Agent. 364 pass.
+
 ## Next
-- Owner decided O3: build all original ideas. All plan tasks done. Live checks of V1/V5-V7 skipped by owner (optional, need keys). Finalizing: owner items O1, O2, O4.
+- Done. Optional: set SEC_EDGAR_USER_AGENT in .env and live-check Overview > SEC; merge PR #1.
 
 ## Needed from owner
-- O1 rotate Alpha Vantage and FMP keys (still in git history). O2 branch decision / push. O3 scope of SPEC §5. O4 old In Development folder.
+- O1 rotate Alpha Vantage and FMP keys (still in git history). O2 merge PR #1 (open).
