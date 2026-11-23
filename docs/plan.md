@@ -47,8 +47,10 @@ Order: free sources first. Every provider is optional: without its key the featu
 "add <KEY> to .env" instead of failing. Each task: tests offline with recorded fixtures.
 - [x] Saved custom screener templates (idea from In Development `screener_engine.py`)
 - [x] Multi-sector comparison view (idea from In Development `industry_benchmarking.py`)
-- [ ] V1 SEC EDGAR provider (free, needs only a User-Agent with contact): company facts
+- [x] V1 SEC EDGAR provider (free, needs only a User-Agent with contact): company facts
       (XBRL) as a fallback/extra source for statements; filings list on Overview · dev
+      Done: `utils/sec_edgar.py`, Overview section, 9 offline tests. Live run pending the user's
+      `SEC_EDGAR_USER_AGENT` (SEC rejects anonymous clients with 403).
 - [ ] V2 APV (adjusted present value) method in the generic valuation (unlevered DCF +
       PV of tax shield) · quant · hand-calculated test
 - [ ] V3 SOTP for the remaining sectors (Technology, Financials, Manufacturing, Real Estate,

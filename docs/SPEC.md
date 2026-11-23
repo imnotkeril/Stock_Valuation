@@ -114,7 +114,8 @@ CSV, JSON downloads.
 
 ### 3.8 Data and configuration — Done
 - Providers: Yahoo Finance (primary, no key), Alpha Vantage (fallback: prices, overview,
-  search), FRED (macro). `FINANCIAL_MODELING_PREP_API_KEY` reserved, unused.
+  search), FRED (macro), SEC EDGAR (free; needs `SEC_EDGAR_USER_AGENT` with the user's own
+  contact: recent filings with links and 10-year annual history from XBRL facts on Overview). `FINANCIAL_MODELING_PREP_API_KEY` reserved, unused.
 - Env: `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY`, `STOCK_ANALYSIS_OFFLINE`.
   Loaded with `load_dotenv` from `StockAnalysisSystem/.env` or repo-root `.env`. No keys in code.
 - Cache: `src/data/cache` (git-ignored); last cached copy served when a provider fails.

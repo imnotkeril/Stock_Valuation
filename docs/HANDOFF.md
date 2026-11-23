@@ -10,6 +10,7 @@ state in this folder, merging everything useful from the old copy in
 
 ## State
 - Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
+- Done: V1 SEC EDGAR (offline-tested; live needs SEC_EDGAR_USER_AGENT).
 - Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
 - Done: plan tasks T1-T8 (sidebar nav, live smoke of all pages, pip-audit, localhost binding, Docker, Streamlit deprecations, keys guard test, Financials FCF messages).
 - Running: Streamlit dev server on http://localhost:8501 (may be gone; restart with the command in Verify).
@@ -22,19 +23,20 @@ state in this folder, merging everything useful from the old copy in
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. Start v2 task V1 in `docs/plan.md`: SEC EDGAR provider (free; companyfacts XBRL API, User-Agent required) as a new module under `src/utils/`, offline tests with a recorded fixture, filings list on Company Analysis Overview.
-2. Continue V2 (APV) -> V3 (SOTP) -> V4 (stress tests): free, no keys needed. One commit per task, tick plan, line in STATE.
-3. Before V5-V7 ask the user for free keys in `.env` (FINNHUB_API_KEY, ALPHA_VANTAGE_API_KEY, FINANCIAL_MODELING_PREP_API_KEY); build with recorded fixtures either way.
+1. V2 in `docs/plan.md`: APV method in `src/valuation/base_valuation.py` generic methods (unlevered FCF DCF at unlevered cost of equity + PV of interest tax shield), shown on the Valuation tab; hand-calculated test.
+2. V3 SOTP for remaining sectors, then V4 stress tests (free, no keys). One commit per task, tick plan, line in STATE.
+3. Ask the user for `SEC_EDGAR_USER_AGENT` (their own name + e-mail) to live-check V1, and for Finnhub/Alpha Vantage/FMP keys before V5-V7.
 
 ## Open questions
 - Keys for V5-V7 (Finnhub, Alpha Vantage, FMP): the user will add them to `.env`; values must never be printed.
 
 ## Traps
+- SEC EDGAR rejects anonymous clients (403); never invent a contact User-Agent - the user must set SEC_EDGAR_USER_AGENT.
 - Global `~/.gitignore_global` ignores `*_secret*` and `.env.*`: name files accordingly (that is why the test is `test_no_hardcoded_keys.py`).
 - Server listens on 127.0.0.1 only: PowerShell `Invoke-WebRequest http://localhost` may hang on IPv6; use `curl http://127.0.0.1:8501/_stcore/health`.
 - Live smoke script lives outside the repo (hits network); offline equivalents are `tests/test_app.py` and `tests/test_pages_interaction.py`.
 - Old Alpha Vantage / FMP keys are still in git history - never print them.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 295 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `.venv\Scripts\python.exe -m pytest -q` (expect 304 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
 - `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok

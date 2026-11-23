@@ -64,6 +64,7 @@ Copy `.env.example` to `.env`. Every setting is optional — Yahoo Finance works
 |---|---|
 | `ALPHA_VANTAGE_API_KEY` | Fallback provider for prices, company overview and symbol search |
 | `FINANCIAL_MODELING_PREP_API_KEY` | Reserved for future use |
+| `SEC_EDGAR_USER_AGENT` | Your name and e-mail (required by SEC) to load filings and 10-year history from SEC EDGAR on the Overview tab |
 | `STOCK_ANALYSIS_OFFLINE` | `1` = never call external APIs, serve cached data only |
 
 Downloaded data is cached in `StockAnalysisSystem/src/data/cache` (git-ignored). When a provider is unavailable, the last cached copy is served. Use **Data & settings → Clear cached data** in the sidebar to force a refresh.

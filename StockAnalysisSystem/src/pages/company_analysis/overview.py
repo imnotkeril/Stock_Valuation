@@ -96,6 +96,56 @@ def render_company_overview(ticker: str, financial_data: Dict[str, Any], company
     _render_key_ratios(financial_data, company_info, price_data, sector)
     _render_sector_performance(ticker, prices, sector_prices, sector)
     _render_technical_indicators(prices)
+    _render_sec_edgar(ticker)
+
+
+def _render_sec_edgar(ticker: str) -> None:
+    """SEC filings and 10-year annual history from EDGAR, loaded on demand."""
+    from StockAnalysisSystem.src.utils import sec_edgar
+
+    st.subheader("SEC filings and long-term history")
+    if not sec_edgar.is_configured():
+        st.info(f"Add `{sec_edgar.USER_AGENT_ENV}=\"Your Name you@yourdomain.com\"` to `.env` to load SEC EDGAR "
+                "filings and 10 years of reported financials (free; SEC requires a contact address).",
+                icon=":material/info:")
+        return
+    flag = f"ov_edgar_loaded_{ticker}"
+    if not st.session_state.get(flag):
+        if st.button("Load from SEC EDGAR", key=f"ov_edgar_{ticker}", icon=":material/description:"):
+            st.session_state[flag] = True
+        else:
+            st.caption("US-listed companies only; foreign filers may report under IFRS and show fewer items.")
+            return
+    with st.spinner("Loading SEC EDGAR data..."):
+        filings = sec_edgar.get_recent_filings(ticker)
+        history = sec_edgar.get_annual_history(ticker)
+    if filings.empty and history.empty:
+        st.warning(f"No SEC EDGAR data found for {ticker}.")
+        return
+    tab_history, tab_filings = st.tabs(["Annual history", "Recent filings"])
+    with tab_history:
+        if history.empty:
+            st.info("No XBRL financial facts available.")
+        else:
+            table = history.copy()
+            table.columns = [c.strftime("%Y-%m") for c in table.columns]
+            display = table / 1e9
+            if "Diluted EPS" in table.index:
+                display.loc["Diluted EPS"] = table.loc["Diluted EPS"]
+            st.dataframe(display, width="stretch",
+                         column_config={c: st.column_config.NumberColumn(format="%.2f") for c in display.columns})
+            st.caption("USD billions (Diluted EPS in USD), fiscal year ends as reported in 10-K filings.")
+            growth = [f"{r['item']}: {r['cagr']:+.1%} over {r['years']} yrs"
+                      for r in sec_edgar.history_summary(history) if r["cagr"] is not None
+                      and r["item"] in ("Revenue", "Net income", "Diluted EPS", "Free cash flow")]
+            if growth:
+                st.markdown("**CAGR** - " + " · ".join(growth))
+    with tab_filings:
+        if filings.empty:
+            st.info("No recent filings found.")
+        else:
+            st.dataframe(filings, width="stretch", hide_index=True,
+                         column_config={"url": st.column_config.LinkColumn("Document", display_text="Open")})
 
 
 # ---------------------------------------------------------------------------
