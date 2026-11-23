@@ -43,8 +43,8 @@ Each task: owner · check. Tick when the check passes.
       after O2 (its docs are copied to `docs/sources/in-development/`).
 
 ## Later (v2 backlog, only after O3)
-- [ ] Saved custom screener templates (idea from In Development `screener_engine.py`)
-- [ ] Multi-sector comparison view (idea from In Development `industry_benchmarking.py`)
+- [x] Saved custom screener templates (idea from In Development `screener_engine.py`)
+- [x] Multi-sector comparison view (idea from In Development `industry_benchmarking.py`)
 - [ ] SEC EDGAR provider for filings depth
 - [ ] SOTP for remaining sectors
 - [ ] Wider stress testing / market risk simulation

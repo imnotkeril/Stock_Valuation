@@ -25,6 +25,13 @@ def run_sector_analysis_page():
     st.title("Sector Analysis")
     st.markdown("Analyze sector performance, metrics, and key companies to identify investment opportunities.")
 
+    view = st.segmented_control("View", ["Single sector", "Compare sectors"], default="Single sector",
+                                key="sector_view", label_visibility="collapsed")
+    if view == "Compare sectors":
+        from StockAnalysisSystem.src.pages.comparison.sector_compare import render_sector_comparison
+        render_sector_comparison()
+        return
+
     # Initialize data loader and visualizer
     data_loader = DataLoader()
     visualizer = FinancialVisualizer(theme="dark")

@@ -10,9 +10,10 @@ state in this folder, merging everything useful from the old copy in
 
 ## State
 - Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
+- Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
 - Done: plan tasks T1-T8 (sidebar nav, live smoke of all pages, pip-audit, localhost binding, Docker, Streamlit deprecations, keys guard test, Financials FCF messages).
-- Running: Streamlit dev server on http://localhost:8501 from the previous chat (may be gone; restart with the command in Verify).
-- Branch/commit: claude/peaceful-euler-aq2j08 @ 856131d (+ this note), tree clean, nothing pushed.
+- Running: Streamlit dev server on http://localhost:8501 (may be gone; restart with the command in Verify).
+- Branch/commit: claude/peaceful-euler-aq2j08, latest local commit, tree clean, nothing pushed.
 
 ## Decisions
 - Nothing from `chore/audit` code was ported except the keys guard test - its library modules are covered here in tested form; two ideas went to the v2 backlog.
@@ -20,9 +21,9 @@ state in this folder, merging everything useful from the old copy in
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. Read `docs/plan.md`: all "Now" tasks are done; start the v2 backlog item "Saved custom screener templates" (Stock Screener page, `src/pages/screening/stock_screener.py`) with a test.
-2. Then "Multi-sector comparison view" on Sector Analysis, with a test.
-3. When the user says the work is finished, go through owner items O1-O4 with them (rotation, PR into master, scope of SPEC section 5, old folder).
+1. Write `docs/USER_GUIDE.md` (every page, from the real UI) and `CHANGELOG.md` (from git log since master), link both from README.
+2. Ask the owner about SPEC section 5 scope (O3); if approved, start with SEC EDGAR provider or SOTP for remaining sectors.
+3. When the user says the work is finished, go through owner items O1-O4 (rotation, PR into master, old folder).
 
 ## Open questions
 - Scope of SPEC section 5 (APV, sentiment, EDGAR, stress testing): default is "not in MVP" until the user decides.
@@ -34,5 +35,5 @@ state in this folder, merging everything useful from the old copy in
 - Old Alpha Vantage / FMP keys are still in git history - never print them.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 282 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `.venv\Scripts\python.exe -m pytest -q` (expect 295 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
 - `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok

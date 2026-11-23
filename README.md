@@ -13,8 +13,8 @@ A Streamlit application for fundamental analysis and **sector-specific valuation
 | **Valuation** | Weighted fair value from several methods (DCF, multiples, asset-based, dividend discount), sensitivity analysis, recommendation |
 | **Sector models** | A dedicated model for every sector with subsector-specific methods and adjustable assumptions (see below) |
 | **Risk** | Altman Z-score (variant chosen by sector), Springate, Zmijewski, liquidity/solvency, volatility, drawdown, VaR |
-| **Comparison** | Peer comparison (performance, ratios, valuation), sector analysis vs. the market |
-| **Screening** | Ratio-based stock screener and a valuation filter for under-/over-valued stocks |
+| **Comparison** | Peer comparison (performance, ratios, valuation), sector analysis vs. the market, side-by-side comparison of several sectors |
+| **Screening** | Ratio-based stock screener with presets and saved templates, and a valuation filter for under-/over-valued stocks |
 | **Forecasting** | ARIMA / exponential smoothing / ML price forecasts with confidence intervals, financial-metric forecasts, probability analysis |
 | **Reports** | Company, valuation, comparison and sector reports as Excel, CSV, JSON or PDF downloads |
 

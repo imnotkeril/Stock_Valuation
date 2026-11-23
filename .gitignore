@@ -36,3 +36,4 @@ reports/
 .vscode/
 .DS_Store
 Thumbs.db
+StockAnalysisSystem/src/data/user/

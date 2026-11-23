@@ -90,9 +90,14 @@ assumption in the UI changes the fair value.
 ### 3.4 Comparison — Done
 - Peer comparison: growth, profitability, valuation, price performance vs. sector peers.
 - Sector analysis: sector ETF vs. market, fundamentals of leading companies, sector outlook label.
+- Compare sectors (view on the Sector Analysis page): 2-6 sectors side by side - ETF growth of 100
+  vs. SPY, return/volatility/drawdown/Sharpe, median fundamentals of each sector's largest
+  universe companies, leader per metric (lowest positive multiple, highest margin/return/growth).
 
 ### 3.5 Screening — Done
-- Stock screener: filter the universe by sector, size, profitability, valuation metrics.
+- Stock screener: filter the universe by sector, size, profitability, valuation metrics;
+  built-in strategy presets; save the current filters as a named template, reapply or delete it
+  (stored in `src/data/user/screener_templates.json`, git-ignored).
 - Valuation filter: rank by model fair-value upside; honours user multiple discounts and DCF
   adjustments; EV/EBITDA bridged through net debt.
 

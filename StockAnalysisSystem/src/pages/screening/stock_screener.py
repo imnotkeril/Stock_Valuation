@@ -23,6 +23,7 @@ for multiples and ratios, and dollars for prices / market caps.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from datetime import date, timedelta
@@ -32,7 +33,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from StockAnalysisSystem.src.config import RISK_FREE_RATE, SECTORS, normalize_sector
+from StockAnalysisSystem.src.config import DATA_DIR, RISK_FREE_RATE, SECTORS, normalize_sector
 from StockAnalysisSystem.src.industry.universe import get_subsectors, get_universe, lookup_company
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
 from StockAnalysisSystem.src.navigation import COMPANY_ANALYSIS, go_to
@@ -637,14 +638,115 @@ def _range_key(metric: str) -> str:
     return f"{PREFIX}_range_{metric}"
 
 
+#: User-saved screener templates (JSON, git-ignored): name -> template dict, see :func:`current_template`
+TEMPLATES_FILE = DATA_DIR / "user" / "screener_templates.json"
+STRATEGY_KEY = f"{PREFIX}_strategy"
+TEMPLATE_NAME_KEY = f"{PREFIX}_template_name"
+TEMPLATE_MSG_KEY = f"{PREFIX}_template_msg"
+
+
+def load_user_templates() -> Dict[str, Dict[str, Any]]:
+    """Saved templates; a missing or unreadable file means none."""
+    try:
+        data = json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _write_user_templates(templates: Mapping[str, Any]) -> None:
+    TEMPLATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TEMPLATES_FILE.write_text(json.dumps(templates, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def save_user_template(name: str, template: Mapping[str, Any]) -> str:
+    """Save (or overwrite) a template; returns the cleaned name. Built-in strategy names are reserved."""
+    name = " ".join(name.split())
+    if not name:
+        raise ValueError("Enter a template name.")
+    if name in STRATEGIES:
+        raise ValueError(f"'{name}' is a built-in strategy; choose another name.")
+    templates = load_user_templates()
+    templates[name] = dict(template)
+    _write_user_templates(templates)
+    return name
+
+
+def delete_user_template(name: str) -> bool:
+    templates = load_user_templates()
+    if templates.pop(name, None) is None:
+        return False
+    _write_user_templates(templates)
+    return True
+
+
+def current_template() -> Dict[str, Any]:
+    """Snapshot of the sidebar controls (filter bounds in display units)."""
+    state = st.session_state
+    sector = state.get(f"{PREFIX}_sector", "All")
+    filters = {}
+    for metric in state.get(FILTERS_KEY, []):
+        if metric in FILTER_RANGES:
+            lo_limit, hi_limit, _ = FILTER_RANGES[metric]
+            filters[metric] = [float(b) for b in state.get(_range_key(metric), (lo_limit, hi_limit))]
+    return {
+        "filters": filters,
+        "sector": sector,
+        "subsector": state.get(f"{PREFIX}_subsector_{sector}", "All") if sector != "All" else "All",
+        "market_cap": state.get(f"{PREFIX}_market_cap", next(iter(MARKET_CAP_BUCKETS))),
+        "include_missing": bool(state.get(f"{PREFIX}_include_missing", False)),
+    }
+
+
+def _load_template_into_state(template: Mapping[str, Any]) -> None:
+    filters = {m: b for m, b in (template.get("filters") or {}).items() if m in FILTER_RANGES}
+    st.session_state[FILTERS_KEY] = list(filters)
+    for metric, bounds in filters.items():
+        lo_limit, hi_limit, _ = FILTER_RANGES[metric]
+        lo, hi = (float(b) for b in bounds)
+        st.session_state[_range_key(metric)] = (max(lo, lo_limit), min(hi, hi_limit))
+    sector = template.get("sector", "All")
+    if sector == "All" or sector in SECTORS:
+        st.session_state[f"{PREFIX}_sector"] = sector
+        subsector = template.get("subsector", "All")
+        if sector != "All" and (subsector == "All" or subsector in get_subsectors(sector)):
+            st.session_state[f"{PREFIX}_subsector_{sector}"] = subsector
+    if template.get("market_cap") in MARKET_CAP_BUCKETS:
+        st.session_state[f"{PREFIX}_market_cap"] = template["market_cap"]
+    st.session_state[f"{PREFIX}_include_missing"] = bool(template.get("include_missing", False))
+
+
 def _apply_strategy() -> None:
-    """``on_change`` callback: load the preset filters of the selected strategy."""
-    _, preset = STRATEGIES.get(st.session_state.get(f"{PREFIX}_strategy"), ("", {}))
+    """``on_change`` callback: load the preset filters of the selected strategy or saved template."""
+    name = st.session_state.get(STRATEGY_KEY)
+    user = load_user_templates().get(name)
+    if user is not None:
+        _load_template_into_state(user)
+        return
+    _, preset = STRATEGIES.get(name, ("", {}))
     if not preset:
         return
     st.session_state[FILTERS_KEY] = list(preset)
     for metric, bounds in preset.items():
         st.session_state[_range_key(metric)] = tuple(float(b) for b in bounds)
+
+
+def _save_template_clicked() -> None:
+    try:
+        name = save_user_template(st.session_state.get(TEMPLATE_NAME_KEY, ""), current_template())
+    except (ValueError, OSError) as exc:
+        st.session_state[TEMPLATE_MSG_KEY] = ("warning", str(exc))
+        return
+    st.session_state[STRATEGY_KEY] = name
+    st.session_state[TEMPLATE_NAME_KEY] = ""
+    st.session_state[TEMPLATE_MSG_KEY] = ("success", f"Saved template '{name}'.")
+
+
+def _delete_template_clicked() -> None:
+    name = st.session_state.get(STRATEGY_KEY)
+    if delete_user_template(name):
+        st.session_state[STRATEGY_KEY] = "Custom"
+        st.session_state[TEMPLATE_MSG_KEY] = ("success", f"Deleted template '{name}'.")
 
 
 def _criteria_from_widgets(active: Sequence[str]) -> Criteria:
@@ -662,9 +764,14 @@ def _render_controls() -> Dict[str, Any]:
     """Sidebar filter controls; returns the current screening parameters."""
     with st.sidebar:
         st.subheader("Screening filters")
-        st.selectbox("Strategy", list(STRATEGIES), key=f"{PREFIX}_strategy", on_change=_apply_strategy,
-                     help="Presets fill in the ratio filters below; adjust them freely.")
-        st.caption(STRATEGIES[st.session_state.get(f"{PREFIX}_strategy", "Custom")][0])
+        user_templates = load_user_templates()
+        options = list(STRATEGIES) + [n for n in sorted(user_templates) if n not in STRATEGIES]
+        if st.session_state.get(STRATEGY_KEY) not in options:
+            st.session_state[STRATEGY_KEY] = "Custom"
+        selected = st.selectbox("Strategy", options, key=STRATEGY_KEY, on_change=_apply_strategy,
+                                format_func=lambda n: f"{n} (saved)" if n in user_templates else n,
+                                help="Presets and your saved templates fill in the filters below; adjust them freely.")
+        st.caption(STRATEGIES[selected][0] if selected in STRATEGIES else "Your saved template.")
 
         sector = st.selectbox("Sector", ["All"] + SECTORS, key=f"{PREFIX}_sector")
         subsector = "All"
@@ -686,6 +793,16 @@ def _render_controls() -> Dict[str, Any]:
                                       help="Otherwise stocks without a value for an active filter are excluded.")
         run = st.button("Run screen", type="primary", key=f"{PREFIX}_run", icon=":material/filter_alt:",
                         width="stretch")
+        with st.expander("Save filters as template", icon=":material/bookmark:"):
+            st.text_input("Template name", key=TEMPLATE_NAME_KEY, placeholder="e.g. Cheap quality")
+            st.button("Save template", key=f"{PREFIX}_template_save", on_click=_save_template_clicked,
+                      width="stretch", help="Saves the sector, market cap and ratio filters. Same name overwrites.")
+            if selected in user_templates:
+                st.button(f"Delete '{selected}'", key=f"{PREFIX}_template_delete",
+                          on_click=_delete_template_clicked, width="stretch")
+        message = st.session_state.pop(TEMPLATE_MSG_KEY, None)
+        if message:
+            (st.success if message[0] == "success" else st.warning)(message[1])
 
     criteria = _criteria_from_widgets(active)
     lo_cap, hi_cap = MARKET_CAP_BUCKETS[cap_bucket]
