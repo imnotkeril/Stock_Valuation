@@ -40,3 +40,17 @@ are covered offline by `tests/test_app.py` and `tests/test_pages_interaction.py`
 - Alpha Vantage fallback (no key used).
 - Optional `prophet` and `pandas-datareader` paths.
 - Linux/macOS run (CI covers tests on Ubuntu only).
+
+## v2 re-check — 2026-11-24
+
+| Check | Result |
+|---|---|
+| Offline suite | 363 passed |
+| `ruff check` | clean |
+| Live smoke, Company Analysis (XOM, AAPL, JPM, PLD, JNJ, CAT, GOOGL, NEE, AMZN, PG) | 10/10 OK, 18 tabs each (new: APV, Precedents, News) |
+| Browser: Sector Analysis > Compare sectors (4 sectors, live) | OK: XLK/XLF/XLE/XLV vs SPY, leaders table |
+| Browser: XOM Valuation > APV | renders; default unlevered cost was 3.7 % from a very low beta - now floored at 6 % (APV $109 vs price) |
+
+Not live-checked (need the user's settings): SEC EDGAR (`SEC_EDGAR_USER_AGENT`), News
+(`FINNHUB_API_KEY` / `ALPHA_VANTAGE_API_KEY`), FMP M&A feed. All three are covered offline with
+responses in the providers' JSON formats.

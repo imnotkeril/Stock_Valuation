@@ -68,4 +68,4 @@ Order: free sources first. Every provider is optional: without its key the featu
       lazy import; page hides it when not installed) · quant
       Done as: "Neural Network (MLP)" price model (scikit-learn MLPRegressor, two hidden layers,
       no new dependency); torch/TensorFlow not added - too heavy for the gain
-- [ ] V9 User guide and CHANGELOG (after V1-V8)
+- [x] V9 User guide and CHANGELOG (after V1-V8)

@@ -271,6 +271,8 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     inputs = _apv_inputs(financial_data, snapshot)
     defaults = _dcf_defaults(sector, fcf)
     ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"])
+    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: floor at 6 %
+    ku_default = min(max(ku_default, 0.06), 0.20)
 
     col1, col2, col3 = st.columns(3)
     with col1:

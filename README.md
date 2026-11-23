@@ -4,6 +4,8 @@ A Streamlit application for fundamental analysis and **sector-specific valuation
 
 > For research and education only — nothing in this application is investment advice.
 
+**Docs:** [User guide](docs/USER_GUIDE.md) · [Changelog](CHANGELOG.md) · [Specification](docs/SPEC.md)
+
 ## Features
 
 | Area | What you get |

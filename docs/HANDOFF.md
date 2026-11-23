@@ -10,6 +10,7 @@ state in this folder, merging everything useful from the old copy in
 
 ## State
 - Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
+- Done: V8 neural network forecast, V9 USER_GUIDE + CHANGELOG.
 - Done: V7 precedent transactions (user-maintained deals).
 - Done: V5-V6 News tab (Finnhub + Alpha Vantage sentiment).
 - Done: V4 scenario analysis on the Risk tab.
@@ -28,9 +29,9 @@ state in this folder, merging everything useful from the old copy in
 - Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
 
 ## Next
-1. V8 in `docs/plan.md`: neural-network price forecast in the forecasting engine (`src/models/forecasting/`): sklearn MLP on lagged returns (no new dependency) + optional torch LSTM when `torch` is installed (`requirements-ml.txt`, lazy import, hidden otherwise); tests.
-2. V9: `docs/USER_GUIDE.md` (every page/tab, keys, limits) and `CHANGELOG.md` (from git log since master); link from README; final full test + live smoke; update QA.md.
-3. Ask the user for `SEC_EDGAR_USER_AGENT`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY` to live-check V1, V5-V7.
+1. All plan tasks (T1-T8, v2 V1-V9) are done. Ask the user for `SEC_EDGAR_USER_AGENT`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY` in `.env` (never print values) and live-check Overview > SEC, News tab, Valuation > Precedents feed; record results in `docs/QA.md`.
+2. When the user says to finish: owner items O1 (rotate old Alpha Vantage / FMP keys), O2 (push branch, PR into master - only on explicit yes), O4 (old In Development folder).
+3. Optional polish: `/repo-polish` skill before publishing.
 
 ## Open questions
 - Keys for V5-V7 (Finnhub, Alpha Vantage, FMP): the user will add them to `.env`; values must never be printed.
@@ -43,5 +44,5 @@ state in this folder, merging everything useful from the old copy in
 - Old Alpha Vantage / FMP keys are still in git history - never print them.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 357 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `.venv\Scripts\python.exe -m pytest -q` (expect 363 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
 - `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok
