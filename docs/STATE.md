@@ -28,8 +28,18 @@ History before adoption (free format, kept as written):
 Framework (from adoption on):
 - [x] adopted (finance/screener, owner confirmed) — baseline: ruff "All checks passed!", pytest "366 passed in 124.98s"; apply-router exit 0 (5 skills linked, 0 missing); CLAUDE.md, AGENTS.md, ARCHITECTURE.md, adr/001-006 created
 
+- [x] brief/plan - 4 items read (process/plan.md, finance/_family.md, finance/screener.md, known-traps.md; stack/python.md); legal-compliance build/qa inserts judged not applicable (no personal data), Next.js stack rows n/a (ADR-001)
+- [x] plan/draft - 21 tasks T01-T21 in 4 phases (P1 T01-T08, review T09-T10, P2 T11-T17, hardening T18-T21), no parallel groups (shared files); SPEC F20/F21 with AC20.1-AC21.7 added for traceability
+- [x] plan/lint - `doc-check --step plan`: 9 pass, 0 fail, 3 judge (exit 0)
+- [x] tools/live_valuation_check.py baseline (rf 3 %): AAPL fair 193.91 -45.5 % Sell (wacc 8.91 %), JPM 310.39 -2.0 % Hold, XOM 95.47 -39.6 % Sell (wacc 6.00 % floor), MSFT -29.1 %, PGR +195 % (excess_return 1071), CHTR +232 % (wacc 6.00 % floor)
+- [x] note: auditor model fable failed (no usage credits, HTTP 429) -> sonnet per rules/audit.md model table
+
+- [x] audit/plan - FIX, 4 findings (4 valid: A-01 docs_check owner, A-02 sql-queries n/a, A-04 security-reviewer fixed; A-03 kept, noted) [shadow]
+- [x] brief/T01 - 5 items read (blueprints/finance-screener, stack/python, stack/pandas, TDD skill, known-traps)
+- [x] build/T01 utils/rates.py risk_free_rate() (env override -> FRED DGS10 cached 1 day + stale -> fallback 4.5 %), DataLoader.get_fred_series — 26 passed (test_rates + test_data_loader), ruff clean; live "4.91 % (FRED DGS10, as of 2026-11-24)"
+
 ## Next
-- [ ] plan — review fixes R1-R6 (P1), then P2 into `docs/plan.md`
+- [ ] build/T02 - run `step-brief --task T02` first; shared valuation/capital.py + re-baseline ERP (ADR-007), switch consumers one commit each
 
 ## Needed from owner
 - none

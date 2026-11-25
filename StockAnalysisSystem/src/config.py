@@ -165,8 +165,14 @@ VIZ_SETTINGS = {
     "theme": "dark"
 }
 
-# Default risk-free rate for financial calculations
-RISK_FREE_RATE = 0.03  # 3% annual risk-free rate
+# Risk-free rate. The live value comes from FRED DGS10 (10-year Treasury yield) via
+# utils/rates.risk_free_rate(); RISK_FREE_RATE_FALLBACK is used only when neither a fresh nor a
+# stale FRED download is available (offline first run). Override with env STOCK_ANALYSIS_RISK_FREE_RATE
+# (fraction like 0.045 or percent like 4.5).
+RISK_FREE_RATE_FALLBACK = 0.045  # ~10Y Treasury average 2023-2025
+RISK_FREE_RATE_ENV = "STOCK_ANALYSIS_RISK_FREE_RATE"
+# Legacy constant, still read by modules not yet moved to utils/rates (removed in plan task T02).
+RISK_FREE_RATE = 0.03
 
 # Financial modeling parameters
 DCF_PARAMETERS = {

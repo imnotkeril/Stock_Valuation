@@ -568,6 +568,19 @@ class DataLoader:
             results[indicator] = frame if frame is not None else pd.DataFrame()
         return results
 
+    def get_fred_series(self, code: str, lookback_days: int = 30, force_refresh: bool = False) -> pd.DataFrame:
+        """Recent observations of one FRED series (``DATE`` index, column ``code``).
+
+        Cached for a day under a date-independent name, so a stale copy is still found
+        when FRED is unreachable on a later day. Empty frame when nothing is available.
+        """
+        end = pd.Timestamp.now().normalize()
+        start = end - pd.Timedelta(days=lookback_days)
+        path = self._cache_path(f"FRED_{code}_latest.pkl")
+        frame = self._cached(path, 1, lambda: self._fetch_fred(code, start, end), force_refresh,
+                             lambda v: isinstance(v, pd.DataFrame) and not v.empty)
+        return frame if frame is not None else pd.DataFrame()
+
     @staticmethod
     def _fetch_fred(code: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         response = requests.get(FRED_CSV_URL, params={"id": code, "cosd": f"{start:%Y-%m-%d}",

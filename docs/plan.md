@@ -8,9 +8,10 @@ Fields: `layer` data|backend|frontend|ai|infra|qa|docs · `tier` A|B|C · `owner
 Every valuation task: offline tests + ruff + `$LIVE` pasted into STATE (baseline 2026-11-26: AAPL fair 193.91 -45.5 % Sell, JPM 310.39 -2.0 % Hold, XOM 95.47 -39.6 % Sell, MSFT -29.1 %, PGR +195 %, CHTR +232 %).
 Module `legal-compliance`: its build/qa inserts (privacy pages, consent, deletion flow) do not apply, the app collects no personal data; only the "not investment advice" disclaimer is kept (checked in T20).
 Phase 0 (scaffold) is not needed: the app exists and builds (adoption baseline 366 passed, ruff clean).
+Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cache only, ADR-002). T02 is kept as one task because all consumers must switch to the shared module together; it commits per consumer so a cut is resumable.
 
 ## Phase 1 — P1: numbers that can be trusted (review section 5, P1)
-- [ ] T01 Live risk-free rate service (R1, part 1)
+- [x] T01 Live risk-free rate service (R1, part 1)
   layer: data · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/utils/rates.py, StockAnalysisSystem/src/utils/data_loader.py, StockAnalysisSystem/src/config.py, StockAnalysisSystem/tests/test_rates.py
   depends: -
@@ -70,7 +71,7 @@ Phase 0 (scaffold) is not needed: the app exists and builds (adoption baseline 3
   layer: qa · tier: B · owner: reviewer · model: opus
   owns: docs/REVIEW.md (+ files named by valid findings)
   depends: T08
-  uses: skill:verification-before-completion
+  uses: skill:verification-before-completion, agent:security-reviewer (owner of the security pass: FRED fetch, env override, deps, secrets)
   check: `$T && $PY -m ruff check StockAnalysisSystem`
   done: `docs/REVIEW.md` lists findings with dispositions; every valid P0/P1 fixed and re-tested.
 - [ ] T10 Phase 2 gate
@@ -145,7 +146,7 @@ Phase 0 (scaffold) is not needed: the app exists and builds (adoption baseline 3
   done: QA.md lists pages checked, timings, issues; no tracebacks.
 - [ ] T20 Docs: METHODOLOGY.md (how numbers are made), README + USER_GUIDE with screenshots, SPEC/CHANGELOG refresh, disclaimer (R7)
   layer: docs · tier: C · owner: tech-writer · model: sonnet
-  owns: README.md, docs/METHODOLOGY.md, docs/USER_GUIDE.md, docs/SPEC.md, CHANGELOG.md, docs/screenshots/**
+  owns: README.md, docs/METHODOLOGY.md, docs/USER_GUIDE.md, docs/SPEC.md, CHANGELOG.md, docs/screenshots/**, StockAnalysisSystem/tools/docs_check.py (created here: README links screenshots + METHODOLOGY, disclaimer present)
   depends: T16
   uses: module:legal-compliance#qa
   check: `$PY StockAnalysisSystem/tools/docs_check.py`
