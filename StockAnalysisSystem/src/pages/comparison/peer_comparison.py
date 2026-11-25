@@ -1,22 +1,18 @@
-import os
-import sys
 import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add the project root to Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # Import project modules
-from config import COLORS, SECTOR_SPECIFIC_RATIOS
-from utils.data_loader import DataLoader
-from models.ratio_analysis import FinancialRatioAnalyzer
-from utils.visualization import FinancialVisualizer
-from industry.sector_mapping import get_sector_peers
-from valuation.sector_factor import ValuationFactory
+from StockAnalysisSystem.src.config import SECTOR_SPECIFIC_RATIOS
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
+from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
+from StockAnalysisSystem.src.industry.sector_mapping import get_sector_peers
+from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
+from StockAnalysisSystem.src import navigation as nav
 
 # Setup logging
 logging.basicConfig(
@@ -43,7 +39,8 @@ def run_peer_comparison_page():
 
         # Primary company selection
         st.subheader("Primary Company")
-        primary_ticker = st.text_input("Enter ticker symbol:", "AAPL").upper()
+        primary_ticker = st.text_input("Enter ticker symbol:", nav.get_active_ticker("AAPL"),
+                                       key="peer_primary_ticker").strip().upper()
 
         # Load company info to get sector
         if primary_ticker:
@@ -127,11 +124,12 @@ def run_peer_comparison_page():
                         default=metrics[:min(3, len(metrics))]  # Default select first 3
                     )
 
-            # Flatten selected metrics for later use
-            flat_selected_metrics = [metric for metrics in selected_metrics.values() for metric in metrics]
 
             # Comparison button
-            compare_button = st.button("Compare Companies", type="primary")
+            if st.button("Compare Companies", type="primary", key="peer_compare"):
+                st.session_state["peer_compare_active"] = True
+            # Keep results on screen when other widgets change (they re-render with the new inputs)
+            compare_button = st.session_state.get("peer_compare_active", False)
 
         else:
             compare_button = False
@@ -247,7 +245,7 @@ def run_peer_comparison_page():
                             title=f"Price Performance ({selected_period})",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No price data available for comparison.")
 
@@ -288,7 +286,7 @@ def run_peer_comparison_page():
 
                         st.dataframe(
                             performance_df.style.apply(highlight_primary, axis=1),
-                            use_container_width=True
+                            width="stretch"
                         )
                     else:
                         st.warning("No performance data available.")
@@ -318,7 +316,7 @@ def run_peer_comparison_page():
                             title="Valuation Metrics Comparison",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No valuation metrics available for comparison.")
 
@@ -359,7 +357,7 @@ def run_peer_comparison_page():
 
                         st.dataframe(
                             valuation_df.style.apply(highlight_primary, axis=1),
-                            use_container_width=True
+                            width="stretch"
                         )
                     else:
                         st.warning("No valuation data available.")
@@ -414,7 +412,7 @@ def run_peer_comparison_page():
                                     title=f"{category.capitalize()} Metrics Comparison",
                                     height=400
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
 
                             # Display metrics table
                             st.subheader(f"{category.capitalize()} Metrics Details")
@@ -454,7 +452,7 @@ def run_peer_comparison_page():
 
                                 st.dataframe(
                                     metric_df.style.apply(highlight_primary, axis=1),
-                                    use_container_width=True
+                                    width="stretch"
                                 )
                             else:
                                 st.warning(f"No {category} data available.")
@@ -483,7 +481,7 @@ def run_peer_comparison_page():
                             title="Growth Metrics Comparison",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         # Display growth metrics table
                         st.subheader("Growth Metrics Details")
@@ -516,7 +514,7 @@ def run_peer_comparison_page():
 
                             st.dataframe(
                                 growth_df.style.apply(highlight_primary, axis=1),
-                                use_container_width=True
+                                width="stretch"
                             )
                         else:
                             st.warning("No growth data available.")
@@ -587,9 +585,9 @@ def run_peer_comparison_page():
 
                         # Apply styling
                         styled_df = valuation_df.style.apply(highlight_primary, axis=1)
-                        styled_df = styled_df.applymap(color_upside, subset=['Upside/Downside'])
+                        styled_df = styled_df.map(color_upside, subset=['Upside/Downside'])
 
-                        st.dataframe(styled_df, use_container_width=True)
+                        st.dataframe(styled_df, width="stretch")
 
                         # Create bar chart for upside/downside
                         upside_data = {}
@@ -606,7 +604,7 @@ def run_peer_comparison_page():
                                 title="Valuation Upside/Downside",
                                 height=400
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("No valuation data available.")
 

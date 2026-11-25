@@ -1,0 +1,18 @@
+[theme]
+base = "dark"
+primaryColor = "#74f174"
+backgroundColor = "#121212"
+secondaryBackgroundColor = "#1f1f1f"
+textColor = "#e0e0e0"
+
+[server]
+headless = true
+# Local only by default; the Docker image overrides this with --server.address=0.0.0.0
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = false

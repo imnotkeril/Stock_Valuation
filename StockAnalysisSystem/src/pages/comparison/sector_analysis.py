@@ -1,21 +1,16 @@
-import os
-import sys
 import logging
 import pandas as pd
-import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add the project root to Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # Import project modules
-from config import COLORS, SECTOR_MAPPING
-from utils.data_loader import DataLoader
-from utils.visualization import FinancialVisualizer
-from industry.benchmarks import get_sector_benchmarks
-from industry.sector_mapping import get_sector_companies
+from StockAnalysisSystem.src.config import SECTOR_MAPPING
+from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
+from StockAnalysisSystem.src.industry.benchmarks import get_sector_benchmarks
+from StockAnalysisSystem.src.industry.sector_mapping import get_sector_companies
+from StockAnalysisSystem.src.utils.financial_data import get_latest, safe_divide
 
 # Setup logging
 logging.basicConfig(
@@ -29,6 +24,13 @@ def run_sector_analysis_page():
     """Main function to run the sector analysis page"""
     st.title("Sector Analysis")
     st.markdown("Analyze sector performance, metrics, and key companies to identify investment opportunities.")
+
+    view = st.segmented_control("View", ["Single sector", "Compare sectors"], default="Single sector",
+                                key="sector_view", label_visibility="collapsed")
+    if view == "Compare sectors":
+        from StockAnalysisSystem.src.pages.comparison.sector_compare import render_sector_comparison
+        render_sector_comparison()
+        return
 
     # Initialize data loader and visualizer
     data_loader = DataLoader()
@@ -101,7 +103,9 @@ def run_sector_analysis_page():
                 )
 
         # Analyze button
-        analyze_button = st.button("Analyze Sector", type="primary")
+        if st.button("Analyze Sector", type="primary", key="sector_analyze"):
+            st.session_state["sector_analyze_active"] = True
+        analyze_button = st.session_state.get("sector_analyze_active", False)
 
     # Main content area
     if analyze_button:
@@ -187,7 +191,7 @@ def run_sector_analysis_page():
                             title=f"{selected_sector} Performance vs S&P 500 ({selected_period})",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                     else:
                         st.warning("Could not load market benchmark data.")
 
@@ -222,7 +226,7 @@ def run_sector_analysis_page():
                             f"{selected_sector} Sector": list(sector_metrics.values())
                         })
 
-                        st.dataframe(metrics_df, use_container_width=True)
+                        st.dataframe(metrics_df, width="stretch")
                     else:
                         st.warning("Could not calculate performance metrics.")
 
@@ -277,7 +281,7 @@ def run_sector_analysis_page():
                         display_df["Sharpe Ratio"] = display_df["Sharpe Ratio"].apply(lambda x: f"{x:.2f}")
 
                         # Display table
-                        st.dataframe(display_df, use_container_width=True)
+                        st.dataframe(display_df, width="stretch")
 
                         # Create market cap treemap
                         fig = visualizer.plot_market_cap_treemap(
@@ -285,7 +289,7 @@ def run_sector_analysis_page():
                             title=f"Market Cap Distribution - {sector_title}",
                             height=500
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         # Create performance comparison chart
                         st.subheader(f"Performance Comparison - Top {min(5, len(companies_df))} Companies")
@@ -324,7 +328,7 @@ def run_sector_analysis_page():
                                 title=f"Top Companies Performance ({selected_period})",
                                 height=500
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                         else:
                             st.warning("Could not load performance data for companies.")
                     else:
@@ -349,60 +353,33 @@ def run_sector_analysis_page():
                                 income_stmt = data_loader.get_financial_statements(ticker, 'income', 'annual')
                                 balance_sheet = data_loader.get_financial_statements(ticker, 'balance', 'annual')
 
-                                # Calculate key metrics
+                                # Calculate key metrics (alias-based lookups match yfinance row names)
                                 if not income_stmt.empty and not balance_sheet.empty:
-                                    # Get latest data
-                                    income = income_stmt.iloc[:, 0]
-                                    balance = balance_sheet.iloc[:, 0]
+                                    revenue = get_latest(income_stmt, "revenue")
+                                    net_income = get_latest(income_stmt, "net_income")
+                                    equity = get_latest(balance_sheet, "total_equity")
+                                    positive_equity = equity if equity and equity > 0 else None
+                                    positive_revenue = revenue if revenue and revenue > 0 else None
+                                    market_cap = company_data[ticker].get('Market Cap')
 
-                                    # Calculate metrics
-                                    metrics = {}
-
-                                    # Profitability
-                                    if 'Total Revenue' in income.index:
-                                        if 'Gross Profit' in income.index:
-                                            metrics['Gross Margin'] = income['Gross Profit'] / income['Total Revenue']
-                                        if 'Operating Income' in income.index:
-                                            metrics['Operating Margin'] = income['Operating Income'] / income[
-                                                'Total Revenue']
-                                        if 'Net Income' in income.index:
-                                            metrics['Net Margin'] = income['Net Income'] / income['Total Revenue']
-
-                                    # Returns
-                                    if 'Net Income' in income.index:
-                                        if 'Total Stockholder Equity' in balance.index and balance[
-                                            'Total Stockholder Equity'] > 0:
-                                            metrics['ROE'] = income['Net Income'] / balance['Total Stockholder Equity']
-                                        if 'Total Assets' in balance.index and balance['Total Assets'] > 0:
-                                            metrics['ROA'] = income['Net Income'] / balance['Total Assets']
-
-                                    # Liquidity
-                                    if 'Total Current Assets' in balance.index and 'Total Current Liabilities' in balance.index and \
-                                            balance['Total Current Liabilities'] > 0:
-                                        metrics['Current Ratio'] = balance['Total Current Assets'] / balance[
-                                            'Total Current Liabilities']
-
-                                    # Leverage
-                                    if 'Total Debt' in balance.index and 'Total Stockholder Equity' in balance.index and \
-                                            balance['Total Stockholder Equity'] > 0:
-                                        metrics['Debt/Equity'] = balance['Total Debt'] / balance[
-                                            'Total Stockholder Equity']
-
-                                    # Add market-based metrics
-                                    if company_data[ticker].get('Market Cap') and 'Net Income' in income.index and \
-                                            income['Net Income'] > 0:
-                                        metrics['P/E Ratio'] = company_data[ticker]['Market Cap'] / income['Net Income']
-
-                                    if company_data[ticker].get('Market Cap') and 'Total Revenue' in income.index and \
-                                            income['Total Revenue'] > 0:
-                                        metrics['P/S Ratio'] = company_data[ticker]['Market Cap'] / income[
-                                            'Total Revenue']
-
-                                    if company_data[ticker].get(
-                                            'Market Cap') and 'Total Stockholder Equity' in balance.index and balance[
-                                        'Total Stockholder Equity'] > 0:
-                                        metrics['P/B Ratio'] = company_data[ticker]['Market Cap'] / balance[
-                                            'Total Stockholder Equity']
+                                    candidates = {
+                                        'Gross Margin': safe_divide(get_latest(income_stmt, "gross_profit"),
+                                                                    positive_revenue),
+                                        'Operating Margin': safe_divide(get_latest(income_stmt, "operating_income"),
+                                                                        positive_revenue),
+                                        'Net Margin': safe_divide(net_income, positive_revenue),
+                                        'ROE': safe_divide(net_income, positive_equity),
+                                        'ROA': safe_divide(net_income, get_latest(balance_sheet, "total_assets")),
+                                        'Current Ratio': safe_divide(get_latest(balance_sheet, "current_assets"),
+                                                                     get_latest(balance_sheet, "current_liabilities")),
+                                        'Debt/Equity': safe_divide(get_latest(balance_sheet, "total_debt"),
+                                                                   positive_equity),
+                                        'P/E Ratio': safe_divide(market_cap, net_income)
+                                        if net_income and net_income > 0 else None,
+                                        'P/S Ratio': safe_divide(market_cap, positive_revenue),
+                                        'P/B Ratio': safe_divide(market_cap, positive_equity),
+                                    }
+                                    metrics = {k: v for k, v in candidates.items() if v is not None}
 
                                     # Add to data
                                     metrics_data[ticker] = metrics
@@ -440,10 +417,10 @@ def run_sector_analysis_page():
                                         height=600,
                                         is_percent=True
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(prof_df.T.style.format("{:.2f}%"), use_container_width=True)
+                                    st.dataframe(prof_df.T.style.format("{:.2f}%"), width="stretch")
                                 else:
                                     st.warning("No profitability metrics available.")
 
@@ -466,10 +443,10 @@ def run_sector_analysis_page():
                                         height=600,
                                         is_percent=True
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(ret_df.T.style.format("{:.2f}%"), use_container_width=True)
+                                    st.dataframe(ret_df.T.style.format("{:.2f}%"), width="stretch")
                                 else:
                                     st.warning("No return metrics available.")
 
@@ -490,10 +467,10 @@ def run_sector_analysis_page():
                                         colorscale="RdBu_r"
                                         # Reversed so higher values are red (potentially overvalued)
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(val_df.T.style.format("{:.2f}x"), use_container_width=True)
+                                    st.dataframe(val_df.T.style.format("{:.2f}x"), width="stretch")
                                 else:
                                     st.warning("No valuation metrics available.")
 
@@ -512,10 +489,10 @@ def run_sector_analysis_page():
                                         title="Liquidity & Leverage Metrics",
                                         height=600
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, width="stretch")
 
                                     # Display table
-                                    st.dataframe(ll_df.T.style.format("{:.2f}x"), use_container_width=True)
+                                    st.dataframe(ll_df.T.style.format("{:.2f}x"), width="stretch")
                                 else:
                                     st.warning("No liquidity or leverage metrics available.")
                         else:
@@ -572,7 +549,7 @@ def run_sector_analysis_page():
                                 title=f"{sector_title} Valuation Heatmap",
                                 height=800
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
 
                             # Display valuation metrics table
                             st.subheader("Valuation Metrics Table")
@@ -586,7 +563,7 @@ def run_sector_analysis_page():
                                 display_df[col] = display_df[col].apply(
                                     lambda x: f"{x:.2f}x" if pd.notnull(x) else "N/A")
 
-                            st.dataframe(display_df, use_container_width=True)
+                            st.dataframe(display_df, width="stretch")
                         else:
                             st.warning("Could not load valuation data for sector companies.")
                     else:
@@ -595,6 +572,16 @@ def run_sector_analysis_page():
                 # Tab 5: Sector Outlook
                 with tabs[4]:
                     st.subheader(f"{sector_title} Sector Outlook")
+
+                    from StockAnalysisSystem.src.config import normalize_sector
+                    from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
+                        SECTOR_CONSIDERATIONS,
+                    )
+
+                    considerations = SECTOR_CONSIDERATIONS.get(normalize_sector(selected_sector), [])
+                    if considerations:
+                        st.markdown("### Key Value Drivers and Risks")
+                        st.markdown("\n".join(f"- {line}" for line in considerations))
 
                     # Display sector benchmark information
                     if sector_benchmark:
@@ -618,8 +605,8 @@ def run_sector_analysis_page():
                         # Show sector risks
                         if 'risks' in sector_benchmark:
                             st.markdown("### Key Risks")
-                        for risk in sector_benchmark['risks']:
-                            st.markdown(f"- **{risk['name']}**: {risk['description']}")
+                            for risk in sector_benchmark['risks']:
+                                st.markdown(f"- **{risk['name']}**: {risk['description']}")
 
                         # Show sector recommendations
                         if 'outlook' in sector_benchmark:

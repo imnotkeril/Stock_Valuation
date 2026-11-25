@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.env
+StockAnalysisSystem/src/data/cache/*
+StockAnalysisSystem/src/data/sector_data/*
+StockAnalysisSystem/tests

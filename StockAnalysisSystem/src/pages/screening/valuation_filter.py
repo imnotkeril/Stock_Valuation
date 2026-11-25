@@ -1,18 +1,13 @@
-import os
-import sys
 import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add the project root to Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
 
 # Import project modules
-from StockAnalysisSystem.src.config import UI_SETTINGS, COLORS, VIZ_SETTINGS, SECTOR_MAPPING, SECTOR_DCF_PARAMETERS
+from StockAnalysisSystem.src.config import COLORS, DCF_PARAMETERS, SECTOR_DCF_PARAMETERS, SECTOR_MAPPING, normalize_sector
+from StockAnalysisSystem.src.utils.financial_data import build_financial_data, cagr, get_series
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
@@ -211,7 +206,9 @@ def run_valuation_filter_page():
         )
 
         # Run valuation button
-        run_valuation_button = st.button("Run Valuation Analysis", type="primary")
+        if st.button("Run Valuation Analysis", type="primary", key="vf_run"):
+            st.session_state["vf_run_active"] = True
+        run_valuation_button = st.session_state.get("vf_run_active", False)
 
     # Main content area
     if run_valuation_button:
@@ -335,9 +332,9 @@ def run_valuation_filter_page():
                             return ''
 
                     # Apply styling
-                    styled_df = summary_df.style.applymap(color_upside, subset=['Upside'])
+                    styled_df = summary_df.style.map(color_upside, subset=['Upside'])
 
-                    st.dataframe(styled_df, use_container_width=True)
+                    st.dataframe(styled_df, width="stretch")
 
                     # Add export option
                     st.download_button(
@@ -352,7 +349,6 @@ def run_valuation_filter_page():
                     st.subheader("Detailed Valuation Analysis")
 
                     # Add a selector for individual stocks
-                    stock_symbols = [stock["symbol"] for stock in valuation_results]
                     stock_names = [f"{stock['symbol']} - {stock['name']}" for stock in valuation_results]
 
                     selected_stock = st.selectbox(
@@ -415,7 +411,7 @@ def run_valuation_filter_page():
                                 title=f"Valuation Breakdown for {selected_symbol}",
                                 height=400
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
 
                         # Display valuation parameters
                         if "valuation_parameters" in stock_data:
@@ -429,24 +425,24 @@ def run_valuation_filter_page():
                             # DCF parameters
                             if "discount_rate" in params:
                                 with col1:
-                                    st.metric("Discount Rate", f"{params.get('discount_rate', 0) * 100:.2f}%")
+                                    st.metric("Discount Rate", _fmt_pct(params.get('discount_rate')))
 
                                 with col2:
-                                    st.metric("Growth Rate", f"{params.get('growth_rate', 0) * 100:.2f}%")
+                                    st.metric("Growth Rate", _fmt_pct(params.get('growth_rate')))
 
                                 with col3:
-                                    st.metric("Terminal Growth", f"{params.get('terminal_growth', 0) * 100:.2f}%")
+                                    st.metric("Terminal Growth", _fmt_pct(params.get('terminal_growth')))
 
                             # Relative valuation parameters
                             if "peer_pe" in params:
                                 with col1:
-                                    st.metric("Peer P/E Ratio", f"{params.get('peer_pe', 0):.2f}x")
+                                    st.metric("Peer P/E Ratio", _fmt_multiple(params.get('peer_pe')))
 
                                 with col2:
-                                    st.metric("Peer P/B Ratio", f"{params.get('peer_pb', 0):.2f}x")
+                                    st.metric("Peer P/B Ratio", _fmt_multiple(params.get('peer_pb')))
 
                                 with col3:
-                                    st.metric("Peer P/S Ratio", f"{params.get('peer_ps', 0):.2f}x")
+                                    st.metric("Peer P/S Ratio", _fmt_multiple(params.get('peer_ps')))
 
                         # Display financial metrics
                         st.subheader("Key Financial Metrics")
@@ -518,7 +514,7 @@ def run_valuation_filter_page():
                                     company_name=stock_data.get("name", ""),
                                     height=500
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
                             else:
                                 st.warning(f"No price data available for {selected_symbol}.")
                         except Exception as e:
@@ -554,7 +550,7 @@ def run_valuation_filter_page():
                         title="Sector Distribution of Undervalued Stocks",
                         height=500
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                     # Display sector breakdown with average upside
                     st.subheader("Average Upside by Sector")
@@ -586,7 +582,7 @@ def run_valuation_filter_page():
                     upside_df = upside_df.sort_values("Average Upside", ascending=False)
 
                     # Display the DataFrame
-                    st.dataframe(upside_df, use_container_width=True)
+                    st.dataframe(upside_df, width="stretch")
 
                     # Display stocks by sector
                     st.subheader("Undervalued Stocks by Sector")
@@ -616,9 +612,9 @@ def run_valuation_filter_page():
                             sector_df = pd.DataFrame(sector_table)
 
                             # Apply upside coloring
-                            styled_df = sector_df.style.applymap(color_upside, subset=['Upside'])
+                            styled_df = sector_df.style.map(color_upside, subset=['Upside'])
 
-                            st.dataframe(styled_df, use_container_width=True)
+                            st.dataframe(styled_df, width="stretch")
 
                 # Tab 4: Fair Value Distribution
                 with tabs[3]:
@@ -633,7 +629,7 @@ def run_valuation_filter_page():
                         title="Distribution of Upside Potential (%)",
                         height=500
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                     # Display statistics
                     mean_upside = np.mean(upside_data)
@@ -677,9 +673,10 @@ def run_valuation_filter_page():
                         title="Valuation Method Distribution",
                         height=400
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
             except Exception as e:
+                logger.exception("Valuation analysis failed")
                 st.error(f"An error occurred during valuation analysis: {str(e)}")
                 logger.error(f"Error in valuation analysis: {str(e)}")
 
@@ -707,10 +704,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     growth_rate_adj = params.get("growth_rate_adj", 0)
     terminal_growth_adj = params.get("terminal_growth_adj", 0)
     margin_of_safety = params.get("margin_of_safety", 0.25)
-    pe_discount = params.get("pe_discount", 0.15)
-    ps_discount = params.get("ps_discount", 0.15)
-    pb_discount = params.get("pb_discount", 0.15)
-    ev_ebitda_discount = params.get("ev_ebitda_discount", 0.15)
+    multiple_discounts = {
+        "P/E": params.get("pe_discount", 0.15),
+        "P/S": params.get("ps_discount", 0.15),
+        "P/B": params.get("pb_discount", 0.15),
+        "EV/EBITDA": params.get("ev_ebitda_discount", 0.15),
+    }
 
     # Results list
     valuation_results = []
@@ -718,23 +717,19 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     # Get sector benchmarks for relative valuation
     sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector if sector != "All" else None)
 
-    # Adjust DCF parameters based on user inputs
-    dcf_params = {}
-    if sector != "All" and sector in SECTOR_DCF_PARAMETERS:
-        dcf_params = SECTOR_DCF_PARAMETERS[sector].copy()
-
-    if discount_rate_adj != 0:
-        if "default_discount_rate" in dcf_params:
-            dcf_params["default_discount_rate"] += discount_rate_adj
-        else:
-            dcf_params["default_discount_rate"] = 0.10 + discount_rate_adj
-
-    if growth_rate_adj != 0:
-        # Apply to terminal growth rate
-        if "terminal_growth_rate" in dcf_params:
-            dcf_params["terminal_growth_rate"] += terminal_growth_adj
-        else:
-            dcf_params["terminal_growth_rate"] = 0.02 + terminal_growth_adj
+    def dcf_overrides(stock_sector, income_stmt):
+        """Model assumptions = sector defaults shifted by the user's adjustments."""
+        defaults = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(normalize_sector(stock_sector), {})}
+        overrides = {}
+        if discount_rate_adj:
+            overrides["discount_rate"] = defaults["default_discount_rate"] + discount_rate_adj
+        if terminal_growth_adj:
+            overrides["terminal_growth"] = max(defaults["terminal_growth_rate"] + terminal_growth_adj, 0.0)
+        if growth_rate_adj:
+            historical = cagr(get_series(income_stmt, "revenue", ascending=True))
+            base = historical if historical is not None else defaults["terminal_growth_rate"]
+            overrides["revenue_growth"] = base + growth_rate_adj
+        return overrides
 
     # Process each stock in the universe
     for stock in universe:
@@ -798,8 +793,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     dcf_result = valuation_factory.get_company_valuation(
                         symbol,
                         sector=stock_sector,
-                        **dcf_params
+                        financial_data=build_financial_data(income_stmt, balance_sheet, cash_flow,
+                                                            company_info, price_data),
+                        **dcf_overrides(stock_sector, income_stmt)
                     )
+                    if dcf_result.get('value_per_share') is None:
+                        dcf_result = None
                 except Exception as e:
                     logger.warning(f"DCF valuation failed for {symbol}: {str(e)}")
 
@@ -817,7 +816,8 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                         company_info,
                         ratios,
                         sector_multiples,
-                        current_price
+                        current_price,
+                        discounts=multiple_discounts,
                     )
                 except Exception as e:
                     logger.warning(f"Relative valuation failed for {symbol}: {str(e)}")
@@ -835,9 +835,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                 valuation_method = "DCF"
                 valuation_components = {"DCF": fair_value}
                 valuation_parameters = {
-                    "discount_rate": dcf_result.get('discount_rate'),
-                    "growth_rate": dcf_result.get('growth_rate'),
-                    "terminal_growth": dcf_result.get('terminal_growth')
+                    **_dcf_parameters(dcf_result)
                 }
                 confidence_level = "Medium"
                 notes = "Based on discounted cash flow analysis."
@@ -865,9 +863,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                             "Relative (40%)": rel_value
                         }
                         valuation_parameters = {
-                            "discount_rate": dcf_result.get('discount_rate'),
-                            "growth_rate": dcf_result.get('growth_rate'),
-                            "terminal_growth": dcf_result.get('terminal_growth'),
+                            **_dcf_parameters(dcf_result),
                             "peer_pe": relative_result.get('parameters', {}).get('peer_pe'),
                             "peer_pb": relative_result.get('parameters', {}).get('peer_pb'),
                             "peer_ps": relative_result.get('parameters', {}).get('peer_ps')
@@ -879,9 +875,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     valuation_method = "DCF"
                     valuation_components = {"DCF": fair_value}
                     valuation_parameters = {
-                        "discount_rate": dcf_result.get('discount_rate'),
-                        "growth_rate": dcf_result.get('growth_rate'),
-                        "terminal_growth": dcf_result.get('terminal_growth')
+                        **_dcf_parameters(dcf_result)
                     }
                     confidence_level = "Medium"
                     notes = "Based on discounted cash flow analysis. Relative valuation not available."
@@ -931,7 +925,25 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     return valuation_results
 
 
-def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price):
+def _dcf_parameters(result):
+    """Key DCF assumptions from a standardised valuation result."""
+    assumptions = (result or {}).get('assumptions') or {}
+    return {
+        "discount_rate": assumptions.get('discount_rate'),
+        "growth_rate": assumptions.get('revenue_growth'),
+        "terminal_growth": assumptions.get('terminal_growth'),
+    }
+
+
+def _fmt_pct(value):
+    return f"{value * 100:.2f}%" if isinstance(value, (int, float)) else "N/A"
+
+
+def _fmt_multiple(value):
+    return f"{value:.2f}x" if isinstance(value, (int, float)) else "N/A"
+
+
+def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price, discounts=None):
     """
     Calculate fair value using relative valuation methods
 
@@ -941,6 +953,8 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
         ratios: Company financial ratios
         sector_multiples: Sector average multiples
         current_price: Current stock price
+        discounts: Required discount to each sector multiple, e.g. {"P/E": 0.15}; the fair
+            multiple is sector average x (1 - discount)
 
     Returns:
         Dictionary with relative valuation results
@@ -951,11 +965,19 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
     ps_ratio = ratios.get('valuation', {}).get('ps_ratio')
     ev_ebitda = ratios.get('valuation', {}).get('ev_ebitda')
 
-    # Extract sector averages
-    sector_pe = sector_multiples.get('pe_ratio')
-    sector_pb = sector_multiples.get('pb_ratio')
-    sector_ps = sector_multiples.get('ps_ratio')
-    sector_ev_ebitda = sector_multiples.get('ev_ebitda')
+    # Extract sector averages, reduced by the required discount
+    discounts = discounts or {}
+
+    def required_multiple(key, label):
+        multiple = sector_multiples.get(key)
+        if not multiple:
+            return None
+        return multiple * (1 - min(max(float(discounts.get(label, 0.0) or 0.0), 0.0), 0.95))
+
+    sector_pe = required_multiple('pe_ratio', 'P/E')
+    sector_pb = required_multiple('pb_ratio', 'P/B')
+    sector_ps = required_multiple('ps_ratio', 'P/S')
+    sector_ev_ebitda = required_multiple('ev_ebitda', 'EV/EBITDA')
 
     # Get earnings, book value, and sales per share
     market_cap = company_info.get('market_cap')
@@ -1004,10 +1026,16 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
 
     # EV/EBITDA based valuation
     if ev_ebitda and sector_ev_ebitda and ev_ebitda > 0:
-        # This is more complex and would need enterprise value and debt data
-        # Simplified approach here
-        ev_ebitda_value = current_price * (sector_ev_ebitda / ev_ebitda)
-        value_components["EV/EBITDA"] = ev_ebitda_value
+        # Re-rate enterprise value, then bridge to equity through net debt (EV - market cap)
+        enterprise_value = company_info.get('enterprise_value')
+        if enterprise_value and enterprise_value > 0:
+            net_debt = enterprise_value - market_cap
+            implied_equity = enterprise_value * (sector_ev_ebitda / ev_ebitda) - net_debt
+            ev_ebitda_value = implied_equity / shares_outstanding
+        else:
+            ev_ebitda_value = current_price * (sector_ev_ebitda / ev_ebitda)
+        if ev_ebitda_value > 0:
+            value_components["EV/EBITDA"] = ev_ebitda_value
 
     # Calculate average fair value if we have components
     if value_components:

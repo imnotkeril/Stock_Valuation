@@ -1,1444 +1,459 @@
-import os
-import sys
+"""
+Company valuation tab.
+
+Sub-tabs:
+
+* Fair Value Summary - the sector model's blended fair value, per-method
+  values versus the current price and the recommendation.
+* DCF - interactive two-stage DCF on free cash flow with a discount-rate x
+  terminal-growth sensitivity grid.
+* Relative - current multiples versus sector benchmarks and the prices they imply.
+* Asset-Based - book, tangible book and adjusted net asset value per share.
+* Sector Model - the sector-specific model with its subsector methods and
+  adjustable assumptions (pages/company_analysis/sector_valuation.py).
+"""
+
+from __future__ import annotations
+
 import logging
-import pandas as pd
+import os
+from typing import Any, Dict, List, Optional
+
 import numpy as np
+import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-# Import project modules
-from config import COLORS, UI_SETTINGS
-from utils.data_loader import DataLoader
-from utils.visualization import FinancialVisualizer
-from models.ratio_analysis import FinancialRatioAnalyzer
-from valuation.sector_factor import ValuationFactory
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS, DCF_PARAMETERS
+from StockAnalysisSystem.src.pages.company_analysis.charts import (
+    dcf_cash_flow_chart,
+    donut_chart,
+    ratio_comparison_chart,
+    sensitivity_heatmap,
+    show_chart,
+    value_comparison_chart,
 )
-logger = logging.getLogger('company_valuation')
+from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
+    canonical_sector,
+    dcf_projection,
+    fmt_money,
+    fmt_pct,
+    fmt_price,
+    free_cash_flow_series,
+    get_company_ratios,
+    get_sector_benchmarks,
+    get_statement,
+    market_snapshot,
+    render_section,
+)
+from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
+    get_valuation_factory,
+    render_sector_valuation,
+)
+from StockAnalysisSystem.src.utils.financial_data import cagr, get_latest, safe_divide, to_float
+
+logger = logging.getLogger("company_valuation")
+
+KEY = "val_"
+
+#: Multiples compared in the relative valuation: key -> (label, metric description)
+MULTIPLES = {
+    "pe_ratio": ("P/E", "earnings"),
+    "ps_ratio": ("P/S", "sales"),
+    "pb_ratio": ("P/B", "book value"),
+    "ev_ebitda": ("EV/EBITDA", "EBITDA"),
+}
 
 
 def render_company_valuation(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
-                             price_data: pd.DataFrame, sector_data: Optional[Dict] = None):
+                             price_data: pd.DataFrame, sector_data: Optional[pd.DataFrame] = None) -> None:
     """
-    Render the company valuation page
+    Render the valuation tab.
 
     Args:
-        ticker: Company ticker symbol
-        financial_data: Dictionary containing financial statement data
-        company_info: Dictionary containing company information
-        price_data: DataFrame with historical price data
-        sector_data: Dictionary containing sector data (optional)
+        ticker: Company ticker symbol.
+        financial_data: Canonical financial data bundle.
+        company_info: Normalised company information.
+        price_data: Daily OHLCV price history.
+        sector_data: Sector ETF prices (unused; accepted for a uniform signature).
     """
-    # Get company name and sector
-    company_name = company_info.get('name', ticker)
-    sector = company_info.get('sector', 'Unknown')
+    snapshot = market_snapshot(financial_data, company_info, price_data)
+    tabs = st.tabs(["Fair Value Summary", "DCF", "APV", "Relative", "Asset-Based", "Sector Model", "Precedents"])
+    with tabs[6]:
+        render_section("Precedent transactions", _render_precedents, financial_data, company_info, snapshot)
+    with tabs[0]:
+        render_section("Fair value summary", _render_summary, ticker, financial_data, company_info)
+    with tabs[1]:
+        render_section("DCF", _render_dcf, ticker, financial_data, company_info, snapshot)
+    with tabs[2]:
+        render_section("APV", _render_apv, ticker, financial_data, company_info, snapshot)
+    with tabs[3]:
+        render_section("Relative valuation", _render_relative, financial_data, company_info, price_data, snapshot)
+    with tabs[4]:
+        render_section("Asset-based valuation", _render_asset_based, financial_data, snapshot)
+    with tabs[5]:
+        render_section("Sector model", render_sector_valuation, ticker, financial_data, company_info, price_data,
+                       key_prefix=f"{KEY}sector")
 
-    # Page header
-    st.header(f"Valuation Analysis: {company_name} ({ticker})")
-    st.markdown(f"<p style='color: {COLORS['sectors'].get(sector, COLORS['secondary'])}'>Sector: {sector}</p>",
-                unsafe_allow_html=True)
 
-    # Create visualization helper
-    visualizer = FinancialVisualizer()
+# ---------------------------------------------------------------------------
+# Fair value summary
+# ---------------------------------------------------------------------------
+def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any]) -> None:
+    sector = canonical_sector(company_info, financial_data)
+    with st.spinner("Valuing the company..."):
+        result = get_valuation_factory().get_company_valuation(ticker, sector=sector, financial_data=financial_data)
+    if result.get("error") and not result.get("valuation_methods"):
+        st.warning(f"The valuation could not be completed: {result['error']}")
+        return
 
-    # Create valuation factory
-    valuation_factory = ValuationFactory()
+    fair, price = to_float(result.get("value_per_share")), to_float(result.get("current_price"))
+    upside = to_float(result.get("potential_upside"))
+    recommendation = result.get("recommendation") or {}
+    cols = st.columns(4)
+    cols[0].metric("Weighted fair value", fmt_price(fair))
+    cols[1].metric("Current price", fmt_price(price))
+    cols[2].metric("Upside / downside", fmt_pct(upside / 100 if upside is not None else None, signed=True))
+    cols[3].markdown(
+        f"<div class='metric-card'><div class='metric-label'>Recommendation</div>"
+        f"<div class='metric-value' style='color:{recommendation.get('color', '#9e9e9e')}'>"
+        f"{recommendation.get('label', 'N/A')}</div></div>", unsafe_allow_html=True)
+    if recommendation.get("rationale"):
+        st.caption(recommendation["rationale"])
 
-    # Get appropriate valuation model based on sector
-    valuation_model = valuation_factory.get_valuation_model(sector)
+    methods = result.get("valuation_methods") or {}
+    weights = (result.get("valuation_summary") or {}).get("weights") or {}
+    labels = [m.get("method", k) for k, m in methods.items() if k in weights]
+    values = [m.get("value_per_share") for k, m in methods.items() if k in weights]
+    show_chart(value_comparison_chart(labels + ["Weighted fair value"], values + [fair], price,
+                                      "Fair value by method vs current price"), key=f"{KEY}summary_chart")
 
-    # Current market data
-    current_price = price_data['Close'].iloc[-1] if not price_data.empty else company_info.get('current_price')
-    market_cap = company_info.get('market_cap')
-
-    # Show current market valuation
-    st.subheader("Current Market Valuation")
-
-    # Display key metrics in columns
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">${current_price:.2f}</div>
-                <div class="metric-label">Current Price</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col2:
-        # Format market cap
-        if market_cap:
-            if market_cap >= 1e12:
-                formatted_market_cap = f"${market_cap / 1e12:.2f}T"
-            elif market_cap >= 1e9:
-                formatted_market_cap = f"${market_cap / 1e9:.2f}B"
-            elif market_cap >= 1e6:
-                formatted_market_cap = f"${market_cap / 1e6:.2f}M"
-            else:
-                formatted_market_cap = f"${market_cap:.2f}"
-        else:
-            formatted_market_cap = "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">{formatted_market_cap}</div>
-                <div class="metric-label">Market Cap</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col3:
-        # Get P/E ratio
-        pe_ratio = company_info.get('pe_ratio')
-        if pe_ratio is None and current_price and financial_data.get('income_statement') is not None:
-            # Try to calculate P/E from available data
-            income_stmt = financial_data.get('income_statement')
-            if not income_stmt.empty and 'Net Income' in income_stmt.index:
-                net_income = income_stmt.loc['Net Income'].iloc[0]
-                if net_income > 0 and market_cap:
-                    pe_ratio = market_cap / net_income
-
-        # Format P/E
-        formatted_pe = f"{pe_ratio:.2f}" if pe_ratio is not None else "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">{formatted_pe}</div>
-                <div class="metric-label">P/E Ratio</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col4:
-        # Get EV/EBITDA
-        ev_ebitda = company_info.get('ev_ebitda')
-        if ev_ebitda is None and market_cap and financial_data.get('income_statement') is not None:
-            # Try to calculate EV/EBITDA
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-
-            if (not income_stmt.empty and not balance_sheet.empty and
-                    'EBITDA' in income_stmt.index and
-                    'Total Debt' in balance_sheet.index and
-                    'Cash and Cash Equivalents' in balance_sheet.index):
-
-                ebitda = income_stmt.loc['EBITDA'].iloc[0]
-                total_debt = balance_sheet.loc['Total Debt'].iloc[0]
-                cash = balance_sheet.loc['Cash and Cash Equivalents'].iloc[0]
-
-                if ebitda > 0:
-                    enterprise_value = market_cap + total_debt - cash
-                    ev_ebitda = enterprise_value / ebitda
-
-        # Format EV/EBITDA
-        formatted_ev_ebitda = f"{ev_ebitda:.2f}" if ev_ebitda is not None else "N/A"
-
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">{formatted_ev_ebitda}</div>
-                <div class="metric-label">EV/EBITDA</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # Create tabs for different valuation methods
-    valuation_tabs = st.tabs(["Valuation Multiples", "DCF Valuation", "Sector-Specific", "Fair Value"])
-
-    # Tab 1: Valuation Multiples
-    with valuation_tabs[0]:
-        st.subheader("Relative Valuation Analysis")
-
-        # Calculate financial ratios
-        ratio_analyzer = FinancialRatioAnalyzer()
-        ratios = ratio_analyzer.calculate_ratios(financial_data)
-
-        # Get sector benchmarks
-        sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector)
-
-        # Get valuation ratios
-        valuation_ratios = ratios.get('valuation', {})
-        sector_valuation = sector_benchmarks.get('valuation', {})
-
-        # Key valuation multiples
-        multiples_to_display = [
-            {"name": "P/E Ratio", "key": "pe_ratio",
-             "description": "Price to Earnings - Shows how much investors are willing to pay per dollar of earnings"},
-            {"name": "P/S Ratio", "key": "ps_ratio",
-             "description": "Price to Sales - Market value relative to annual revenue"},
-            {"name": "P/B Ratio", "key": "pb_ratio",
-             "description": "Price to Book - Market value relative to book value"},
-            {"name": "EV/EBITDA", "key": "ev_ebitda",
-             "description": "Enterprise Value to EBITDA - Company value relative to earnings before interest, taxes, depreciation, and amortization"},
-            {"name": "EV/Revenue", "key": "ev_revenue",
-             "description": "Enterprise Value to Revenue - Company value relative to revenue"}
-        ]
-
-        # Display multiples table
-        multiples_data = []
-
-        for multiple in multiples_to_display:
-            company_value = valuation_ratios.get(multiple['key'])
-            sector_value = sector_valuation.get(multiple['key'])
-
-            # Calculate percentage difference
-            if company_value is not None and sector_value is not None and sector_value != 0:
-                perc_diff = (company_value / sector_value - 1) * 100
-                # For valuation multiples, lower is generally better
-                assessment = "Undervalued" if perc_diff < -10 else "Overvalued" if perc_diff > 10 else "Fair Valued"
-                assessment_color = COLORS["primary"] if perc_diff < -10 else COLORS["accent"] if perc_diff > 10 else \
-                COLORS["warning"]
-            else:
-                perc_diff = None
-                assessment = "N/A"
-                assessment_color = "#8888"
-
-            # Format values
-            formatted_company = f"{company_value:.2f}" if company_value is not None else "N/A"
-            formatted_sector = f"{sector_value:.2f}" if sector_value is not None else "N/A"
-            formatted_diff = f"{perc_diff:+.1f}%" if perc_diff is not None else "N/A"
-
-            multiples_data.append({
-                "Multiple": multiple['name'],
-                "Company": formatted_company,
-                "Sector Avg": formatted_sector,
-                "Difference": formatted_diff,
-                "Assessment": assessment,
-                "Color": assessment_color,
-                "Description": multiple['description']
-            })
-
-        # Convert to DataFrame
-        multiples_df = pd.DataFrame(multiples_data)
-
-        # Custom styling for the table
-        styled_df = pd.DataFrame({
-            "Multiple": multiples_df["Multiple"],
-            "Company": multiples_df["Company"],
-            "Sector Avg": multiples_df["Sector Avg"],
-            "Difference": multiples_df["Difference"],
-            "Assessment": [f"<span style='color:{row.Color}'>{row.Assessment}</span>" for _, row in
-                           multiples_df.iterrows()]
+    rows = []
+    for key, method in methods.items():
+        value = to_float(method.get("value_per_share"))
+        rows.append({
+            "Method": method.get("method", key),
+            "Value / share": fmt_price(value),
+            "Weight": fmt_pct(weights.get(key), 0) if key in weights else "—",
+            "Upside": fmt_pct(value / price - 1, signed=True) if value and price else "—",
+            "Note": method.get("error") or ("" if key in weights else method.get("note", "Not applicable")),
         })
-
-        # Display the styled dataframe
-        st.write(styled_df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-        # Display descriptions for each multiple
-        with st.expander("Understanding Valuation Multiples"):
-            for _, row in multiples_df.iterrows():
-                st.markdown(f"**{row['Multiple']}**: {row['Description']}")
-
-        # Visualize multiples comparison
-        if any(valuation_ratios.values()) and any(sector_valuation.values()):
-            st.subheader("Comparative Valuation Analysis")
-
-            # Prepare data for visualization
-            valid_multiples = []
-            company_values = []
-            sector_values = []
-
-            for multiple in multiples_to_display:
-                company_value = valuation_ratios.get(multiple['key'])
-                sector_value = sector_valuation.get(multiple['key'])
-
-                if company_value is not None and sector_value is not None:
-                    valid_multiples.append(multiple['name'])
-                    company_values.append(company_value)
-                    sector_values.append(sector_value)
-
-            if valid_multiples:
-                # Create DataFrame for visualization
-                viz_data = pd.DataFrame({
-                    'Multiple': valid_multiples,
-                    f'{company_name}': company_values,
-                    'Sector Average': sector_values
-                })
-
-                # Plot comparative bar chart
-                fig = visualizer.plot_valuation_multiples_comparison(
-                    viz_data,
-                    company_name=company_name,
-                    sector_name=f"{sector} Sector",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Add interpretation
-                st.markdown("""
-                <div style="background-color: #1f1f1f; padding: 15px; border-radius: 5px; margin-top: 10px;">
-                    <h4>Interpretation</h4>
-                    <p>🔹 <strong>Lower multiples</strong> generally indicate a company may be <span style='color:#74f174'>undervalued</span> relative to its peers.</p>
-                    <p>🔹 <strong>Higher multiples</strong> may suggest the company is <span style='color:#faa1a4'>overvalued</span> or that the market expects higher growth.</p>
-                    <p>🔹 Consider industry context and company growth rates when interpreting these multiples.</p>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("Insufficient data to generate valuation multiples visualization.")
-
-    # Tab 2: DCF Valuation
-    with valuation_tabs[1]:
-        st.subheader("Discounted Cash Flow (DCF) Valuation")
-
-        # Create two columns - one for inputs, one for results
-        dcf_col1, dcf_col2 = st.columns([3, 2])
-
-        with dcf_col1:
-            # DCF Inputs
-            st.markdown('<div class="section-header"><h4>DCF Model Inputs</h4></div>', unsafe_allow_html=True)
-
-            # Extract historical financial data
-            income_stmt = financial_data.get('income_statement')
-            balance_sheet = financial_data.get('balance_sheet')
-            cash_flow = financial_data.get('cash_flow')
-
-            # Extract historical free cash flow
-            historical_fcf = None
-            if cash_flow is not None and not cash_flow.empty:
-                if 'Free Cash Flow' in cash_flow.index:
-                    historical_fcf = cash_flow.loc['Free Cash Flow']
-                elif all(x in cash_flow.index for x in ['Operating Cash Flow', 'Capital Expenditure']):
-                    ocf = cash_flow.loc['Operating Cash Flow']
-                    capex = cash_flow.loc['Capital Expenditure']
-                    historical_fcf = ocf - abs(capex)
-
-            # Display historical FCF if available
-            if historical_fcf is not None and len(historical_fcf) > 0:
-                # Create a DataFrame for display
-                fcf_data = historical_fcf.to_frame(name='FCF')
-
-                # Format for display (in millions or billions)
-                fcf_display = fcf_data.copy()
-                fcf_display['FCF'] = fcf_display['FCF'].apply(
-                    lambda x: f"${x / 1e9:.2f}B" if abs(x) >= 1e9 else
-                    f"${x / 1e6:.2f}M" if abs(x) >= 1e6 else
-                    f"${x:.2f}"
-                )
-
-                # Calculate growth rates
-                if len(historical_fcf) > 1:
-                    fcf_series = historical_fcf.astype(float)
-                    growth_rates = fcf_series.pct_change() * 100
-                    # Reverse to get oldest to newest
-                    growth_rates = growth_rates.iloc[::-1]
-                    # Drop the first value which will be NaN
-                    growth_rates = growth_rates.dropna()
-
-                    # Calculate average growth rate
-                    avg_growth_rate = growth_rates.mean()
-
-                    # Store for later use
-                    historical_growth_rate = avg_growth_rate / 100  # Convert percentage to decimal
-                else:
-                    historical_growth_rate = 0.03  # Default 3% if not enough data
-
-                # Display historical FCF
-                st.write("Historical Free Cash Flow (FCF):")
-                st.write(fcf_display)
-
-                # Display estimated growth rate
-                if len(historical_fcf) > 1:
-                    st.markdown(f"Estimated FCF Growth Rate: **{avg_growth_rate:.2f}%**")
-            else:
-                st.warning("Historical free cash flow data not available.")
-                historical_growth_rate = 0.03  # Default 3% if no data
-
-            # User inputs for DCF model
-            st.markdown("### Model Parameters")
-
-            # Get sector-specific defaults
-            if sector in ["Technology", "Healthcare"]:
-                default_growth = max(0.05, historical_growth_rate)
-                default_terminal_growth = 0.03
-                default_discount_rate = 0.10
-            elif sector in ["Utilities", "Consumer Staples"]:
-                default_growth = max(0.02, historical_growth_rate)
-                default_terminal_growth = 0.02
-                default_discount_rate = 0.07
-            else:
-                default_growth = max(0.03, historical_growth_rate)
-                default_terminal_growth = 0.02
-                default_discount_rate = 0.09
-
-            # Growth rate
-            growth_rate = st.slider(
-                "Projected Annual Growth Rate (%)",
-                min_value=0.0,
-                max_value=30.0,
-                value=default_growth * 100,
-                step=0.5,
-                help="Estimated annual growth rate for the company's free cash flow"
-            ) / 100  # Convert to decimal
-
-            # Terminal growth rate
-            terminal_growth = st.slider(
-                "Terminal Growth Rate (%)",
-                min_value=0.0,
-                max_value=5.0,
-                value=default_terminal_growth * 100,
-                step=0.1,
-                help="Long-term growth rate that the company's free cash flow is expected to grow at indefinitely"
-            ) / 100  # Convert to decimal
-
-            # Discount rate
-            discount_rate = st.slider(
-                "Discount Rate / WACC (%)",
-                min_value=4.0,
-                max_value=20.0,
-                value=default_discount_rate * 100,
-                step=0.1,
-                help="Weighted Average Cost of Capital - rate used to discount future cash flows"
-            ) / 100  # Convert to decimal
-
-            # Forecast period
-            forecast_years = st.slider(
-                "Forecast Period (Years)",
-                min_value=5,
-                max_value=10,
-                value=5,
-                step=1,
-                help="Number of years to forecast future cash flows"
-            )
-
-        with dcf_col2:
-            # DCF Results
-            st.markdown('<div class="section-header"><h4>DCF Valuation Results</h4></div>', unsafe_allow_html=True)
-
-            # Get most recent FCF as base
-            if historical_fcf is not None and len(historical_fcf) > 0:
-                base_fcf = historical_fcf.iloc[0]
-            else:
-                # Fallback: Estimate FCF from net income
-                if income_stmt is not None and not income_stmt.empty and 'Net Income' in income_stmt.index:
-                    # Simple estimate: Net Income * 0.8
-                    base_fcf = income_stmt.loc['Net Income'].iloc[0] * 0.8
-                else:
-                    st.error("Insufficient data to perform DCF valuation.")
-                    return
-
-            # Perform DCF calculation
-            try:
-                # Forecast FCF
-                forecast_fcf = []
-                for year in range(1, forecast_years + 1):
-                    fcf = base_fcf * (1 + growth_rate) ** year
-                    forecast_fcf.append(fcf)
-
-                # Calculate terminal value
-                terminal_value = forecast_fcf[-1] * (1 + terminal_growth) / (discount_rate - terminal_growth)
-
-                # Calculate PV of forecast FCF
-                pv_fcf = sum(fcf / (1 + discount_rate) ** year for year, fcf in enumerate(forecast_fcf, 1))
-
-                # Calculate PV of terminal value
-                pv_terminal = terminal_value / (1 + discount_rate) ** forecast_years
-
-                # Enterprise value
-                enterprise_value = pv_fcf + pv_terminal
-
-                # Calculate equity value by subtracting net debt
-                net_debt = 0
-                if balance_sheet is not None and not balance_sheet.empty:
-                    if all(x in balance_sheet.index for x in ['Total Debt', 'Cash and Cash Equivalents']):
-                        total_debt = balance_sheet.loc['Total Debt'].iloc[0]
-                        cash = balance_sheet.loc['Cash and Cash Equivalents'].iloc[0]
-                        net_debt = total_debt - cash
-
-                equity_value = enterprise_value - net_debt
-
-                # Calculate per share value
-                shares_outstanding = company_info.get('shares_outstanding')
-                if not shares_outstanding and market_cap and current_price:
-                    # Estimate from market cap and price
-                    shares_outstanding = market_cap / current_price
-
-                if shares_outstanding:
-                    value_per_share = equity_value / shares_outstanding
-
-                    # Compare to current price
-                    if current_price:
-                        upside_potential = (value_per_share / current_price - 1) * 100
-
-                # Display results
-                if enterprise_value >= 1e12:
-                    ev_display = f"${enterprise_value / 1e12:.2f} trillion"
-                elif enterprise_value >= 1e9:
-                    ev_display = f"${enterprise_value / 1e9:.2f} billion"
-                elif enterprise_value >= 1e6:
-                    ev_display = f"${enterprise_value / 1e6:.2f} million"
-                else:
-                    ev_display = f"${enterprise_value:.2f}"
-
-                if equity_value >= 1e12:
-                    equity_display = f"${equity_value / 1e12:.2f} trillion"
-                elif equity_value >= 1e9:
-                    equity_display = f"${equity_value / 1e9:.2f} billion"
-                elif equity_value >= 1e6:
-                    equity_display = f"${equity_value / 1e6:.2f} million"
-                else:
-                    equity_display = f"${equity_value:.2f}"
-
-                # Display color based on upside potential
-                if current_price:
-                    value_color = COLORS["primary"] if value_per_share > current_price else COLORS["accent"]
-                else:
-                    value_color = COLORS["secondary"]
-
-                # Display results in cards
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value" style="color: {value_color};">${value_per_share:.2f}</div>
-                        <div class="metric-label">Estimated Fair Value Per Share</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                if current_price:
-                    upside_color = COLORS["primary"] if upside_potential > 0 else COLORS["accent"]
-                    upside_icon = "↗" if upside_potential > 0 else "↘"
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {upside_color};">{upside_icon} {upside_potential:+.2f}%</div>
-                            <div class="metric-label">Upside Potential</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value">{ev_display}</div>
-                        <div class="metric-label">Enterprise Value</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-value">{equity_display}</div>
-                        <div class="metric-label">Equity Value</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                # Add assessment
-                if current_price:
-                    if upside_potential > 20:
-                        assessment = "Significantly Undervalued"
-                        assessment_color = COLORS["primary"]
-                    elif upside_potential > 5:
-                        assessment = "Moderately Undervalued"
-                        assessment_color = COLORS["primary"]
-                    elif upside_potential > -5:
-                        assessment = "Fairly Valued"
-                        assessment_color = COLORS["warning"]
-                    elif upside_potential > -20:
-                        assessment = "Moderately Overvalued"
-                        assessment_color = COLORS["accent"]
-                    else:
-                        assessment = "Significantly Overvalued"
-                        assessment_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {assessment_color}20; color: {assessment_color}; 
-                                    padding: 10px; border-radius: 5px; margin-top: 20px; text-align: center;">
-                            <h3 style="margin: 0;">{assessment}</h3>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-            except Exception as e:
-                st.error(f"Error in DCF calculation: {str(e)}")
-                st.warning("Please check your inputs and try again.")
-
-        # Sensitivity analysis
-        st.subheader("Sensitivity Analysis")
-        st.markdown(
-            "This analysis shows how the estimated share price changes with different growth and discount rates.")
-
-        # Create a matrix of values
-        growth_rates = [growth_rate - 0.02, growth_rate - 0.01, growth_rate, growth_rate + 0.01, growth_rate + 0.02]
-        discount_rates = [discount_rate - 0.02, discount_rate - 0.01, discount_rate, discount_rate + 0.01,
-                          discount_rate + 0.02]
-
-        # Create the sensitivity matrix
-        sensitivity_matrix = []
-
-        for g_rate in growth_rates:
-            row = []
-            for d_rate in discount_rates:
-                try:
-                    # Skip invalid combinations
-                    if d_rate <= terminal_growth or g_rate < 0:
-                        row.append(None)
-                        continue
-
-                    # Forecast FCF with this growth rate
-                    sens_forecast_fcf = []
-                    for year in range(1, forecast_years + 1):
-                        fcf = base_fcf * (1 + g_rate) ** year
-                        sens_forecast_fcf.append(fcf)
-
-                    # Calculate terminal value with this discount rate
-                    sens_terminal_value = sens_forecast_fcf[-1] * (1 + terminal_growth) / (d_rate - terminal_growth)
-
-                    # Calculate PV of forecast FCF
-                    sens_pv_fcf = sum(fcf / (1 + d_rate) ** year for year, fcf in enumerate(sens_forecast_fcf, 1))
-
-                    # Calculate PV of terminal value
-                    sens_pv_terminal = sens_terminal_value / (1 + d_rate) ** forecast_years
-
-                    # Enterprise value
-                    sens_enterprise_value = sens_pv_fcf + sens_pv_terminal
-
-                    # Equity value
-                    sens_equity_value = sens_enterprise_value - net_debt
-
-                    # Value per share
-                    sens_value_per_share = sens_equity_value / shares_outstanding
-
-                    row.append(sens_value_per_share)
-                except:
-                    row.append(None)
-
-            sensitivity_matrix.append(row)
-
-        # Create a DataFrame for display
-        growth_labels = [f"{r * 100:.1f}%" for r in growth_rates]
-        discount_labels = [f"{r * 100:.1f}%" for r in discount_rates]
-
-        sensitivity_df = pd.DataFrame(sensitivity_matrix, index=growth_labels, columns=discount_labels)
-
-        # Plot heatmap
-        fig = visualizer.plot_sensitivity_heatmap(
-            sensitivity_df,
-            x_title="Discount Rate",
-            y_title="Growth Rate",
-            current_value=value_per_share,
-            current_price=current_price,
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Tab 3: Sector-Specific Valuation
-    with valuation_tabs[2]:
-        st.subheader(f"{sector}-Specific Valuation")
-
-        # Based on sector, display appropriate models and metrics
-        if sector == "Financials":
-            # Financials sector focus on P/B, ROE, and Dividend model
-            st.markdown("""
-            <div style="background-color: #1f1f1f; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                <h4>Financial Sector Valuation Approach</h4>
-                <p>Financial companies like banks and insurance firms are typically valued differently from other sectors:</p>
-                <ul>
-                    <li><strong>P/B Ratio</strong> is more relevant than P/E</li>
-                    <li><strong>Dividend Discount Model</strong> is commonly used</li>
-                    <li><strong>ROE</strong> is a critical performance metric</li>
-                    <li>Regulatory capital requirements affect valuation</li>
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Display key financial sector specific metrics
-            fin_col1, fin_col2 = st.columns(2)
-
-            with fin_col1:
-                # P/B Ratio Analysis
-                st.markdown('<div class="section-header"><h4>P/B Ratio Analysis</h4></div>', unsafe_allow_html=True)
-
-                # Get P/B ratio
-                pb_ratio = valuation_ratios.get('pb_ratio')
-                sector_pb = sector_valuation.get('pb_ratio')
-
-                # Display P/B comparison
-                if pb_ratio is not None and sector_pb is not None:
-                    pb_diff = (pb_ratio / sector_pb - 1) * 100
-                    pb_color = COLORS["primary"] if pb_ratio < sector_pb else COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{pb_ratio:.2f}</div>
-                            <div class="metric-label">P/B Ratio</div>
-                            <div style="color: {pb_color}; font-size: 14px;">{pb_diff:+.1f}% vs Sector Avg: {sector_pb:.2f}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # P/B Interpretation
-                    if pb_ratio < sector_pb * 0.8:
-                        interpretation = "Significantly below sector average - potentially undervalued if the bank maintains good asset quality."
-                        int_color = COLORS["primary"]
-                    elif pb_ratio < sector_pb * 0.95:
-                        interpretation = "Moderately below sector average - may represent good value if fundamentals are sound."
-                        int_color = COLORS["primary"]
-                    elif pb_ratio < sector_pb * 1.05:
-                        interpretation = "In line with sector average - fairly valued relative to peers."
-                        int_color = COLORS["warning"]
-                    elif pb_ratio < sector_pb * 1.2:
-                        interpretation = "Above sector average - commands premium due to higher growth or better ROE."
-                        int_color = COLORS["warning"]
-                    else:
-                        interpretation = "Significantly above sector average - may be overvalued unless growth prospects are exceptional."
-                        int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.warning("P/B ratio data not available.")
-
-            with fin_col2:
-                # ROE Analysis for Financials
-                st.markdown('<div class="section-header"><h4>Return on Equity (ROE)</h4></div>', unsafe_allow_html=True)
-
-                # Get ROE
-                roe = ratios.get('profitability', {}).get('roe')
-                sector_roe = sector_benchmarks.get('profitability', {}).get('roe')
-
-                if roe is not None:
-                    roe_percent = roe * 100
-                    sector_roe_percent = sector_roe * 100 if sector_roe is not None else None
-
-                    # Display ROE
-                    roe_color = COLORS["primary"] if roe_percent > 10 else COLORS["warning"] if roe_percent > 5 else \
-                    COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {roe_color};">{roe_percent:.2f}%</div>
-                            <div class="metric-label">Return on Equity</div>
-                            <div style="font-size: 14px;">
-                                {f"Sector Avg: {sector_roe_percent:.2f}%" if sector_roe_percent is not None else ""}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # ROE Interpretation for Financials
-                    if roe_percent > 15:
-                        interpretation = "Excellent ROE - indicates strong profitability and efficient use of capital."
-                        int_color = COLORS["primary"]
-                    elif roe_percent > 10:
-                        interpretation = "Good ROE - above average performance for financial institutions."
-                        int_color = COLORS["primary"]
-                    elif roe_percent > 7:
-                        interpretation = "Acceptable ROE - in line with typical returns for the financial sector."
-                        int_color = COLORS["warning"]
-                    elif roe_percent > 4:
-                        interpretation = "Below average ROE - may indicate efficiency issues or lower leverage."
-                        int_color = COLORS["warning"]
-                    else:
-                        interpretation = "Poor ROE - significantly underperforming the financial sector."
-                        int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.warning("ROE data not available.")
-
-            # Dividend analysis for Financials
-            st.markdown('<div class="section-header"><h4>Dividend Analysis</h4></div>', unsafe_allow_html=True)
-
-            div_yield = company_info.get('dividend_yield')
-            if div_yield is not None:
-                div_yield_percent = div_yield * 100
-
-                # Get sector average dividend yield
-                sector_div_yield = sector_benchmarks.get('dividend_yield', 0.03) * 100
-
-                # Display dividend yield
-                div_color = COLORS["primary"] if div_yield_percent > sector_div_yield else COLORS["warning"]
-
-                div_col1, div_col2 = st.columns(2)
-
-                with div_col1:
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {div_color};">{div_yield_percent:.2f}%</div>
-                            <div class="metric-label">Dividend Yield</div>
-                            <div style="font-size: 14px;">Sector Avg: {sector_div_yield:.2f}%</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                with div_col2:
-                    # Payout ratio if available
-                    payout_ratio = company_info.get('payout_ratio')
-                    if payout_ratio is not None:
-                        payout_percent = payout_ratio * 100
-                        payout_color = COLORS["warning"] if payout_percent > 60 else COLORS["primary"]
-
-                        st.markdown(
-                            f"""
-                            <div class="metric-card">
-                                <div class="metric-value" style="color: {payout_color};">{payout_percent:.2f}%</div>
-                                <div class="metric-label">Payout Ratio</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.info("Payout ratio not available.")
-            else:
-                st.info("Dividend data not available.")
-
-        elif sector == "Technology":
-            # Technology sector focuses on growth, R&D, and recurring revenue
-            st.markdown("""
-            <div style="background-color: #1f1f1f; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                <h4>Technology Sector Valuation Approach</h4>
-                <p>Tech companies are typically valued with a focus on:</p>
-                <ul>
-                    <li><strong>Growth rates</strong> are more important than current profitability</li>
-                    <li><strong>P/S Ratio</strong> often used for high-growth companies not yet profitable</li>
-                    <li><strong>R&D investment</strong> as a driver of future growth</li>
-                    <li><strong>Gross margin</strong> as an indicator of pricing power and scalability</li>
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Display key tech sector metrics
-            tech_col1, tech_col2 = st.columns(2)
-
-            with tech_col1:
-                # P/S Ratio Analysis
-                st.markdown('<div class="section-header"><h4>P/S Ratio Analysis</h4></div>', unsafe_allow_html=True)
-
-                # Get P/S ratio
-                ps_ratio = valuation_ratios.get('ps_ratio')
-                sector_ps = sector_valuation.get('ps_ratio')
-
-                # Display P/S comparison
-                if ps_ratio is not None and sector_ps is not None:
-                    ps_diff = (ps_ratio / sector_ps - 1) * 100
-                    ps_color = COLORS["primary"] if ps_ratio < sector_ps else COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{ps_ratio:.2f}</div>
-                            <div class="metric-label">P/S Ratio</div>
-                            <div style="color: {ps_color}; font-size: 14px;">{ps_diff:+.1f}% vs Sector Avg: {sector_ps:.2f}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # Get gross margin for context
-                    gross_margin = ratios.get('profitability', {}).get('gross_margin')
-
-                    if gross_margin is not None:
-                        gross_margin_percent = gross_margin * 100
-
-                        # P/S Interpretation for Tech with Gross Margin context
-                        if gross_margin_percent > 70:
-                            gm_context = f"high gross margin of {gross_margin_percent:.1f}%"
-                            margin_assessment = "excellent"
-                        elif gross_margin_percent > 50:
-                            gm_context = f"good gross margin of {gross_margin_percent:.1f}%"
-                            margin_assessment = "good"
-                        else:
-                            gm_context = f"moderate gross margin of {gross_margin_percent:.1f}%"
-                            margin_assessment = "moderate"
-
-                        if ps_ratio < sector_ps * 0.7:
-                            interpretation = f"Significantly below sector average - potentially undervalued given its {margin_assessment} {gm_context}."
-                            int_color = COLORS["primary"]
-                        elif ps_ratio < sector_ps * 0.9:
-                            interpretation = f"Below sector average - may represent good value with {gm_context}."
-                            int_color = COLORS["primary"]
-                        elif ps_ratio < sector_ps * 1.1:
-                            interpretation = f"In line with sector average - fairly valued with {gm_context}."
-                            int_color = COLORS["warning"]
-                        elif ps_ratio < sector_ps * 1.3:
-                            interpretation = f"Above sector average - premium valuation potentially justified by {gm_context}."
-                            int_color = COLORS["warning"]
-                        else:
-                            interpretation = f"Significantly above sector average - high growth expectations with {gm_context}."
-                            int_color = COLORS["accent"]
-                    else:
-                        # P/S Interpretation without gross margin context
-                        if ps_ratio < sector_ps * 0.7:
-                            interpretation = "Significantly below sector average - potentially undervalued."
-                            int_color = COLORS["primary"]
-                        elif ps_ratio < sector_ps * 0.9:
-                            interpretation = "Below sector average - may represent good value."
-                            int_color = COLORS["primary"]
-                        elif ps_ratio < sector_ps * 1.1:
-                            interpretation = "In line with sector average - fairly valued."
-                            int_color = COLORS["warning"]
-                        elif ps_ratio < sector_ps * 1.3:
-                            interpretation = "Above sector average - premium valuation."
-                            int_color = COLORS["warning"]
-                        else:
-                            interpretation = "Significantly above sector average - high growth expectations."
-                            int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.warning("P/S ratio data not available.")
-
-            with tech_col2:
-                # Growth Analysis for Tech
-                st.markdown('<div class="section-header"><h4>Growth Metrics</h4></div>', unsafe_allow_html=True)
-
-                # Extract growth data
-                revenue_growth = ratios.get('growth', {}).get('revenue_growth')
-
-                if revenue_growth is not None:
-                    growth_percent = revenue_growth * 100
-                    growth_color = COLORS["primary"] if growth_percent > 15 else COLORS[
-                        "warning"] if growth_percent > 5 else COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {growth_color};">{growth_percent:.1f}%</div>
-                            <div class="metric-label">Revenue Growth (YoY)</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # Growth Interpretation for Tech
-                    if growth_percent > 30:
-                        interpretation = "Excellent growth rate - significantly outperforming tech sector averages."
-                        int_color = COLORS["primary"]
-                    elif growth_percent > 15:
-                        interpretation = "Strong growth rate - above average for technology companies."
-                        int_color = COLORS["primary"]
-                    elif growth_percent > 8:
-                        interpretation = "Good growth rate - in line with tech sector expectations."
-                        int_color = COLORS["warning"]
-                    elif growth_percent > 3:
-                        interpretation = "Moderate growth - below average for technology sector."
-                        int_color = COLORS["warning"]
-                    else:
-                        interpretation = "Low growth rate - significantly underperforming tech sector expectations."
-                        int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    # Try to calculate from historical data
-                    if income_stmt is not None and not income_stmt.empty and 'Total Revenue' in income_stmt.index and \
-                            income_stmt.shape[1] >= 2:
-                        current_rev = income_stmt.loc['Total Revenue'].iloc[0]
-                        prev_rev = income_stmt.loc['Total Revenue'].iloc[1]
-
-                        if prev_rev > 0:
-                            revenue_growth = (current_rev / prev_rev) - 1
-                            growth_percent = revenue_growth * 100
-                            growth_color = COLORS["primary"] if growth_percent > 15 else COLORS[
-                                "warning"] if growth_percent > 5 else COLORS["accent"]
-
-                            st.markdown(
-                                f"""
-                                <div class="metric-card">
-                                    <div class="metric-value" style="color: {growth_color};">{growth_percent:.1f}%</div>
-                                    <div class="metric-label">Revenue Growth (YoY)</div>
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.warning("Revenue growth data not available.")
-                    else:
-                        st.warning("Revenue growth data not available.")
-
-            # R&D Analysis for Tech
-            st.markdown('<div class="section-header"><h4>R&D Investment Analysis</h4></div>', unsafe_allow_html=True)
-
-            # Look for R&D expenses in income statement
-            rd_expense = None
-            rd_to_revenue = None
-
-            if income_stmt is not None and not income_stmt.empty:
-                # Try different variations of R&D line items
-                rd_candidates = ['Research and Development', 'Research & Development', 'R&D Expenses', 'R&D']
-
-                for candidate in rd_candidates:
-                    if candidate in income_stmt.index:
-                        rd_expense = income_stmt.loc[candidate].iloc[0]
-
-                        if 'Total Revenue' in income_stmt.index:
-                            total_revenue = income_stmt.loc['Total Revenue'].iloc[0]
-                            if total_revenue > 0:
-                                rd_to_revenue = rd_expense / total_revenue
-                        break
-
-            if rd_expense is not None and rd_to_revenue is not None:
-                rd_percent = rd_to_revenue * 100
-                rd_color = COLORS["primary"] if rd_percent > 10 else COLORS["warning"]
-
-                # Format values
-                if rd_expense >= 1e9:
-                    rd_display = f"${rd_expense / 1e9:.2f}B"
-                elif rd_expense >= 1e6:
-                    rd_display = f"${rd_expense / 1e6:.2f}M"
-                else:
-                    rd_display = f"${rd_expense:.2f}"
-
-                rd_col1, rd_col2 = st.columns(2)
-
-                with rd_col1:
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{rd_display}</div>
-                            <div class="metric-label">R&D Expenses</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                with rd_col2:
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {rd_color};">{rd_percent:.2f}%</div>
-                            <div class="metric-label">R&D / Revenue</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                # R&D Interpretation
-                if rd_percent > 20:
-                    interpretation = "Very high R&D investment - indicating strong focus on innovation and future growth."
-                    int_color = COLORS["primary"]
-                elif rd_percent > 12:
-                    interpretation = "High R&D investment - above average for technology companies."
-                    int_color = COLORS["primary"]
-                elif rd_percent > 8:
-                    interpretation = "Moderate R&D investment - typical for established technology companies."
-                    int_color = COLORS["warning"]
-                elif rd_percent > 4:
-                    interpretation = "Below average R&D investment - may indicate mature products or efficiency."
-                    int_color = COLORS["warning"]
-                else:
-                    interpretation = "Low R&D investment - may limit future growth opportunities."
-                    int_color = COLORS["accent"]
-
-                st.markdown(
-                    f"""
-                    <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                        <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-            else:
-                st.info("R&D expense data not available.")
-
-        elif sector == "Energy":
-            # Energy sector focuses on reserves, production costs, and capital efficiency
-            st.markdown("""
-            <div style="background-color: #1f1f1f; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                <h4>Energy Sector Valuation Approach</h4>
-                <p>Energy companies are typically valued with a focus on:</p>
-                <ul>
-                    <li><strong>EV/EBITDA</strong> is a primary valuation metric</li>
-                    <li><strong>Reserve Life Index</strong> indicates future production potential</li>
-                    <li><strong>Production costs</strong> determine profitability at various commodity prices</li>
-                    <li><strong>Capital efficiency</strong> shows return on invested capital</li>
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Display key energy sector metrics
-            energy_col1, energy_col2 = st.columns(2)
-
-            with energy_col1:
-                # EV/EBITDA Analysis
-                st.markdown('<div class="section-header"><h4>EV/EBITDA Analysis</h4></div>', unsafe_allow_html=True)
-
-                # Get EV/EBITDA
-                ev_ebitda = valuation_ratios.get('ev_ebitda')
-                sector_ev_ebitda = sector_valuation.get('ev_ebitda')
-
-                # Display EV/EBITDA comparison
-                if ev_ebitda is not None and sector_ev_ebitda is not None:
-                    ev_diff = (ev_ebitda / sector_ev_ebitda - 1) * 100
-                    ev_color = COLORS["primary"] if ev_ebitda < sector_ev_ebitda else COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value">{ev_ebitda:.2f}</div>
-                            <div class="metric-label">EV/EBITDA</div>
-                            <div style="color: {ev_color}; font-size: 14px;">{ev_diff:+.1f}% vs Sector Avg: {sector_ev_ebitda:.2f}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # EV/EBITDA Interpretation for Energy
-                    if ev_ebitda < sector_ev_ebitda * 0.7:
-                        interpretation = "Significantly below sector average - potentially undervalued but check for structural issues."
-                        int_color = COLORS["primary"]
-                    elif ev_ebitda < sector_ev_ebitda * 0.9:
-                        interpretation = "Below sector average - may represent good value if fundamentals are sound."
-                        int_color = COLORS["primary"]
-                    elif ev_ebitda < sector_ev_ebitda * 1.1:
-                        interpretation = "In line with sector average - fairly valued relative to peers."
-                        int_color = COLORS["warning"]
-                    elif ev_ebitda < sector_ev_ebitda * 1.3:
-                        interpretation = "Above sector average - premium may be warranted if growth prospects are strong."
-                        int_color = COLORS["warning"]
-                    else:
-                        interpretation = "Significantly above sector average - may be overvalued unless growth is exceptional."
-                        int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.warning("EV/EBITDA data not available.")
-
-            with energy_col2:
-                # FCF Yield Analysis for Energy
-                st.markdown('<div class="section-header"><h4>FCF Yield Analysis</h4></div>', unsafe_allow_html=True)
-
-                # Calculate FCF Yield
-                fcf_yield = None
-
-                if cash_flow is not None and not cash_flow.empty and market_cap:
-                    if 'Free Cash Flow' in cash_flow.index:
-                        fcf = cash_flow.loc['Free Cash Flow'].iloc[0]
-                        fcf_yield = fcf / market_cap
-                    elif all(x in cash_flow.index for x in ['Operating Cash Flow', 'Capital Expenditure']):
-                        ocf = cash_flow.loc['Operating Cash Flow'].iloc[0]
-                        capex = cash_flow.loc['Capital Expenditure'].iloc[0]
-                        fcf = ocf - abs(capex)
-                        fcf_yield = fcf / market_cap
-
-                if fcf_yield is not None:
-                    fcf_yield_percent = fcf_yield * 100
-                    fcf_color = COLORS["primary"] if fcf_yield_percent > 5 else COLORS[
-                        "warning"] if fcf_yield_percent > 0 else COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-value" style="color: {fcf_color};">{fcf_yield_percent:.2f}%</div>
-                            <div class="metric-label">FCF Yield</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    # FCF Yield Interpretation for Energy
-                    if fcf_yield_percent > 10:
-                        interpretation = "Excellent FCF yield - indicates strong cash generation relative to market value."
-                        int_color = COLORS["primary"]
-                    elif fcf_yield_percent > 6:
-                        interpretation = "Strong FCF yield - above average for energy companies."
-                        int_color = COLORS["primary"]
-                    elif fcf_yield_percent > 3:
-                        interpretation = "Moderate FCF yield - in line with energy sector averages."
-                        int_color = COLORS["warning"]
-                    elif fcf_yield_percent > 0:
-                        interpretation = "Low FCF yield - below average for the energy sector."
-                        int_color = COLORS["warning"]
-                    else:
-                        interpretation = "Negative FCF yield - company is not generating positive free cash flow."
-                        int_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {int_color}20; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                            <p style="margin: 0; color: {int_color};">{interpretation}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.warning("FCF Yield data not available.")
-
-        else:
-            # Generic sector analysis
-            st.info(f"Sector-specific valuation for {sector} will be shown here. This feature is under development.")
-
-    # Tab 4: Fair Value Summary
-    with valuation_tabs[3]:
-        st.subheader("Fair Value Summary")
-
-        # Create a valuation summary from all methods
-        valuation_summary = []
-
-        # 1. Relative valuation (multiples)
-        # Use average of common multiples to estimate value
-        relative_value = None
-        if valuation_ratios and sector_valuation:
-            pe_ratio = valuation_ratios.get('pe_ratio')
-            sector_pe = sector_valuation.get('pe_ratio')
-
-            pb_ratio = valuation_ratios.get('pb_ratio')
-            sector_pb = sector_valuation.get('pb_ratio')
-
-            ps_ratio = valuation_ratios.get('ps_ratio')
-            sector_ps = sector_valuation.get('ps_ratio')
-
-            ev_ebitda = valuation_ratios.get('ev_ebitda')
-            sector_ev_ebitda = sector_valuation.get('ev_ebitda')
-
-            # Initialize values
-            pe_value = pb_value = ps_value = ev_value = None
-
-            # Calculate values based on sector multiples
-            if pe_ratio and sector_pe and income_stmt is not None and not income_stmt.empty and 'Net Income' in income_stmt.index:
-                net_income = income_stmt.loc['Net Income'].iloc[0]
-                eps = net_income / company_info.get('shares_outstanding') if company_info.get(
-                    'shares_outstanding') else 0
-                if eps > 0:
-                    pe_value = eps * sector_pe
-
-            if pb_ratio and sector_pb and balance_sheet is not None and not balance_sheet.empty and 'Total Stockholder Equity' in balance_sheet.index:
-                equity = balance_sheet.loc['Total Stockholder Equity'].iloc[0]
-                shares = company_info.get('shares_outstanding')
-                if shares and shares > 0:
-                    book_value_per_share = equity / shares
-                    pb_value = book_value_per_share * sector_pb
-
-            if ps_ratio and sector_ps and income_stmt is not None and not income_stmt.empty and 'Total Revenue' in income_stmt.index:
-                revenue = income_stmt.loc['Total Revenue'].iloc[0]
-                shares = company_info.get('shares_outstanding')
-                if shares and shares > 0:
-                    sales_per_share = revenue / shares
-                    ps_value = sales_per_share * sector_ps
-
-            if ev_ebitda and sector_ev_ebitda and income_stmt is not None and not income_stmt.empty and 'EBITDA' in income_stmt.index:
-                ebitda = income_stmt.loc['EBITDA'].iloc[0]
-                shares = company_info.get('shares_outstanding')
-                if shares and shares > 0:
-                    # Calculate enterprise value
-                    ev = ebitda * sector_ev_ebitda
-                    # Subtract net debt to get equity value
-                    net_debt = 0
-                    if balance_sheet is not None and not balance_sheet.empty:
-                        if all(x in balance_sheet.index for x in ['Total Debt', 'Cash and Cash Equivalents']):
-                            total_debt = balance_sheet.loc['Total Debt'].iloc[0]
-                            cash = balance_sheet.loc['Cash and Cash Equivalents'].iloc[0]
-                            net_debt = total_debt - cash
-                    equity_value = ev - net_debt
-                    ev_value = equity_value / shares
-
-            # Calculate average relative value from available methods
-            values = [v for v in [pe_value, pb_value, ps_value, ev_value] if v is not None]
-            if values:
-                relative_value = sum(values) / len(values)
-
-                # Add to summary
-                valuation_summary.append({
-                    "method": "Relative Valuation (Multiples)",
-                    "value": relative_value,
-                    "weight": 0.3,  # Weight for this method
-                    "description": f"Based on {len(values)} industry multiples",
-                    "color": COLORS["secondary"]
-                })
-
-        # 2. DCF valuation
-        # Use the DCF value calculated earlier if available
-        dcf_value = value_per_share if 'value_per_share' in locals() else None
-        if dcf_value:
-            valuation_summary.append({
-                "method": "DCF Valuation",
-                "value": dcf_value,
-                "weight": 0.5,  # DCF gets higher weight
-                "description": f"Growth: {growth_rate:.1%}, Discount: {discount_rate:.1%}",
-                "color": COLORS["primary"]
-            })
-
-        # 3. Current market price
-        if current_price:
-            valuation_summary.append({
-                "method": "Current Market Price",
-                "value": current_price,
-                "weight": 0.2,  # Current price gets lowest weight
-                "description": "Current trading price",
-                "color": COLORS["info"]
-            })
-
-        # Display valuation summary table
-        if valuation_summary:
-            # Create DataFrame
-            summary_df = pd.DataFrame(valuation_summary)
-
-            # Calculate weighted average
-            weighted_sum = sum(row["value"] * row["weight"] for row in valuation_summary)
-            total_weight = sum(row["weight"] for row in valuation_summary)
-            weighted_average = weighted_sum / total_weight if total_weight > 0 else None
-
-            # Display summary table
-            st.markdown("### Valuation Methods Comparison")
-
-            # Format values for display
-            for i, row in summary_df.iterrows():
-                # Create a colored badge for each method
-                st.markdown(
-                    f"""
-                    <div style="background-color: #1f1f1f; padding: 15px; border-radius: 5px; margin: 10px 0; 
-                               border-left: 4px solid {row['color']};">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <h4 style="margin: 0;">{row['method']}</h4>
-                                <p style="margin: 5px 0; color: #a0a0a0; font-size: 14px;">{row['description']}</p>
-                            </div>
-                            <div style="text-align: right;">
-                                <h3 style="margin: 0;">${row['value']:.2f}</h3>
-                                <p style="margin: 0; color: #a0a0a0; font-size: 12px;">Weight: {row['weight']:.1f}</p>
-                            </div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-            # Display weighted average
-            if weighted_average:
-                # Compare to current price
-                if current_price:
-                    upside = (weighted_average / current_price - 1) * 100
-                    value_color = COLORS["primary"] if upside > 0 else COLORS["accent"]
-                    upside_text = f"{upside:+.1f}% vs current price"
-                else:
-                    value_color = COLORS["secondary"]
-                    upside_text = ""
-
-                st.markdown("### Fair Value Estimate")
-                st.markdown(
-                    f"""
-                    <div style="background-color: {value_color}20; padding: 20px; border-radius: 5px; margin: 20px 0; text-align: center;">
-                        <h1 style="margin: 0; color: {value_color};">${weighted_average:.2f}</h1>
-                        <p style="margin: 5px 0; font-size: 16px;">Weighted Average Fair Value</p>
-                        <p style="color: {value_color}; font-size: 14px;">{upside_text}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                # Final assessment
-                if current_price:
-                    if upside > 20:
-                        assessment = "Significantly Undervalued"
-                        assessment_color = COLORS["primary"]
-                    elif upside > 5:
-                        assessment = "Moderately Undervalued"
-                        assessment_color = COLORS["primary"]
-                    elif upside > -5:
-                        assessment = "Fairly Valued"
-                        assessment_color = COLORS["warning"]
-                    elif upside > -20:
-                        assessment = "Moderately Overvalued"
-                        assessment_color = COLORS["accent"]
-                    else:
-                        assessment = "Significantly Overvalued"
-                        assessment_color = COLORS["accent"]
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {assessment_color}20; color: {assessment_color}; 
-                                    padding: 15px; border-radius: 5px; margin: 10px 0; text-align: center;">
-                            <h3 style="margin: 0;">{assessment}</h3>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-        else:
-            st.warning("Insufficient data to calculate fair value estimates.")
-
-
-if __name__ == "__main__":
-    # For direct testing
-    # Dummy data for testing
-    import yfinance as yf
-
-    ticker = "AAPL"
-    ticker_obj = yf.Ticker(ticker)
-
-    company_info = {
-        'name': 'Apple Inc.',
-        'sector': 'Technology',
-        'industry': 'Consumer Electronics',
-        'exchange': 'NASDAQ',
-        'currency': 'USD',
-        'market_cap': 2800000000000,
-        'pe_ratio': 32.5,
-        'description': 'Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.'
+    st.dataframe(pd.DataFrame(rows), hide_index=True, key=f"{KEY}summary_table")
+    st.caption(f"Model: {result.get('model')} · subsector: {result.get('subsector') or 'n/a'}. "
+               "Adjust subsector, methods and assumptions in the Sector Model tab.")
+
+
+# ---------------------------------------------------------------------------
+# DCF
+# ---------------------------------------------------------------------------
+def _dcf_defaults(sector: str, fcf: pd.Series) -> Dict[str, float]:
+    params = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(sector, {})}
+    growth = cagr(fcf.tail(4)) if len(fcf) >= 2 else None
+    return {
+        "discount_rate": float(params["default_discount_rate"]),
+        "terminal_growth": float(params["terminal_growth_rate"]),
+        "forecast_years": int(params["forecast_years"]),
+        "growth": float(min(max(growth if growth is not None else 0.05, -0.05), 0.25)),
     }
 
-    price_data = ticker_obj.history(period="1y")
-    income_stmt = ticker_obj.income_stmt
-    balance_sheet = ticker_obj.balance_sheet
-    cash_flow = ticker_obj.cashflow
 
-    financial_data = {
-        'income_statement': income_stmt,
-        'balance_sheet': balance_sheet,
-        'cash_flow': cash_flow,
-    }
+def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                snapshot: Dict[str, Optional[float]]) -> None:
+    st.subheader("Discounted cash flow")
+    sector = canonical_sector(company_info, financial_data)
+    if sector == "Financials":
+        st.info("Free-cash-flow DCF is not meaningful for banks and insurers (debt is raw material, not "
+                "financing). Use the Sector Model tab: excess-return and justified P/B methods.")
+    fcf = free_cash_flow_series(get_statement(financial_data, "cash_flow"))
+    if fcf.empty:
+        st.info("Free cash flow history is unavailable, so a DCF cannot be built.")
+        return
+    defaults = _dcf_defaults(sector, fcf)
+    base_options = {"Latest year": float(fcf.iloc[-1]), f"Average of last {min(len(fcf), 3)} years":
+                    float(fcf.tail(3).mean())}
 
-    render_company_valuation(ticker, financial_data, company_info, price_data)
+    col1, col2 = st.columns(2)
+    with col1:
+        base_label = st.radio("Starting free cash flow", list(base_options), horizontal=True, key=f"{KEY}dcf_base")
+        growth = st.slider("FCF growth (forecast period)", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5,
+                           format="%.1f%%", key=f"{KEY}dcf_growth") / 100
+        years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}dcf_years")
+    with col2:
+        discount = st.slider("Discount rate (WACC)", 4.0, 20.0, round(defaults["discount_rate"] * 100, 2), 0.25,
+                             format="%.2f%%", key=f"{KEY}dcf_discount") / 100
+        terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
+                             format="%.2f%%", key=f"{KEY}dcf_terminal") / 100
+
+    base_fcf = base_options[base_label]
+    net_debt = snapshot.get("net_debt")
+    shares = snapshot.get("shares")
+    if base_fcf <= 0:
+        if sector == "Financials":  # already explained above; bank FCF is routinely negative
+            return
+        st.warning(f"Starting free cash flow is negative ({fmt_money(base_fcf)}): a DCF on current cash flow "
+                   "would imply no value. Try the multi-year average or the Sector Model tab.")
+        return
+    if discount <= terminal:
+        st.warning("The discount rate must be higher than the terminal growth rate.")
+        return
+    dcf = dcf_projection(base_fcf, growth, discount, terminal, years, net_debt, shares)
+    if dcf is None:
+        st.info("Shares outstanding are unavailable, so per-share value cannot be computed.")
+        return
+
+    price = snapshot.get("price")
+    value = dcf["value_per_share"]
+    cols = st.columns(4)
+    cols[0].metric("Value per share", fmt_price(value),
+                   delta=fmt_pct(value / price - 1, signed=True) if price and value else None)
+    cols[1].metric("Enterprise value", fmt_money(dcf["enterprise_value"]))
+    cols[2].metric("Equity value", fmt_money(dcf["equity_value"]))
+    terminal_share = safe_divide(dcf["pv_terminal"], dcf["enterprise_value"])
+    cols[3].metric("Terminal value share", fmt_pct(terminal_share))
+    if terminal_share and terminal_share > 0.8:
+        st.caption("More than 80 % of the value comes from the terminal value: the result is very sensitive "
+                   "to long-term assumptions.")
+
+    left, right = st.columns([2, 1])
+    with left:
+        show_chart(dcf_cash_flow_chart(fcf, dcf["forecast_fcf"], dcf["present_values"], "Free cash flow forecast"),
+                   key=f"{KEY}dcf_chart")
+    with right:
+        show_chart(donut_chart(["PV of forecast FCF", "PV of terminal value"], [dcf["pv_fcf"], dcf["pv_terminal"]],
+                               "Enterprise value composition"), key=f"{KEY}dcf_donut")
+
+    discount_grid = sorted({round(discount + step, 4) for step in np.arange(-0.02, 0.0201, 0.01)})
+    terminal_grid = sorted({round(max(terminal + step, 0.0), 4) for step in np.arange(-0.01, 0.0101, 0.005)})
+    z: List[List[Optional[float]]] = []
+    for g in terminal_grid:
+        row = []
+        for r in discount_grid:
+            point = dcf_projection(base_fcf, growth, r, g, years, net_debt, shares) if r > g else None
+            row.append(point["value_per_share"] if point else None)
+        z.append(row)
+    show_chart(sensitivity_heatmap(z, discount_grid, terminal_grid, "Sensitivity: value per share",
+                                   "Discount rate", "Terminal growth", current_price=price),
+               key=f"{KEY}dcf_sensitivity")
+
+
+# ---------------------------------------------------------------------------
+# Adjusted present value
+# ---------------------------------------------------------------------------
+def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]]) -> Dict[str, float]:
+    """Default APV inputs from the statements: tax rate, cost of debt, debt, cash, beta."""
+    income = get_statement(financial_data, "income_statement")
+    pretax = get_latest(income, "pretax_income")
+    tax = get_latest(income, "tax_provision")
+    tax_rate = min(max(safe_divide(tax, pretax) or 0.21, 0.0), 0.35) if pretax and pretax > 0 else 0.21
+    interest = abs(get_latest(income, "interest_expense") or 0.0)
+    debt = snapshot.get("total_debt") or 0.0
+    cost_of_debt = min(max(safe_divide(interest, debt) or 0.05, 0.02), 0.15) if debt else 0.05
+    return {"tax_rate": tax_rate, "interest": interest, "debt": debt, "cash": snapshot.get("cash") or 0.0,
+            "cost_of_debt": cost_of_debt, "beta": snapshot.get("beta") or 1.0}
+
+
+def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                snapshot: Dict[str, Optional[float]]) -> None:
+    from StockAnalysisSystem.src.valuation.apv import apv_valuation, unlevered_cost_of_equity, unlevered_fcf
+
+    st.subheader("Adjusted present value (APV)")
+    st.caption("Value as if the company had no debt (unlevered free cash flow at the unlevered cost of equity) "
+               "plus the present value of interest tax shields. Useful when leverage is changing, e.g. LBOs and "
+               "recapitalisations.")
+    sector = canonical_sector(company_info, financial_data)
+    if sector == "Financials":
+        st.info("APV is not meaningful for banks and insurers: debt is part of operations. Use the Sector Model tab.")
+        return
+    fcf = free_cash_flow_series(get_statement(financial_data, "cash_flow"))
+    shares, market_cap = snapshot.get("shares"), snapshot.get("market_cap")
+    if fcf.empty or not shares:
+        st.info("Free cash flow history or shares outstanding are unavailable, so APV cannot be computed.")
+        return
+    inputs = _apv_inputs(financial_data, snapshot)
+    defaults = _dcf_defaults(sector, fcf)
+    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"])
+    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: floor at 6 %
+    ku_default = min(max(ku_default, 0.06), 0.20)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        growth = st.slider("UFCF growth", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5, format="%.1f%%",
+                           key=f"{KEY}apv_growth") / 100
+        years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}apv_years")
+    with col2:
+        ku = st.slider("Unlevered cost of equity", 4.0, 20.0, round(ku_default * 100, 2), 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Hamada) x equity risk premium.") / 100
+        terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
+                             format="%.2f%%", key=f"{KEY}apv_terminal") / 100
+    with col3:
+        kd = st.slider("Cost of debt", 1.0, 15.0, round(inputs["cost_of_debt"] * 100, 2), 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt.") / 100
+        tax_rate = st.slider("Tax rate", 0.0, 35.0, round(inputs["tax_rate"] * 100, 1), 0.5, format="%.1f%%",
+                             key=f"{KEY}apv_tax", help="Default: effective tax rate of the last year.") / 100
+
+    base = unlevered_fcf(float(fcf.tail(3).mean()), inputs["interest"], tax_rate)
+    if base <= 0:
+        st.warning(f"Average unlevered free cash flow is not positive ({fmt_money(base)}), so APV implies no value.")
+        return
+    if ku <= terminal:
+        st.warning("The unlevered cost of equity must be higher than terminal growth.")
+        return
+    result = apv_valuation(base, growth, years, terminal, ku, inputs["debt"], kd, tax_rate, inputs["cash"], shares)
+    price = snapshot.get("price")
+    value = result["value_per_share"]
+    cols = st.columns(4)
+    cols[0].metric("APV per share", fmt_price(value),
+                   delta=fmt_pct(value / price - 1, signed=True) if price and value else None)
+    cols[1].metric("Unlevered firm value", fmt_money(result["unlevered_value"]))
+    cols[2].metric("PV of tax shields", fmt_money(result["tax_shield_value"]))
+    cols[3].metric("Equity value", fmt_money(result["equity_value"]))
+    st.caption(f"Base unlevered FCF {fmt_money(base)} (3-year average FCF + after-tax interest) · debt "
+               f"{fmt_money(inputs['debt'])} · cash {fmt_money(inputs['cash'])}.")
+    show_chart(donut_chart(["PV of forecast UFCF", "PV of terminal value", "PV of tax shields"],
+                           [result["pv_forecast_fcf"], result["pv_terminal_value"], result["tax_shield_value"]],
+                           "APV composition"), key=f"{KEY}apv_donut")
+
+
+# ---------------------------------------------------------------------------
+# Precedent transactions
+# ---------------------------------------------------------------------------
+def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                       snapshot: Dict[str, Optional[float]]) -> None:
+    from StockAnalysisSystem.src.models import precedent_transactions as pt
+
+    st.subheader("Precedent transactions")
+    st.caption("Value the company at the multiples acquirers paid in comparable deals (these include a control "
+               "premium, so they usually exceed trading multiples). Enter deals from press releases, merger proxies "
+               "or fairness opinions; the table is saved locally and shared by all companies.")
+    sector = canonical_sector(company_info, financial_data)
+    deals = pt.load_deals()
+    edited = st.data_editor(
+        deals if not deals.empty else pt.empty_deals(), num_rows="dynamic", width="stretch", hide_index=True,
+        key=f"{KEY}deals_editor",
+        column_config={"date": st.column_config.TextColumn("Date (YYYY-MM-DD)"),
+                       "sector": st.column_config.TextColumn("Sector", help=f"e.g. {sector}"),
+                       "ev_billions": st.column_config.NumberColumn("EV ($B)", format="%.2f"),
+                       "ev_revenue": st.column_config.NumberColumn("EV/Revenue", format="%.2f"),
+                       "ev_ebitda": st.column_config.NumberColumn("EV/EBITDA", format="%.2f"),
+                       "source": st.column_config.TextColumn("Source")})
+    col_save, col_upload = st.columns([1, 3], vertical_alignment="bottom")
+    with col_save:
+        if st.button("Save deals", key=f"{KEY}deals_save", icon=":material/save:"):
+            st.success(f"Saved {pt.save_deals(edited)} deals.")
+            deals = pt.load_deals()
+    with col_upload:
+        upload = st.file_uploader("Or import a CSV with the same columns", type="csv", key=f"{KEY}deals_upload")
+        if upload is not None and st.button("Import CSV", key=f"{KEY}deals_import"):
+            imported = pt.clean_deals(pd.read_csv(upload))
+            st.success(f"Imported {pt.save_deals(pd.concat([deals, imported], ignore_index=True))} deals.")
+            deals = pt.load_deals()
+
+    scope = st.radio("Deals to use", [f"{sector} only", "All sectors"], horizontal=True, key=f"{KEY}deals_scope")
+    multiples = pt.deal_multiples(deals, sector if scope.endswith("only") else None)
+    if not multiples["deals"]:
+        st.info("No matching deals with multiples yet - add some above and click **Save deals**.")
+    else:
+        income = get_statement(financial_data, "income_statement")
+        rows = pt.implied_values(multiples, get_latest(income, "revenue"), get_latest(income, "ebitda"),
+                                 snapshot.get("net_debt") or 0.0, snapshot.get("shares"))
+        if not rows:
+            st.info("Revenue / EBITDA or shares are unavailable for this company.")
+        else:
+            price = snapshot.get("price")
+            cols = st.columns(len(rows))
+            for col, row in zip(cols, rows):
+                value = row["value_per_share"]
+                col.metric(f"{row['method']} ({row['multiple']:.1f}x, {row['deals']} deals)", fmt_price(value),
+                           delta=fmt_pct(value / price - 1, signed=True) if price and value else None)
+                if row["low"] is not None and row["high"] is not None:
+                    col.caption(f"Interquartile range {fmt_price(row['low'])} - {fmt_price(row['high'])}")
+
+    feed = pt.fmp_recent_deals()
+    if not feed.empty:
+        with st.expander("Recent M&A announcements (Financial Modeling Prep)"):
+            st.dataframe(feed, width="stretch", hide_index=True,
+                         column_config={"link": st.column_config.LinkColumn("Filing", display_text="Open")})
+    elif not os.environ.get(pt.FMP_ENV):
+        st.caption(f"Tip: add `{pt.FMP_ENV}` to `.env` to list recent M&A announcements here.")
+
+
+# ---------------------------------------------------------------------------
+# Relative valuation
+# ---------------------------------------------------------------------------
+def _render_relative(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
+                     snapshot: Dict[str, Optional[float]]) -> None:
+    st.subheader("Relative valuation")
+    sector = canonical_sector(company_info, financial_data)
+    ratios = (get_company_ratios(financial_data, company_info, price_data) or {}).get("valuation", {})
+    benchmarks = (get_sector_benchmarks(sector) or {}).get("valuation", {})
+    price = snapshot.get("price")
+    keys = [k for k in MULTIPLES if to_float(ratios.get(k)) or to_float(benchmarks.get(k))]
+    if not keys:
+        st.info("Valuation multiples are unavailable for this company.")
+        return
+
+    show_chart(ratio_comparison_chart([MULTIPLES[k][0] for k in keys], [ratios.get(k) for k in keys],
+                                      [benchmarks.get(k) for k in keys], f"Multiples vs {sector} benchmark",
+                                      company_name=company_info.get("symbol", "Company")),
+               key=f"{KEY}relative_chart")
+
+    rows, implied_labels, implied_values = [], [], []
+    for key in keys:
+        label, metric = MULTIPLES[key]
+        current, bench = to_float(ratios.get(key)), to_float(benchmarks.get(key))
+        implied = None
+        if price and current and current > 0 and bench:
+            if key == "ev_ebitda":
+                ev = snapshot.get("enterprise_value")
+                shares, net_debt = snapshot.get("shares"), snapshot.get("net_debt") or 0.0
+                if ev and shares:
+                    implied = (ev * bench / current - net_debt) / shares
+            else:
+                implied = price * bench / current
+        if implied is not None and implied > 0:
+            implied_labels.append(f"At sector {label}")
+            implied_values.append(implied)
+        rows.append({"Multiple": label, "Company": f"{current:.1f}x" if current else "N/A",
+                     "Sector": f"{bench:.1f}x" if bench else "N/A",
+                     "Premium / discount": fmt_pct(current / bench - 1, signed=True) if current and bench else "—",
+                     "Implied price": fmt_price(implied) if implied and implied > 0 else "—"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, key=f"{KEY}relative_table")
+    if implied_values:
+        show_chart(value_comparison_chart(implied_labels, implied_values, price,
+                                          "Price implied by sector multiples"), key=f"{KEY}relative_implied")
+        st.caption(f"Average implied price: {fmt_price(float(np.mean(implied_values)))}. A premium can be "
+                   "justified by faster growth, higher returns on capital or lower risk.")
+
+
+# ---------------------------------------------------------------------------
+# Asset-based valuation
+# ---------------------------------------------------------------------------
+def _render_asset_based(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]]) -> None:
+    st.subheader("Asset-based valuation")
+    balance = get_statement(financial_data, "balance_sheet")
+    equity = get_latest(balance, "total_equity")
+    shares, price = snapshot.get("shares"), snapshot.get("price")
+    if equity is None or not shares:
+        st.info("Book equity or share count is unavailable.")
+        return
+    tangible = get_latest(balance, "tangible_book_value")
+    if tangible is None:
+        intangibles = get_latest(balance, "goodwill_and_intangibles") or get_latest(balance, "goodwill") or 0.0
+        tangible = equity - intangibles
+    receivables = get_latest(balance, "receivables") or 0.0
+    inventory = get_latest(balance, "inventory") or 0.0
+    ppe = get_latest(balance, "net_ppe") or 0.0
+    haircut = st.slider("Liquidation haircut on receivables / inventory / PP&E", 0, 80, 30, 5, format="%d%%",
+                        key=f"{KEY}asset_haircut") / 100
+    liquidation = tangible - haircut * (receivables + inventory + ppe)
+
+    values = {"Book value": equity / shares, "Tangible book value": tangible / shares,
+              "Liquidation value": liquidation / shares}
+    cols = st.columns(len(values))
+    for col, (label, value) in zip(cols, values.items()):
+        col.metric(f"{label} / share", fmt_price(value),
+                   delta=f"P/x {price / value:.2f}" if price and value and value > 0 else None,
+                   delta_color="off")
+    show_chart(value_comparison_chart(list(values), list(values.values()), price, "Asset values per share"),
+               key=f"{KEY}asset_chart")
+    st.caption("Asset-based values are a floor for asset-heavy or distressed companies; for asset-light "
+               "businesses most value lies in intangibles not recorded on the balance sheet.")

@@ -1,20 +1,16 @@
-import os
 import logging
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Union, Any, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, Optional, Any, Tuple
+from datetime import datetime
 import statsmodels.api as sm
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller, acf, pacf
-import matplotlib.pyplot as plt
 
-import sys
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, project_root)
+from StockAnalysisSystem.src.models.forecasting.forecast_engine import ForecastEngineMixin
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 
 # Setup logging
@@ -25,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger('time_series')
 
 
-class TimeSeriesForecaster:
+class TimeSeriesForecaster(ForecastEngineMixin):
     """
     Class for forecasting financial time series data using classical
     statistical methods like ARIMA, Exponential Smoothing, etc.
@@ -526,7 +522,6 @@ class TimeSeriesForecaster:
                     d = 1
                 else:
                     # Try differencing twice
-                    diff2_series = diff_series.diff().dropna()
                     d = 2
         except Exception:
             # Default value if test fails
