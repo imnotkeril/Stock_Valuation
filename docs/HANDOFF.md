@@ -1,40 +1,38 @@
 # Handoff
-status: consumed
+status: active
 date: 2026-11-26
-from-chat-tokens: ~155k
+from-chat-tokens: ~205k
 
 ## Goal
-Stock Analysis System (Streamlit, sector-specific stock valuation) is feature-complete against
-`docs/SPEC.md`; only owner actions and one optional live check remain.
+Fix the product-review findings (`docs/review/PRODUCT_REVIEW.md` section 5) through the coding-brain framework:
+P1 (T01-T08), review step with reviewer + security-reviewer (T09-T10), P2 (T11-T17), hardening (T18-T21). Plan: `docs/plan.md`.
 
 ## State
-- Done: all plan tasks T1-T8 and v2 V1-V9; SPEC brought up to date 2026-11-26.
-- Done: keys migrated from the old folder into repo-root `.env` (git-ignored); old In Development folder sent to Recycle Bin (O4).
-- Done: FMP M&A feed fixed for the free plan (limit 5); FRED macro now read from the public CSV (pandas-datareader dropped).
-- Done: live checks - Finnhub ok, FMP ok, FRED ok, Company Analysis AAPL ok. Alpha Vantage news is premium-only.
+- Done: project adopted (router finance/screener, owner confirmed; CLAUDE.md, AGENTS.md, ARCHITECTURE.md, ADR-001..006).
+- Done: plan written, linted (doc-check exit 0), audited (shadow, 4 valid findings handled, `docs/checks/plan.md`).
+- Done: T01 `utils/rates.py` live risk-free rate (FRED DGS10, live 4.91 %); config keeps legacy `RISK_FREE_RATE = 0.03` until T02.
 - Running: nothing.
-- Branch/commit: claude/peaceful-euler-aq2j08, pushed; PR imnotkeril/Stock_Valuation#1 open into master, tree clean.
+- Branch/commit: claude/review-fixes-195b14 @ afec7ae, tree clean, nothing pushed.
 
 ## Decisions
-- User said "do it yourself, don't ask" while asleep (2026-11-26) - applied to finishing FRED + SPEC only.
-- `SEC_EDGAR_USER_AGENT` left empty in `.env` - old file had only a placeholder; never invent a contact.
-- Prophet stays an optional dependency - heavy install, by choice.
+- Fallback rf constant 4.5 % (`config.RISK_FREE_RATE_FALLBACK`); override env `STOCK_ANALYSIS_RISK_FREE_RATE`.
+- Auditor model: fable has no credits -> sonnet (rules/audit.md table).
+- Session was started by another session (local_0404ad89...); report back there; never push/PR/merge without the owner's yes.
 
 ## Next
-1. Report to the user in Russian: FRED fixed and live-checked, SPEC updated, 366 tests pass, all pushed to PR #1.
-2. Done 2026-11-26: keys rotated by owner, SEC live-checked; only PR #1 merge (owner) is left.
-3. Proposed to the user (needs yes): live risk-free rate from FRED DGS10 instead of hard-coded 3 % in `config.RISK_FREE_RATE` (used by DCF/WACC, APV, Sharpe; 10Y is ~5.2 %), then MacroLens ideas (`E:/Main/Dev/Python/Done/Macrolens`: navigator quadrant -> sector tilts, 2s10s + recession context). Owner items O1/O2 stay the user's.
+1. Run `node E:/Main/Dev/coding-brain/scripts/step-brief.mjs --project . --task T02`, then build T02: new `valuation/capital.py` with one `cost_of_capital()` (live rf from `utils.rates`, one ERP, Blume beta, one Kd band, one WACC band); switch `base_valuation._wacc_components`, `sector_specific/common.cost_of_capital`, `apv.py`, `stress_testing._BASE_DISCOUNT`, Sharpe in `risk.py` / `stock_screener.py`; write ADR-007 (ERP re-baseline: rf ~4.9 % with ERP 5.5 % overstates Ke; consider implied ERP ~4.3-4.5 %); test generic == sector WACC.
+2. Live check before/after: `$PY StockAnalysisSystem/tools/live_valuation_check.py AAPL JPM XOM MSFT PGR CHTR` (baseline in STATE), tick plan, STATE line, commit.
+3. Continue T03-T08 in order, each with its step-brief, then T09 review with `reviewer` + `security-reviewer` agents.
 
 ## Open questions
 - none
 
 ## Traps
-- `.env` holds real keys: never print values; mask with `***` when showing raw API responses.
-- Alpha Vantage NEWS_SENTIMENT returns an "Information" premium message with HTTP 200, not an error.
-- FMP free plan answers HTTP 402 for `limit` > 5.
-- Live scripts must import `StockAnalysisSystem.src...` with repo root on `sys.path`.
-- pytest addopts hide the summary: use `-o addopts=""` to see the pass count.
+- `.venv` is only in the main checkout: `$PY` = `E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe`; `.env` was copied into this worktree (git-ignored, never print).
+- Bash heredocs with nested quotes break through the `rtk` wrapper: write scripts to the scratchpad and run them.
+- Tests patch DataLoader public methods (`tests/offline.py`); new loader methods run for real with `offline=True`, so rf in tests = fallback 4.5 %.
+- XOM/CHTR WACC hits the 6 % floor in sector models; PGR excess-return value 1071 (insurer on the bank model) drives +195 %.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -o addopts="" -p no:warnings` (expect 366 passed)
-- `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
+- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect 376 passed)
+- `$PY -m ruff check StockAnalysisSystem`
