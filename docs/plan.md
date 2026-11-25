@@ -31,7 +31,7 @@ Each task: owner · check. Tick when the check passes.
       (QA observation) · dev · JPM Valuation tab shows no negative-FCF warning
 
 ## Owner (needs your decision or action)
-- [ ] O1 **Rotate Alpha Vantage and FMP keys**: they were hard-coded in old `config.py` and
+- [x] O1 **Rotate Alpha Vantage and FMP keys** (done by owner 2026-11-26): they were hard-coded in old `config.py` and
       are still in git history on GitHub (`master` and both branches). Optionally rewrite
       history afterwards (owner decision).
 - [ ] O2 Branches: make `claude/peaceful-euler-aq2j08` the main line (PR into `master`);

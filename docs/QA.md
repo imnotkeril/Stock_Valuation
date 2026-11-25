@@ -76,3 +76,14 @@ Keys migrated from the old folder's `.env.txt` into `.env` (values never printed
 | Offline tests: CSV parser (missing `.` values), one download then cache, offline serves cache | 2 new tests pass |
 | Live AppTest, Forecasting > Economic indicators (CPI, unemployment, 10Y Treasury) | data loaded for all 3, ARIMA + ensemble per series, VAR, 6 charts, no exceptions |
 
+## Live check with the owner's new keys (2026-11-26)
+| Check | Result |
+|---|---|
+| SEC EDGAR (`SEC_EDGAR_USER_AGENT` set by owner) | 200; AAPL CIK found, 15 recent filings, 10-year XBRL history |
+| Live AppTest, Overview > Load from SEC EDGAR (AAPL) | filings + history tables render, no exceptions or warnings |
+| Finnhub news AAPL | 249 articles |
+| FMP M&A feed | 5 deals |
+| Alpha Vantage GLOBAL_QUOTE | OK (fallback price source) |
+
+All keyed features are now live-checked.
+

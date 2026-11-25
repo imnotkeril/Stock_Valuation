@@ -34,8 +34,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-26 FRED macro via public CSV (pandas-datareader dropped), 2 tests, live CPI/UNRATE/DGS10 ok; SPEC brought up to date (APV, SEC, FMP, env list, §5 statuses).
 
+- 2026-11-26 owner rotated keys and set SEC_EDGAR_USER_AGENT; live: SEC (filings + XBRL history, UI ok), Finnhub, FMP, Alpha Vantage all ok.
+
 ## Next
-- Done. Optional: set SEC_EDGAR_USER_AGENT in .env and live-check Overview > SEC; merge PR #1.
+- Done. Merge PR #1 (owner). Proposed: live risk-free rate from FRED DGS10; MacroLens ideas (see HANDOFF).
 
 ## Needed from owner
-- O1 rotate Alpha Vantage and FMP keys (still in git history). O2 merge PR #1 (open).
+- O2 merge PR #1 (open).

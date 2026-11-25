@@ -22,11 +22,11 @@ Stock Analysis System (Streamlit, sector-specific stock valuation) is feature-co
 
 ## Next
 1. Report to the user in Russian: FRED fixed and live-checked, SPEC updated, 366 tests pass, all pushed to PR #1.
-2. If the user adds `SEC_EDGAR_USER_AGENT` to `.env`: live-check Overview > SEC for AAPL, record in `docs/QA.md`.
+2. Done 2026-11-26: keys rotated by owner, SEC live-checked; only PR #1 merge (owner) is left.
 3. Proposed to the user (needs yes): live risk-free rate from FRED DGS10 instead of hard-coded 3 % in `config.RISK_FREE_RATE` (used by DCF/WACC, APV, Sharpe; 10Y is ~5.2 %), then MacroLens ideas (`E:/Main/Dev/Python/Done/Macrolens`: navigator quadrant -> sector tilts, 2s10s + recession context). Owner items O1/O2 stay the user's.
 
 ## Open questions
-- SEC contact string for `SEC_EDGAR_USER_AGENT` (user to set; never print).
+- none
 
 ## Traps
 - `.env` holds real keys: never print values; mask with `***` when showing raw API responses.
