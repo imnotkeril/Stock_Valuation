@@ -1,48 +1,40 @@
 # Handoff
-status: consumed
-date: 2026-11-23
-from-chat-tokens: ~190k
+status: active
+date: 2026-11-26
+from-chat-tokens: ~155k
 
 ## Goal
-Bring Stock Analysis System (Streamlit, sector-specific stock valuation) to a finished, verified
-state in this folder, merging everything useful from the old copy in
-`E:\Main\Dev\Python\In Development\Stock_Valuation` (branch `chore/audit`).
+Stock Analysis System (Streamlit, sector-specific stock valuation) is feature-complete against
+`docs/SPEC.md`; only owner actions and one optional live check remain.
 
 ## State
-- Done: unified `docs/SPEC.md`, `docs/plan.md`, `docs/QA.md`, `docs/STATE.md`; In Development docs copied to `docs/sources/in-development/` with a module-by-module comparison in `docs/sources/IN_DEVELOPMENT_SUMMARY.md`.
-- Done: V8 neural network forecast, V9 USER_GUIDE + CHANGELOG.
-- Done: V7 precedent transactions (user-maintained deals).
-- Done: V5-V6 News tab (Finnhub + Alpha Vantage sentiment).
-- Done: V4 scenario analysis on the Risk tab.
-- Done: V3 SOTP in every sector model.
-- Done: V2 APV tab (valuation/apv.py).
-- Done: V1 SEC EDGAR (offline-tested; live needs SEC_EDGAR_USER_AGENT).
-- Done: v2 backlog items: saved screener templates, Compare sectors view (13 new tests).
-- Done: plan tasks T1-T8 (sidebar nav, live smoke of all pages, pip-audit, localhost binding, Docker, Streamlit deprecations, keys guard test, Financials FCF messages).
-- Running: Streamlit dev server on http://localhost:8501 (may be gone; restart with the command in Verify).
-- Branch/commit: claude/peaceful-euler-aq2j08 @ 032cd11, pushed to origin 2026-11-24 (user approved); no PR yet, master untouched.
+- Done: all plan tasks T1-T8 and v2 V1-V9; SPEC brought up to date 2026-11-26.
+- Done: keys migrated from the old folder into repo-root `.env` (git-ignored); old In Development folder sent to Recycle Bin (O4).
+- Done: FMP M&A feed fixed for the free plan (limit 5); FRED macro now read from the public CSV (pandas-datareader dropped).
+- Done: live checks - Finnhub ok, FMP ok, FRED ok, Company Analysis AAPL ok. Alpha Vantage news is premium-only.
+- Running: nothing.
+- Branch/commit: claude/peaceful-euler-aq2j08, pushed; PR imnotkeril/Stock_Valuation#1 open into master, tree clean.
 
 ## Decisions
-- Nothing from `chore/audit` code was ported except the keys guard test - its library modules are covered here in tested form; two ideas went to the v2 backlog.
-- Owner decided O3: build ALL original README ideas (SPEC section 5) as v2 V1-V8, paid/keyed ones too.
-- Owner tasks (key rotation, branches, push) are postponed by the user until the work is finished - do not ask about them again before then.
-- Server binds to localhost in `.streamlit/config.toml`; Docker overrides with 0.0.0.0.
+- User said "do it yourself, don't ask" while asleep (2026-11-26) - applied to finishing FRED + SPEC only.
+- `SEC_EDGAR_USER_AGENT` left empty in `.env` - old file had only a placeholder; never invent a contact.
+- Prophet stays an optional dependency - heavy install, by choice.
 
 ## Next
-1. All plan tasks (T1-T8, v2 V1-V9) are done. Ask the user for `SEC_EDGAR_USER_AGENT`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY` in `.env` (never print values) and live-check Overview > SEC, News tab, Valuation > Precedents feed; record results in `docs/QA.md`.
-2. When the user says to finish: owner items O1 (rotate old Alpha Vantage / FMP keys), O2 (PR into master - only on explicit yes; branch already pushed), O4 (old In Development folder).
-3. Optional polish: `/repo-polish` skill before publishing.
+1. Report to the user in Russian: FRED fixed and live-checked, SPEC updated, 366 tests pass, all pushed to PR #1.
+2. If the user adds `SEC_EDGAR_USER_AGENT` to `.env`: live-check Overview > SEC for AAPL, record in `docs/QA.md`.
+3. Owner items: O1 rotate Alpha Vantage / FMP keys (user only), O2 merge PR #1 (user only); optional `/repo-polish`.
 
 ## Open questions
-- Keys for V5-V7 (Finnhub, Alpha Vantage, FMP): the user will add them to `.env`; values must never be printed.
+- SEC contact string for `SEC_EDGAR_USER_AGENT` (user to set; never print).
 
 ## Traps
-- SEC EDGAR rejects anonymous clients (403); never invent a contact User-Agent - the user must set SEC_EDGAR_USER_AGENT.
-- Global `~/.gitignore_global` ignores `*_secret*` and `.env.*`: name files accordingly (that is why the test is `test_no_hardcoded_keys.py`).
-- Server listens on 127.0.0.1 only: PowerShell `Invoke-WebRequest http://localhost` may hang on IPv6; use `curl http://127.0.0.1:8501/_stcore/health`.
-- Live smoke script lives outside the repo (hits network); offline equivalents are `tests/test_app.py` and `tests/test_pages_interaction.py`.
-- Old Alpha Vantage / FMP keys are still in git history - never print them.
+- `.env` holds real keys: never print values; mask with `***` when showing raw API responses.
+- Alpha Vantage NEWS_SENTIMENT returns an "Information" premium message with HTTP 200, not an error.
+- FMP free plan answers HTTP 402 for `limit` > 5.
+- Live scripts must import `StockAnalysisSystem.src...` with repo root on `sys.path`.
+- pytest addopts hide the summary: use `-o addopts=""` to see the pass count.
 
 ## Verify
-- `.venv\Scripts\python.exe -m pytest -q` (expect 363 passed) and `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
-- `.venv\Scripts\python.exe StockAnalysisSystem\run.py` then `curl http://127.0.0.1:8501/_stcore/health` -> ok
+- `.venv\Scripts\python.exe -m pytest -o addopts="" -p no:warnings` (expect 366 passed)
+- `.venv\Scripts\python.exe -m ruff check StockAnalysisSystem`
