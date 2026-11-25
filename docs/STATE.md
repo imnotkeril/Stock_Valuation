@@ -32,6 +32,8 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-24 keys moved from old .env.txt to .env; old In Development folder sent to Recycle Bin (O4). Live: Finnhub ok, FMP fixed (free-plan limit 5), AV news is premium, SEC needs owner's User-Agent. 364 pass.
 
+- 2026-11-26 FRED macro via public CSV (pandas-datareader dropped), 2 tests, live CPI/UNRATE/DGS10 ok; SPEC brought up to date (APV, SEC, FMP, env list, §5 statuses).
+
 ## Next
 - Done. Optional: set SEC_EDGAR_USER_AGENT in .env and live-check Overview > SEC; merge PR #1.
 

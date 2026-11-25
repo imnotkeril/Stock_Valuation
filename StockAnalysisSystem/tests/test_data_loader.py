@@ -171,3 +171,33 @@ def test_clear_cache(real_loader):
 def test_module_has_no_hardcoded_keys():
     source = open(dl_module.__file__).read()
     assert "0VJE73FSCQIPH601" not in source
+
+
+FRED_CSV = "observation_date,UNRATE\n2024-01-01,3.7\n2024-02-01,.\n2024-03-01,3.9\n"
+
+
+def test_parse_fred_csv_skips_missing_values():
+    frame = dl_module.parse_fred_csv(FRED_CSV, "UNRATE")
+    assert list(frame.columns) == ["UNRATE"] and frame.index.name == "DATE"
+    assert frame["UNRATE"].tolist() == [3.7, 3.9]
+    assert dl_module.parse_fred_csv("garbage\n", "UNRATE").empty
+
+
+def test_macro_indicators_from_fred_csv_cached(real_loader, monkeypatch):
+    loader, _ = real_loader
+    requests_seen = []
+
+    def fake_get(url, params, timeout):
+        requests_seen.append(params["id"])
+        return SimpleNamespace(text=FRED_CSV.replace("UNRATE", params["id"]), raise_for_status=lambda: None)
+
+    monkeypatch.setattr(dl_module.requests, "get", fake_get)
+    data = loader.get_macro_indicators(["UNEMPLOYMENT"], start_date="2024-01-01", end_date="2024-12-31")
+    assert data["UNEMPLOYMENT"]["UNRATE"].tolist() == [3.7, 3.9]
+    loader.get_macro_indicators(["UNEMPLOYMENT"], start_date="2024-01-01", end_date="2024-12-31")
+    assert requests_seen == ["UNRATE"]  # second call served from cache
+
+    loader.offline = True  # offline still serves the cached copy, never calls the network
+    data = loader.get_macro_indicators(["UNEMPLOYMENT", "GDP"], start_date="2024-01-01", end_date="2024-12-31")
+    assert not data["UNEMPLOYMENT"].empty and data["GDP"].empty
+    assert requests_seen == ["UNRATE"]

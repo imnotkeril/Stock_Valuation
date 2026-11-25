@@ -35,6 +35,7 @@ are covered offline by `tests/test_app.py` and `tests/test_pages_interaction.py`
 - AAPL weighted fair value $193.96 vs price $342.56 (−43%): conservative defaults; values are
   assumption-driven by design (see SPEC §3.3).
 - Macro forecast (FRED) needs optional `pandas-datareader`; not installed, button reports it.
+  Fixed 2026-11-26: FRED is read from the public CSV, no package needed (see below).
 
 ## Not covered
 - Alpha Vantage fallback (no key used).
@@ -68,4 +69,10 @@ Keys migrated from the old folder's `.env.txt` into `.env` (values never printed
 | SEC EDGAR | not checked: old file had only a placeholder User-Agent; needs `SEC_EDGAR_USER_AGENT` from the owner |
 
 364 tests pass, ruff clean.
+
+## FRED without pandas-datareader (2026-11-26)
+| Check | Result |
+|---|---|
+| Offline tests: CSV parser (missing `.` values), one download then cache, offline serves cache | 2 new tests pass |
+| Live AppTest, Forecasting > Economic indicators (CPI, unemployment, 10Y Treasury) | data loaded for all 3, ARIMA + ensemble per series, VAR, 6 charts, no exceptions |
 

@@ -4,7 +4,6 @@ pythonpath = ["."]
 addopts = "-ra -q"
 filterwarnings = [
     "ignore::DeprecationWarning:yfinance.*",
-    "ignore::DeprecationWarning:pandas_datareader.*",
 ]
 
 [tool.ruff]

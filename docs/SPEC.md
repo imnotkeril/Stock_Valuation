@@ -6,7 +6,7 @@ Version: 2026-11-23. Single source of truth for scope. Merges the original featu
 actually built on branch `claude/peaceful-euler-aq2j08`.
 
 Status legend: **Done** = implemented and covered by offline tests · **Partial** = works with
-limits · **Not built** = backlog or out of scope (see §5).
+limits · **Not built** = out of scope (see §6).
 
 ## 1. Product
 
@@ -102,12 +102,13 @@ assumption in the UI changes the fair value.
 - Valuation filter: rank by model fair-value upside; honours user multiple discounts and DCF
   adjustments; EV/EBITDA bridged through net debt.
 
-### 3.6 Forecasting — Done (optional extras Partial)
+### 3.6 Forecasting — Done (Prophet optional)
 - Price: ARIMA, exponential smoothing, linear, random walk, ML, ensembles; confidence
   intervals; backtests; Monte Carlo probabilities.
 - Fundamentals: statement-metric forecasts; bull/base/bear scenarios.
-- Macro: FRED indicators — **Partial**, needs optional `pandas-datareader`.
-- Prophet model — **Partial**, needs optional `prophet`.
+- Macro: FRED indicators — Done: public fredgraph CSV (no key, no extra package), cached a day,
+  ARIMA/ML/ensemble per series and joint VAR.
+- Prophet model — optional: shown only when `prophet` is installed (heavy dependency, by choice).
 
 ### 3.7 Reports — Done
 Company, valuation, comparison and sector reports as PDF (with matplotlib charts), Excel,
@@ -115,9 +116,12 @@ CSV, JSON downloads.
 
 ### 3.8 Data and configuration — Done
 - Providers: Yahoo Finance (primary, no key), Alpha Vantage (fallback: prices, overview,
-  search), FRED (macro), SEC EDGAR (free; needs `SEC_EDGAR_USER_AGENT` with the user's own
-  contact: recent filings with links and 10-year annual history from XBRL facts on Overview). `FINANCIAL_MODELING_PREP_API_KEY` reserved, unused.
-- Env: `ALPHA_VANTAGE_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY`, `STOCK_ANALYSIS_OFFLINE`.
+  search), FRED (macro, CSV), Finnhub (news, metrics, peers), FMP (M&A feed; free plan = 5 latest),
+  SEC EDGAR (free; needs `SEC_EDGAR_USER_AGENT` with the user's own
+  contact: recent filings with links and 10-year annual history from XBRL facts on Overview).
+  Alpha Vantage NEWS_SENTIMENT is a premium endpoint: with a free key the News tab uses Finnhub.
+- Env: `ALPHA_VANTAGE_API_KEY`, `FINNHUB_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY`,
+  `SEC_EDGAR_USER_AGENT`, `STOCK_ANALYSIS_OFFLINE`.
   Loaded with `load_dotenv` from `StockAnalysisSystem/.env` or repo-root `.env`. No keys in code.
 - Cache: `src/data/cache` (git-ignored); last cached copy served when a provider fails.
 
@@ -127,14 +131,14 @@ CSV, JSON downloads.
 - Pages render in a few seconds for one ticker after first download (cache warm).
 - Local-only by default: the server listens on localhost; Docker binds 0.0.0.0.
 
-## 5. Original ideas not built (from the original README)
+## 5. Original ideas from the original README (all built in v2)
 
-| Idea | Decision needed |
+| Idea | Status |
 |---|---|
-| Adjusted Present Value (APV) | backlog or drop |
+| Adjusted Present Value (APV) | Done (V2): Valuation > APV - unlevered value + PV of tax shields (n/a for Financials) |
 | Precedent transactions method | Done (V7): Valuation > Precedents - user-maintained deal table (no bundled figures), median/IQR deal multiples, optional FMP M&A feed |
-| News / sentiment analysis | Done (V5-V6): News tab - Finnhub news (lexicon-scored) + Alpha Vantage NEWS_SENTIMENT, daily sentiment, peers; keys optional |
-| SEC EDGAR data source | backlog (free, would add filings depth) |
+| News / sentiment analysis | Done (V5-V6): News tab - Finnhub news (lexicon-scored) + Alpha Vantage NEWS_SENTIMENT (premium key only), daily sentiment, peers; keys optional |
+| SEC EDGAR data source | Done (V1): Overview > SEC - recent filings and 10-year XBRL history; needs `SEC_EDGAR_USER_AGENT` |
 | Finnhub data source | Done (V5): `utils/news_sentiment.py` - news, metrics, peers with `FINNHUB_API_KEY` |
 | Deep-learning forecasts (TensorFlow, pytorch-forecasting) | Done (V8) as a neural network (MLP, scikit-learn) price model; no TensorFlow/torch dependency |
 | Market risk simulation / stress testing beyond revenue stress + VaR | Done (V4): Risk tab scenario analysis - 5 macro shocks on EV/EBITDA with interest cover, 2008/2020/2022 beta-implied and actual drawdowns |

@@ -25,4 +25,3 @@ matplotlib>=3.7       # charts embedded in PDF reports
 
 # Optional extras (install manually if needed):
 #   prophet            - Prophet forecasting model on the Forecasting page
-#   pandas-datareader  - FRED macro indicators on the Forecasting page

@@ -5,7 +5,7 @@ Providers:
     * yfinance (default) — prices, company info, financial statements, search
     * Alpha Vantage (optional, needs ``ALPHA_VANTAGE_API_KEY``) — prices,
       company overview and symbol search as fallbacks
-    * FRED via pandas-datareader (optional) — macro indicators
+    * FRED (free, no key) — macro indicators from the public fredgraph CSV
 
 Every public method returns an empty DataFrame / dict / list instead of
 raising when data is unavailable. Fresh data is cached in ``CACHE_DIR``;
@@ -50,6 +50,7 @@ STATEMENT_ATTRIBUTES = {
 }
 REQUEST_TIMEOUT = 15  # seconds
 ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 # Cache lifetimes in days
 INFO_CACHE_DAYS = 7
@@ -551,23 +552,28 @@ class DataLoader:
 
     def get_macro_indicators(self, indicators: List[str], start_date: Optional[str] = None,
                              end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
-        """FRED macro series ``{indicator: DataFrame}`` (empty frames when unavailable)."""
-        results = {indicator: pd.DataFrame() for indicator in indicators}
-        if self.offline:
-            return results
-        try:
-            import pandas_datareader.data as web
-        except ImportError:
-            logger.info("pandas-datareader not installed; macro indicators unavailable")
-            return results
+        """FRED macro series ``{indicator: DataFrame}`` (empty frames when unavailable).
+
+        Each frame has a ``DATE`` index and one column named after the FRED series code.
+        Downloads are cached for a day; a stale copy is served when FRED is unreachable.
+        """
         start = pd.Timestamp(start_date) if start_date else pd.Timestamp.now() - pd.DateOffset(years=5)
         end = pd.Timestamp(end_date) if end_date else pd.Timestamp.now()
+        results = {}
         for indicator in indicators:
-            try:
-                results[indicator] = web.DataReader(self.INDICATOR_CODES.get(indicator, indicator), 'fred', start, end)
-            except Exception as e:
-                logger.error(f"Error loading macro indicator {indicator}: {e}")
+            code = self.INDICATOR_CODES.get(indicator, indicator)
+            path = self._cache_path(f"FRED_{code}_{start:%Y-%m-%d}_{end:%Y-%m-%d}.pkl")
+            frame = self._cached(path, 1, lambda c=code: self._fetch_fred(c, start, end), False,
+                                 lambda v: isinstance(v, pd.DataFrame) and not v.empty)
+            results[indicator] = frame if frame is not None else pd.DataFrame()
         return results
+
+    @staticmethod
+    def _fetch_fred(code: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        response = requests.get(FRED_CSV_URL, params={"id": code, "cosd": f"{start:%Y-%m-%d}",
+                                                      "coed": f"{end:%Y-%m-%d}"}, timeout=30)
+        response.raise_for_status()
+        return parse_fred_csv(response.text, code)
 
     # ------------------------------------------------------------------
     # Misc helpers
@@ -607,3 +613,16 @@ class DataLoader:
                 except OSError as e:
                     logger.warning(f"Failed to delete cache file {file}: {e}")
         return removed
+
+
+def parse_fred_csv(text: str, code: str) -> pd.DataFrame:
+    """Parse a fredgraph CSV (``observation_date,<CODE>``; ``.`` marks missing values)."""
+    from io import StringIO
+    raw = pd.read_csv(StringIO(text))
+    if raw.shape[1] < 2:
+        return pd.DataFrame()
+    dates = pd.to_datetime(raw.iloc[:, 0], errors="coerce")
+    values = pd.to_numeric(raw.iloc[:, 1], errors="coerce")
+    frame = pd.DataFrame({code: values.to_numpy()}, index=pd.DatetimeIndex(dates, name="DATE"))
+    return frame[frame.index.notna()].dropna()
+

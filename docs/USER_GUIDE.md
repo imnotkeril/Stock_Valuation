@@ -80,7 +80,7 @@ multiple discounts and DCF assumptions.
 ### Forecasting
 Price forecasts (ARIMA, exponential smoothing, linear trend, random walk, machine learning,
 **neural network (MLP)**, ensembles) with confidence bands and hold-out backtests;
-fundamentals forecasts; macro indicators (needs `pandas-datareader`); Prophet (needs `prophet`).
+fundamentals forecasts; macro indicators from FRED (free, no key); Prophet (needs `prophet`).
 
 ### Reports
 Company, valuation, comparison and sector reports as PDF, Excel, CSV or JSON.

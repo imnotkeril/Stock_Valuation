@@ -15,8 +15,8 @@ Tabs:
   ``forecast_financial_metric`` / ``create_ensemble_financial_forecast``.
 * **Scenarios** - bear/base/bull projections of revenue, earnings and the
   implied share price, with a probability-weighted target.
-* **Economic Indicators** - FRED macro series (needs network access and
-  ``pandas-datareader``) forecast with ARIMA/ML/ensemble and VAR.
+* **Economic Indicators** - FRED macro series (free CSV, no key; needs
+  network access or a cached copy) forecast with ARIMA/ML/ensemble and VAR.
 
 Results are stored in ``st.session_state`` when the run buttons are pressed
 and rendered from there, so they survive reruns triggered by other widgets.
@@ -953,14 +953,10 @@ def run_macro_forecast(forecaster: Any, data: Mapping[str, Any], horizon: int, m
 
 def _render_macro_tab() -> None:
     st.subheader("Economic indicators")
-    datareader = importlib.util.find_spec("pandas_datareader") is not None
     loader = _get_data_loader()
-    if not datareader or getattr(loader, "offline", False):
-        st.info("Macro-economic data is downloaded from FRED and needs network access plus the optional "
-                "`pandas-datareader` package. "
-                + ("The package is not installed. " if not datareader else "")
-                + ("Offline mode is enabled. " if getattr(loader, "offline", False) else "")
-                + "You can still try to load the data below.")
+    st.caption("Source: FRED (Federal Reserve Bank of St. Louis), free, no key; downloads are cached for a day.")
+    if getattr(loader, "offline", False):
+        st.info("Offline mode is enabled: only previously downloaded FRED series are available.")
     forecaster = _get_forecaster()
     available = [k for k in MACRO_INDICATORS if k in getattr(DataLoader, "INDICATOR_CODES", MACRO_INDICATORS)]
     indicators = st.multiselect("Indicators", options=available, default=available[:2],
@@ -989,8 +985,7 @@ def _render_macro_tab() -> None:
     if not result:
         return
     if not result.get("indicators"):
-        st.info("No macro-economic data could be loaded for the selected indicators. Check the network connection "
-                "and that `pandas-datareader` is installed.")
+        st.info("No macro-economic data could be loaded for the selected indicators. Check the network connection.")
         return
     if result.get("missing"):
         st.caption("No data for: " + ", ".join(MACRO_INDICATORS.get(k, k) for k in result["missing"]))

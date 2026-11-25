@@ -72,7 +72,7 @@ Copy `.env.example` to `.env`. Every setting is optional — Yahoo Finance works
 
 Downloaded data is cached in `StockAnalysisSystem/src/data/cache` (git-ignored). When a provider is unavailable, the last cached copy is served. Use **Data & settings → Clear cached data** in the sidebar to force a refresh.
 
-Optional packages: `prophet` (Prophet forecasts) and `pandas-datareader` (FRED macro indicators).
+Optional package: `prophet` (Prophet forecasts). FRED macro indicators need no extra package or key.
 
 ## Project structure
 
