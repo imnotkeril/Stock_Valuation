@@ -69,3 +69,10 @@ Order: free sources first. Every provider is optional: without its key the featu
       Done as: "Neural Network (MLP)" price model (scikit-learn MLPRegressor, two hidden layers,
       no new dependency); torch/TensorFlow not added - too heavy for the gain
 - [x] V9 User guide and CHANGELOG (after V1-V8)
+
+## Known debt (recorded at adoption 2026-11-26, not fixed yet)
+- [ ] D1 Two cost-of-capital implementations and hard-coded 3 % risk-free (review R1/R2) -> planned below
+- [ ] D2 Narrow ruff rule set; 125 broad `except Exception` (review R14)
+- [ ] D3 pip without lock file; finance family default is uv + `uv.lock` (ADR-005)
+- [ ] D4 No golden textbook tests for DCF/WACC/APV (review R13)
+- [ ] D5 Git history still holds old (rotated) keys from `config.py` (owner decision on history rewrite)

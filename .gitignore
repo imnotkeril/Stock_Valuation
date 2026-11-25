@@ -37,3 +37,6 @@ reports/
 .DS_Store
 Thumbs.db
 StockAnalysisSystem/src/data/user/
+
+# Framework skill links (machine-specific junctions)
+.claude/skills/
