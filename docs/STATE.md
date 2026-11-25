@@ -41,8 +41,11 @@ Framework (from adoption on):
 - [x] brief/T02 - 3 items (stack/python, TDD skill, known-traps; read in T01, rechecked); owns + config.py (legacy RISK_FREE_RATE removed as T01 promised)
 - [x] build/T02 valuation/capital.py one cost_of_capital (Blume beta, Kd rf+0.5..8 %, WACC 6-20 %, ERP 4.4 % Damodaran Jul-2026, live rf) used by generic, sector, APV, stress, Sharpe; ADR-007 — 402 passed, ruff clean; live rf 4.91 %: AAPL 184.47 -48.1 % Sell (wacc 9.49 %), JPM 278.54 -12.1 % Reduce, XOM 86.30 -45.4 % Sell (wacc 6.59 %), MSFT -31.4 %, PGR +54.5 %, CHTR +232 % (wacc 6 % floor, T05)
 
+- [x] brief/T03 - 2 items (stack/python, known-traps); owns valuation.py + test_pages_interaction.py
+- [x] build/T03 DCF slider default = shared WACC, APV inputs (tax, Kd, beta, rf) from capital.py, rf caption, "Why do DCF, APV and the Sector Model differ?" expander on DCF + APV — 35 passed (pages_interaction + app), ruff clean; live AAPL DCF default 9.49 % (was table 12 %), XOM 6.59 % (was 9 %), caption "rf 4.91 % (FRED DGS10, as of 2026-11-24)"
+
 ## Next
-- [ ] build/T03 - run `step-brief --task T03` first; DCF/APV tab defaults from capital.py + "why methods differ" box
+- [ ] build/T04 - run `step-brief --task T04` first; ticker-scoped Valuation/Risk widget state
 
 ## Needed from owner
 - none

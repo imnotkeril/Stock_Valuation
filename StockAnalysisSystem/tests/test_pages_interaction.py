@@ -39,3 +39,28 @@ def test_company_tabs_have_no_errors(ticker):
     at.sidebar.button(key="ca_analyze").click().run()
     assert not _problems(at), _problems(at)
     assert not at.warning, [w.value for w in at.warning]
+
+
+def _open_company(ticker):
+    at = AppTest.from_file(MAIN, default_timeout=600)
+    at.run()
+    at.sidebar.radio(key=nav.NAV_KEY).set_value(nav.COMPANY_ANALYSIS).run()
+    at.sidebar.selectbox(key="ca_popular").set_value(ticker).run()
+    at.sidebar.button(key="ca_analyze").click().run()
+    return at
+
+
+def test_dcf_and_apv_use_the_shared_cost_of_capital(aapl):
+    from StockAnalysisSystem.src import config
+    from StockAnalysisSystem.src.valuation import capital
+
+    at = _open_company("AAPL")
+    expected = capital.cost_of_capital_for(aapl["financial_data"], 0.10)
+    discount = at.slider(key="val_dcf_discount").value
+    assert discount == pytest.approx(round(expected["wacc"] * 100, 2), abs=0.3)
+    assert discount != config.SECTOR_DCF_PARAMETERS["Technology"]["default_discount_rate"] * 100
+    captions = [c.value for c in at.caption]
+    assert any(f"Default WACC {discount:.2f}%" in c and "fallback constant" in c for c in captions), captions
+    assert any(c.startswith("Same inputs as the WACC: rf 4.50 %") for c in captions), captions
+    labels = [e.label for e in at.expander]
+    assert labels.count("Why do DCF, APV and the Sector Model differ?") == 2, labels

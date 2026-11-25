@@ -25,7 +25,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python, skill:test-driven-development
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
   done: one `cost_of_capital()` (one beta rule, one Kd band, one ERP, one WACC band, live rf) used by generic and sector models, APV, stress base discount and Sharpe; ERP re-baselined in ADR-007; a test proves generic and sector WACC are equal for the same inputs; results carry rf value + as-of date in `assumptions`; live AAPL/JPM/XOM before/after in STATE.
-- [ ] T03 DCF/APV tab defaults from the shared WACC + "why methods differ" box (R2 UI)
+- [x] T03 DCF/APV tab defaults from the shared WACC + "why methods differ" box (R2 UI)
   layer: frontend · tier: C · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_pages_interaction.py
   depends: T02

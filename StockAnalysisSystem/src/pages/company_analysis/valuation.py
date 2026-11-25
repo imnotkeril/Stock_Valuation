@@ -50,6 +50,7 @@ from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
     render_sector_valuation,
 )
 from StockAnalysisSystem.src.utils.financial_data import cagr, get_latest, safe_divide, to_float
+from StockAnalysisSystem.src.valuation import capital
 
 logger = logging.getLogger("company_valuation")
 
@@ -145,11 +146,28 @@ def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: D
 # ---------------------------------------------------------------------------
 # DCF
 # ---------------------------------------------------------------------------
-def _dcf_defaults(sector: str, fcf: pd.Series) -> Dict[str, float]:
-    params = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(sector, {})}
+def _sector_params(sector: str) -> Dict[str, Any]:
+    return {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(sector, {})}
+
+
+def _shared_capital(financial_data: Dict[str, Any], sector: str) -> Dict[str, Any]:
+    """The cost of capital every model uses (valuation/capital.py, ADR-007)."""
+    return capital.cost_of_capital_for(financial_data or {}, float(_sector_params(sector)["default_discount_rate"]))
+
+
+def _rate_caption(components: Dict[str, Any]) -> str:
+    return (f"rf {components['risk_free_rate_label']} · ERP {components['equity_risk_premium']:.1%} · "
+            f"beta {components['adjusted_beta']:.2f} (Blume-adjusted) · cost of equity "
+            f"{components['cost_of_equity']:.2%} · pre-tax cost of debt {components['pre_tax_cost_of_debt']:.2%}")
+
+
+def _dcf_defaults(sector: str, fcf: pd.Series, components: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """DCF defaults: the shared WACC when ``components`` is given, else the sector table rate."""
+    params = _sector_params(sector)
     growth = cagr(fcf.tail(4)) if len(fcf) >= 2 else None
+    rate = components["wacc"] if components else params["default_discount_rate"]
     return {
-        "discount_rate": float(params["default_discount_rate"]),
+        "discount_rate": float(rate),
         "terminal_growth": float(params["terminal_growth_rate"]),
         "forecast_years": int(params["forecast_years"]),
         "growth": float(min(max(growth if growth is not None else 0.05, -0.05), 0.25)),
@@ -167,7 +185,8 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if fcf.empty:
         st.info("Free cash flow history is unavailable, so a DCF cannot be built.")
         return
-    defaults = _dcf_defaults(sector, fcf)
+    components = _shared_capital(financial_data, sector)
+    defaults = _dcf_defaults(sector, fcf, components)
     base_options = {"Latest year": float(fcf.iloc[-1]), f"Average of last {min(len(fcf), 3)} years":
                     float(fcf.tail(3).mean())}
 
@@ -179,9 +198,13 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}dcf_years")
     with col2:
         discount = st.slider("Discount rate (WACC)", 4.0, 20.0, round(defaults["discount_rate"] * 100, 2), 0.25,
-                             format="%.2f%%", key=f"{KEY}dcf_discount") / 100
+                             format="%.2f%%", key=f"{KEY}dcf_discount",
+                             help="Default: the WACC shared by every model (CAPM cost of equity, after-tax cost "
+                                  "of debt, market-value weights).") / 100
         terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}dcf_terminal") / 100
+    st.caption(f"Default WACC {components['wacc']:.2%}: {_rate_caption(components)}.")
+    _render_method_differences(components)
 
     base_fcf = base_options[base_label]
     net_debt = snapshot.get("net_debt")
@@ -238,17 +261,14 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
 # ---------------------------------------------------------------------------
 # Adjusted present value
 # ---------------------------------------------------------------------------
-def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]]) -> Dict[str, float]:
-    """Default APV inputs from the statements: tax rate, cost of debt, debt, cash, beta."""
+def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]],
+                components: Dict[str, Any]) -> Dict[str, Any]:
+    """Default APV inputs: tax rate, cost of debt and beta from the shared cost of capital; debt and cash."""
     income = get_statement(financial_data, "income_statement")
-    pretax = get_latest(income, "pretax_income")
-    tax = get_latest(income, "tax_provision")
-    tax_rate = min(max(safe_divide(tax, pretax) or 0.21, 0.0), 0.35) if pretax and pretax > 0 else 0.21
-    interest = abs(get_latest(income, "interest_expense") or 0.0)
-    debt = snapshot.get("total_debt") or 0.0
-    cost_of_debt = min(max(safe_divide(interest, debt) or 0.05, 0.02), 0.15) if debt else 0.05
-    return {"tax_rate": tax_rate, "interest": interest, "debt": debt, "cash": snapshot.get("cash") or 0.0,
-            "cost_of_debt": cost_of_debt, "beta": snapshot.get("beta") or 1.0}
+    return {"tax_rate": components["tax_rate"], "interest": abs(get_latest(income, "interest_expense") or 0.0),
+            "debt": snapshot.get("total_debt") or 0.0, "cash": snapshot.get("cash") or 0.0,
+            "cost_of_debt": components["pre_tax_cost_of_debt"], "beta": components["raw_beta"],
+            "risk_free_rate": components["risk_free_rate"]}
 
 
 def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
@@ -268,11 +288,13 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if fcf.empty or not shares:
         st.info("Free cash flow history or shares outstanding are unavailable, so APV cannot be computed.")
         return
-    inputs = _apv_inputs(financial_data, snapshot)
-    defaults = _dcf_defaults(sector, fcf)
-    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"])
-    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: floor at 6 %
-    ku_default = min(max(ku_default, 0.06), 0.20)
+    components = _shared_capital(financial_data, sector)
+    inputs = _apv_inputs(financial_data, snapshot, components)
+    defaults = _dcf_defaults(sector, fcf, components)
+    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"],
+                                          risk_free=inputs["risk_free_rate"])
+    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: same band as the WACC
+    ku_default = min(max(ku_default, capital.WACC_BOUNDS[0]), capital.WACC_BOUNDS[1])
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -281,14 +303,17 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}apv_years")
     with col2:
         ku = st.slider("Unlevered cost of equity", 4.0, 20.0, round(ku_default * 100, 2), 0.25, format="%.2f%%",
-                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Hamada) x equity risk premium.") / 100
+                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Blume-adjusted, then Hamada) x "
+                                                "equity risk premium.") / 100
         terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}apv_terminal") / 100
     with col3:
         kd = st.slider("Cost of debt", 1.0, 15.0, round(inputs["cost_of_debt"] * 100, 2), 0.25, format="%.2f%%",
                        key=f"{KEY}apv_kd", help="Default: interest expense / total debt.") / 100
         tax_rate = st.slider("Tax rate", 0.0, 35.0, round(inputs["tax_rate"] * 100, 1), 0.5, format="%.1f%%",
-                             key=f"{KEY}apv_tax", help="Default: effective tax rate of the last year.") / 100
+                             key=f"{KEY}apv_tax", help="Default: effective tax rate (same as the WACC).") / 100
+    st.caption(f"Same inputs as the WACC: {_rate_caption(components)}.")
+    _render_method_differences(components)
 
     base = unlevered_fcf(float(fcf.tail(3).mean()), inputs["interest"], tax_rate)
     if base <= 0:
@@ -311,6 +336,25 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     show_chart(donut_chart(["PV of forecast UFCF", "PV of terminal value", "PV of tax shields"],
                            [result["pv_forecast_fcf"], result["pv_terminal_value"], result["tax_shield_value"]],
                            "APV composition"), key=f"{KEY}apv_donut")
+
+
+def _render_method_differences(components: Dict[str, Any]) -> None:
+    """Why DCF, APV and the Sector Model give different values for one company (review R2)."""
+    with st.expander("Why do DCF, APV and the Sector Model differ?"):
+        st.markdown(
+            f"All three use the **same cost of capital**: risk-free rate {components['risk_free_rate_label']}, "
+            f"equity risk premium {components['equity_risk_premium']:.1%}, Blume-adjusted beta "
+            f"{components['adjusted_beta']:.2f}, cost of equity {components['cost_of_equity']:.2%}, "
+            f"WACC {components['wacc']:.2%}. They differ in what they discount:\n\n"
+            "- **DCF tab**: reported free cash flow (latest year or a multi-year average) grown at one rate, "
+            "then a terminal value, discounted at the WACC. No stock-based compensation deduction.\n"
+            "- **APV tab**: unlevered free cash flow (3-year average FCF + after-tax interest) at the "
+            "*unlevered* cost of equity, plus the present value of interest tax shields at the cost of debt.\n"
+            "- **Sector Model tab**: the sector's own methods (for example SBC-adjusted DCF for technology, "
+            "cycle-normalised DCF for industrials, residual income for banks) blended with multiples. Its "
+            "weighted value is the Fair Value Summary.\n\n"
+            "So the gap between them comes from the cash-flow definition, the starting year, growth and "
+            "the method mix, not from the discount rate.")
 
 
 # ---------------------------------------------------------------------------
