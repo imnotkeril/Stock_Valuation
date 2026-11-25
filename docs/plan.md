@@ -34,7 +34,7 @@ Each task: owner · check. Tick when the check passes.
 - [x] O1 **Rotate Alpha Vantage and FMP keys** (done by owner 2026-11-26): they were hard-coded in old `config.py` and
       are still in git history on GitHub (`master` and both branches). Optionally rewrite
       history afterwards (owner decision).
-- [ ] O2 Branches: make `claude/peaceful-euler-aq2j08` the main line (PR into `master`);
+- [x] O2 Branches: make `claude/peaceful-euler-aq2j08` the main line (PR into `master`);
       archive `chore/audit` without merging (its work is superseded, see summary).
       Push/PR only on your yes. 2026-11-24: PR #1 open and up to date; merge is yours.
 - [x] O3 Scope of SPEC §5: owner decided 2026-11-23 - build ALL original ideas (v2 below),

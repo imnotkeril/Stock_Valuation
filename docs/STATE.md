@@ -36,8 +36,10 @@ Branch `claude/peaceful-euler-aq2j08` (this folder). Spec: `docs/SPEC.md`. Plan:
 
 - 2026-11-26 owner rotated keys and set SEC_EDGAR_USER_AGENT; live: SEC (filings + XBRL history, UI ok), Finnhub, FMP, Alpha Vantage all ok.
 
+- 2026-11-26 PR #1 merged into master (a92c061) after green CI 3.11-3.13 (owner approved). Product review running in session product-review.
+
 ## Next
-- Done. Merge PR #1 (owner). Proposed: live risk-free rate from FRED DGS10; MacroLens ideas (see HANDOFF).
+- Done. Proposed: live risk-free rate from FRED DGS10; MacroLens ideas (see HANDOFF).
 
 ## Needed from owner
-- O2 merge PR #1 (open).
+- none (O1-O4 closed).
