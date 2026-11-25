@@ -93,3 +93,4 @@ live provider checks are manual scripts recorded in STATE.
 - ADR-004 Offline test suite with recorded fixtures -> `docs/adr/004-offline-tests.md`
 - ADR-005 pip + requirements.txt instead of uv -> `docs/adr/005-pip-requirements.md`
 - ADR-006 FRED via public fredgraph CSV -> `docs/adr/006-fred-public-csv.md`
+- ADR-007 One cost-of-capital module, live rf, ERP 4.4 % -> `docs/adr/007-cost-of-capital.md`

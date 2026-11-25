@@ -33,7 +33,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from StockAnalysisSystem.src.config import DATA_DIR, RISK_FREE_RATE, SECTORS, normalize_sector
+from StockAnalysisSystem.src.config import DATA_DIR, SECTORS, normalize_sector
+from StockAnalysisSystem.src.utils.rates import risk_free_rate
 from StockAnalysisSystem.src.industry.universe import get_subsectors, get_universe, lookup_company
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
 from StockAnalysisSystem.src.navigation import COMPANY_ANALYSIS, go_to
@@ -242,10 +243,10 @@ def trailing_window(close: pd.Series, days: int) -> pd.Series:
     return close[close.index >= close.index[-1] - pd.Timedelta(days=int(days))]
 
 
-def performance_stats(close: pd.Series) -> Dict[str, Optional[float]]:
+def performance_stats(close: pd.Series, rf: Optional[float] = None) -> Dict[str, Optional[float]]:
     """
     Total return, annualised return / volatility, max drawdown (fractions) and
-    Sharpe ratio (risk-free rate from config) of a closing price series.
+    Sharpe ratio of a closing price series (``rf`` defaults to the current rate, utils.rates).
     """
     empty = {"total_return": None, "annual_return": None, "volatility": None, "max_drawdown": None, "sharpe": None}
     close = close.dropna() if isinstance(close, pd.Series) else pd.Series(dtype=float)
@@ -260,7 +261,8 @@ def performance_stats(close: pd.Series) -> Dict[str, Optional[float]]:
         years = max(len(close) / 252, 1 / 252)
     annual = (1 + total) ** (1 / years) - 1 if total > -1 else -1.0
     drawdown = float((close / close.cummax() - 1).min())
-    sharpe = safe_divide(annual - RISK_FREE_RATE, volatility)
+    rf = risk_free_rate().rate if rf is None else rf
+    sharpe = safe_divide(annual - rf, volatility)
     return {"total_return": total, "annual_return": annual, "volatility": volatility, "max_drawdown": drawdown,
             "sharpe": sharpe}
 

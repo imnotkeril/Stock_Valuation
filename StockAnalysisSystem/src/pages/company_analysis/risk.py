@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from StockAnalysisSystem.src.config import RISK_FREE_RATE
+from StockAnalysisSystem.src.utils.rates import risk_free_rate as current_risk_free_rate
 from StockAnalysisSystem.src.models.bankruptcy_models import BankruptcyAnalyzer
 from StockAnalysisSystem.src.models.financial_statements import FinancialStatementAnalyzer
 from StockAnalysisSystem.src.pages.company_analysis.charts import (
@@ -291,8 +291,12 @@ def _render_stress_test(financial_data: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Market risk
 # ---------------------------------------------------------------------------
-def market_risk_metrics(close: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> Dict[str, Optional[float]]:
-    """Annualised return/volatility, Sharpe, max drawdown and 1-day historical VaR/CVaR (95 %, 99 %)."""
+def market_risk_metrics(close: pd.Series, risk_free_rate: Optional[float] = None) -> Dict[str, Optional[float]]:
+    """
+    Annualised return/volatility, Sharpe, max drawdown and 1-day historical VaR/CVaR (95 %, 99 %).
+
+    ``risk_free_rate`` defaults to the current rate (utils.rates).
+    """
     close = pd.to_numeric(close, errors="coerce").dropna()
     returns = close.pct_change().dropna()
     if len(returns) < 20:
@@ -302,6 +306,8 @@ def market_risk_metrics(close: pd.Series, risk_free_rate: float = RISK_FREE_RATE
     annual_return = float((close.iloc[-1] / close.iloc[0]) ** (1 / years) - 1) if years > 0 else None
     drawdown = close / close.cummax() - 1
     var95, var99 = float(returns.quantile(0.05)), float(returns.quantile(0.01))
+    if risk_free_rate is None:
+        risk_free_rate = current_risk_free_rate().rate
     return {
         "annual_return": annual_return,
         "annual_volatility": volatility,
@@ -319,7 +325,8 @@ def market_risk_metrics(close: pd.Series, risk_free_rate: float = RISK_FREE_RATE
 def _render_market_risk(price_data: pd.DataFrame, financial_data: Dict[str, Any]) -> None:
     st.subheader("Market risk")
     close = close_series(price_data)
-    metrics = market_risk_metrics(close)
+    rf = current_risk_free_rate()
+    metrics = market_risk_metrics(close, rf.rate)
     if not metrics:
         st.info("At least a month of price history is needed for market risk metrics.")
         return
@@ -331,7 +338,7 @@ def _render_market_risk(price_data: pd.DataFrame, financial_data: Dict[str, Any]
     cols[3].metric("1-day VaR (95 %)", fmt_pct(metrics["var_95"], 2))
     cols[4].metric("Sharpe ratio", f"{metrics['sharpe_ratio']:.2f}" if metrics["sharpe_ratio"] is not None
                    else "N/A")
-    st.caption(f"Over the selected price history. Sharpe uses a {RISK_FREE_RATE:.0%} risk-free rate. "
+    st.caption(f"Over the selected price history. Sharpe uses a {rf.label} risk-free rate. "
                f"VaR: on 95 % of days the loss was smaller than {fmt_pct(-metrics['var_95'], 2)}; "
                f"the average loss on the worst 5 % of days (CVaR) was {fmt_pct(-metrics['cvar_95'], 2)}.")
 

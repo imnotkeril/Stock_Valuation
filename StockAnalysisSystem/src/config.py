@@ -171,8 +171,7 @@ VIZ_SETTINGS = {
 # (fraction like 0.045 or percent like 4.5).
 RISK_FREE_RATE_FALLBACK = 0.045  # ~10Y Treasury average 2023-2025
 RISK_FREE_RATE_ENV = "STOCK_ANALYSIS_RISK_FREE_RATE"
-# Legacy constant, still read by modules not yet moved to utils/rates (removed in plan task T02).
-RISK_FREE_RATE = 0.03
+# Equity risk premium, beta rule and rate bands live in valuation/capital.py (ADR-007).
 
 # Financial modeling parameters
 DCF_PARAMETERS = {

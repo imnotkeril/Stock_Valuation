@@ -18,7 +18,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: blueprint:finance-screener, stack:python, stack:pandas, mcp:context7, skill:test-driven-development
   check: `$T StockAnalysisSystem/tests/test_rates.py StockAnalysisSystem/tests/test_data_loader.py && $PY -m ruff check StockAnalysisSystem`
   done: `risk_free_rate()` returns FRED DGS10 (latest valid observation, percent -> fraction) with as-of date and source; cached 1 day; falls back to stale cache, then to a documented constant; offline mode never calls the network; override via env `STOCK_ANALYSIS_RISK_FREE_RATE`.
-- [ ] T02 One cost-of-capital module + re-baseline (R1 part 2, R2 core)
+- [x] T02 One cost-of-capital module + re-baseline (R1 part 2, R2 core)
   layer: backend · tier: B · owner: quant-research · model: opus
   owns: StockAnalysisSystem/src/valuation/capital.py, StockAnalysisSystem/src/valuation/base_valuation.py, StockAnalysisSystem/src/valuation/sector_specific/common.py, StockAnalysisSystem/src/valuation/apv.py, StockAnalysisSystem/src/models/stress_testing.py, StockAnalysisSystem/src/pages/company_analysis/risk.py, StockAnalysisSystem/src/pages/screening/stock_screener.py, StockAnalysisSystem/tests/test_capital.py, StockAnalysisSystem/tests/test_sector_models.py, StockAnalysisSystem/tests/test_apv.py, StockAnalysisSystem/tests/test_stress_testing.py, docs/adr/007-cost-of-capital.md
   depends: T01

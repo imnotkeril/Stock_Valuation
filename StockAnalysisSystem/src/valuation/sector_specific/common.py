@@ -25,9 +25,14 @@ import pandas as pd
 
 from StockAnalysisSystem.src.config import (
     DCF_PARAMETERS,
-    RISK_FREE_RATE,
     SECTOR_DCF_PARAMETERS,
     normalize_sector,
+)
+from StockAnalysisSystem.src.valuation.capital import (  # noqa: F401 - effective_tax_rate re-exported
+    DEFAULT_TAX_RATE,
+    cost_of_capital_for,
+    effective_tax_rate,
+    rate_summary,
 )
 from StockAnalysisSystem.src.utils.financial_data import (
     build_financial_data,
@@ -43,13 +48,6 @@ from StockAnalysisSystem.src.utils.financial_data import (
 
 logger = logging.getLogger(__name__)
 
-#: Mature-market equity risk premium used in CAPM.
-EQUITY_RISK_PREMIUM = 0.055
-#: Bounds applied to a CAPM-derived WACC.
-MIN_DISCOUNT_RATE = 0.06
-MAX_DISCOUNT_RATE = 0.20
-DEFAULT_TAX_RATE = 0.21
-MAX_TAX_RATE = 0.35
 #: Per-share values above this multiple of the share price are treated as model failures.
 MAX_VALUE_TO_PRICE = 20.0
 
@@ -229,62 +227,6 @@ def equity_bridge(enterprise_value: float, capital: Dict[str, float]) -> Dict[st
             "equity_value": float(equity)}
 
 
-def effective_tax_rate(income: Optional[pd.DataFrame]) -> float:
-    """Effective tax rate from the statements, bounded to [0, 35 %]; 21 % when not meaningful."""
-    rate = get_latest(income, "tax_rate")
-    if rate is None:
-        tax, pretax = series_by_period(income, "tax_provision"), series_by_period(income, "pretax_income")
-        common = tax.index.intersection(pretax.index)
-        total_pretax = float(pretax[common].sum()) if len(common) else 0.0
-        rate = safe_divide(float(tax[common].sum()), total_pretax) if total_pretax > 0 else None
-    if rate is None or not 0 <= rate <= 0.5:
-        return DEFAULT_TAX_RATE
-    return float(min(rate, MAX_TAX_RATE))
-
-
-def cost_of_capital(income: pd.DataFrame, balance: pd.DataFrame, market: Dict[str, Any],
-                    fallback_rate: float) -> Dict[str, Any]:
-    """
-    CAPM cost of equity (Blume-adjusted beta) and market-value WACC.
-
-    Cost of debt is interest expense / total debt, bounded to
-    [rf + 1 %, rf + 8 %]. The WACC is bounded to [6 %, 20 %]; ``fallback_rate``
-    is used when neither market nor book equity is available.
-    """
-    raw_beta = to_float(market.get("beta"))
-    beta = clip(0.67 * raw_beta + 0.33, 0.3, 3.0) if raw_beta is not None else 1.0
-    cost_of_equity = RISK_FREE_RATE + beta * EQUITY_RISK_PREMIUM
-    capital = capital_structure(balance)
-    debt = capital["total_debt"]
-    interest = abs(get_latest(income, "interest_expense", 0.0) or 0.0)
-    pre_tax_kd = clip(safe_divide(interest, debt, RISK_FREE_RATE + 0.02), RISK_FREE_RATE + 0.01, RISK_FREE_RATE + 0.08)
-    tax_rate = effective_tax_rate(income)
-    equity = to_float(market.get("market_cap"))
-    equity_basis = "market"
-    if not equity or equity <= 0:
-        equity, equity_basis = get_latest(balance, "total_equity"), "book"
-    if equity is None or equity <= 0:
-        wacc, equity_weight = fallback_rate, None
-        equity_basis = "sector default"
-    else:
-        equity_weight = equity / (equity + debt)
-        wacc = equity_weight * cost_of_equity + (1 - equity_weight) * pre_tax_kd * (1 - tax_rate)
-    return {
-        "wacc": float(clip(wacc, MIN_DISCOUNT_RATE, MAX_DISCOUNT_RATE)),
-        "unbounded_wacc": float(wacc),
-        "cost_of_equity": float(cost_of_equity),
-        "pre_tax_cost_of_debt": float(pre_tax_kd),
-        "after_tax_cost_of_debt": float(pre_tax_kd * (1 - tax_rate)),
-        "tax_rate": tax_rate,
-        "raw_beta": raw_beta,
-        "adjusted_beta": float(beta),
-        "risk_free_rate": RISK_FREE_RATE,
-        "equity_risk_premium": EQUITY_RISK_PREMIUM,
-        "equity_weight": equity_weight,
-        "equity_basis": equity_basis,
-    }
-
-
 def operating_history(income: pd.DataFrame, cash_flow: pd.DataFrame, tax_rate: float) -> pd.DataFrame:
     """
     Chronological operating history with free cash flow to the firm:
@@ -443,7 +385,8 @@ class ValuationContext:
 
     @cached_property
     def cost_of_capital(self) -> Dict[str, Any]:
-        return cost_of_capital(self.income, self.balance, self.market, self.sector_defaults["default_discount_rate"])
+        """Shared cost of capital (valuation/capital.py, ADR-007)."""
+        return cost_of_capital_for(self.financial_data, self.sector_defaults["default_discount_rate"])
 
     def latest(self, statement: str, item: Any, default: Optional[float] = None) -> Optional[float]:
         return get_latest(self.financial_data.get(statement), item, default)
@@ -831,8 +774,9 @@ class SectorValuationMixin:
         values = {name: ctx.params.get(name) for name in ctx.params
                   if name in applicable or ctx.sources.get(name) == "user"}
         sources = {name: ctx.sources[name] for name in values}
-        return clean({**values, **ctx.assumptions, "parameter_sources": sources,
-                      "cost_of_capital": ctx.cost_of_capital, "tax_rate": ctx.tax_rate})
+        return clean({**values, **ctx.assumptions, **rate_summary(ctx.cost_of_capital),
+                      "parameter_sources": sources, "cost_of_capital": ctx.cost_of_capital,
+                      "tax_rate": ctx.tax_rate})
 
 
 def common_derivations(ctx: ValuationContext) -> Dict[str, Callable[[], Any]]:

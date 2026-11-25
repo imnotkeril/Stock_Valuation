@@ -24,27 +24,30 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from StockAnalysisSystem.src.config import DCF_PARAMETERS, RISK_FREE_RATE, SECTOR_DCF_PARAMETERS, normalize_sector
+from StockAnalysisSystem.src.config import DCF_PARAMETERS, SECTOR_DCF_PARAMETERS, normalize_sector
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.utils.rates import RiskFreeRate, risk_free_rate
+from StockAnalysisSystem.src.valuation.capital import (  # noqa: F401 - bounds re-exported for callers
+    COST_OF_EQUITY_BOUNDS,
+    EQUITY_RISK_PREMIUM,
+    WACC_BOUNDS,
+    cost_of_capital_for,
+    rate_summary,
+)
 from StockAnalysisSystem.src.utils.financial_data import (
     build_financial_data,
     cagr,
     get_latest,
     get_series,
     is_empty,
-    safe_divide,
     to_float,
 )
 
 logger = logging.getLogger(__name__)
 
-#: Long-run equity risk premium used in CAPM.
-EQUITY_RISK_PREMIUM = 0.055
 #: Corporate tax rate used when the effective rate cannot be derived.
 DEFAULT_TAX_RATE = 0.21
-#: Bounds applied to estimated (not user-supplied) rates.
-WACC_BOUNDS = (0.05, 0.20)
-COST_OF_EQUITY_BOUNDS = (0.045, 0.25)
+#: Bounds applied to estimated (not user-supplied) growth.
 GROWTH_BOUNDS = (-0.05, 0.25)
 #: A method value outside this band around the share price is treated as implausible.
 PLAUSIBLE_PRICE_MULTIPLE = (0.01, 20.0)
@@ -190,7 +193,6 @@ class BaseValuation:
             data_loader: DataLoader used when ``financial_data`` is not supplied.
         """
         self.data_loader = data_loader if data_loader else DataLoader()
-        self.risk_free_rate = RISK_FREE_RATE
         self.dcf_parameters = DCF_PARAMETERS
         self.sector_dcf_parameters = SECTOR_DCF_PARAMETERS
 
@@ -321,6 +323,7 @@ class BaseValuation:
                                     else params['terminal_growth_rate']),
                 'forecast_years': rate_kwargs['forecast_years'] or params['forecast_years'],
                 'cost_of_equity': wacc['cost_of_equity'],
+                **rate_summary(wacc),
                 'wacc_components': wacc,
                 'user_overrides': overrides,
             }
@@ -572,7 +575,8 @@ class BaseValuation:
                 ticker, financial_data, methods,
                 weights=kwargs.get('weights') or self.get_method_weights(subsector),
                 sector=sector, subsector=subsector,
-                assumptions={**assumptions, 'user_overrides': overrides}, notes=notes,
+                assumptions={**rate_summary(self._wacc_components(financial_data, sector)), **assumptions,
+                             'user_overrides': overrides}, notes=notes,
             )
         except Exception as e:
             logger.error(f"{self.__class__.__name__} valuation failed for {ticker}: {e}")
@@ -749,43 +753,13 @@ class BaseValuation:
         return params
 
     def _wacc_components(self, financial_data: Optional[Dict[str, Any]], sector: Optional[str] = None) -> Dict[str, Any]:
-        """
-        CAPM cost of equity and WACC with their inputs.
+        """CAPM cost of equity and WACC with their inputs: the shared rule in valuation/capital.py (ADR-007)."""
+        fallback = self._get_dcf_parameters(sector)['default_discount_rate']
+        return cost_of_capital_for(financial_data or {}, fallback, rf=self.risk_free())
 
-        Ke = rf + beta * ERP (beta defaults to 1.0); Kd = interest / debt bounded
-        to [rf + 0.5 %, 15 %]; weights from market cap (book equity fallback)
-        and book debt; WACC bounded to WACC_BOUNDS.
-        """
-        income, balance, _ = self._statements(financial_data)
-        market = self._market_data(financial_data)
-        raw_beta = to_float(market.get('beta'))
-        if raw_beta is None:
-            raw_beta = to_float(self._company_info(financial_data).get('beta'))
-        beta = clamp(raw_beta, 0.3, 3.0) if raw_beta is not None else 1.0
-        rf = self.risk_free_rate
-        cost_of_equity = clamp(rf + beta * EQUITY_RISK_PREMIUM, *COST_OF_EQUITY_BOUNDS)
-
-        debt = self._total_debt(balance)
-        interest = abs(get_latest(income, 'interest_expense') or 0.0)
-        implied_kd = safe_divide(interest, debt)
-        cost_of_debt = clamp(implied_kd, rf + 0.005, 0.15) if implied_kd else rf + 0.02
-        tax_rate = self._effective_tax_rate(financial_data)
-
-        equity = self._market_cap(financial_data) or _finite_positive(get_latest(balance, 'total_equity'))
-        if equity:
-            equity_weight = equity / (equity + debt)
-        else:
-            equity_weight = 0.7
-        debt_weight = 1 - equity_weight
-        raw_wacc = equity_weight * cost_of_equity + debt_weight * cost_of_debt * (1 - tax_rate)
-        return {
-            'risk_free_rate': rf, 'beta': beta, 'beta_assumed': raw_beta is None,
-            'equity_risk_premium': EQUITY_RISK_PREMIUM, 'cost_of_equity': cost_of_equity,
-            'pre_tax_cost_of_debt': cost_of_debt, 'tax_rate': tax_rate,
-            'after_tax_cost_of_debt': cost_of_debt * (1 - tax_rate),
-            'equity_weight': equity_weight, 'debt_weight': debt_weight,
-            'wacc': clamp(raw_wacc, *WACC_BOUNDS),
-        }
+    def risk_free(self) -> RiskFreeRate:
+        """Current risk-free rate (utils.rates): override -> FRED DGS10 -> fallback constant."""
+        return risk_free_rate(self.data_loader)
 
     def _calculate_discount_rate(self, ticker: str, financial_data: Dict[str, Any],
                                  sector: Optional[str] = None) -> Optional[float]:

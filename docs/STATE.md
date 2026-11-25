@@ -38,8 +38,11 @@ Framework (from adoption on):
 - [x] brief/T01 - 5 items read (blueprints/finance-screener, stack/python, stack/pandas, TDD skill, known-traps)
 - [x] build/T01 utils/rates.py risk_free_rate() (env override -> FRED DGS10 cached 1 day + stale -> fallback 4.5 %), DataLoader.get_fred_series — 26 passed (test_rates + test_data_loader), ruff clean; live "4.91 % (FRED DGS10, as of 2026-11-24)"
 
+- [x] brief/T02 - 3 items (stack/python, TDD skill, known-traps; read in T01, rechecked); owns + config.py (legacy RISK_FREE_RATE removed as T01 promised)
+- [x] build/T02 valuation/capital.py one cost_of_capital (Blume beta, Kd rf+0.5..8 %, WACC 6-20 %, ERP 4.4 % Damodaran Jul-2026, live rf) used by generic, sector, APV, stress, Sharpe; ADR-007 — 402 passed, ruff clean; live rf 4.91 %: AAPL 184.47 -48.1 % Sell (wacc 9.49 %), JPM 278.54 -12.1 % Reduce, XOM 86.30 -45.4 % Sell (wacc 6.59 %), MSFT -31.4 %, PGR +54.5 %, CHTR +232 % (wacc 6 % floor, T05)
+
 ## Next
-- [ ] build/T02 - run `step-brief --task T02` first; shared valuation/capital.py + re-baseline ERP (ADR-007), switch consumers one commit each
+- [ ] build/T03 - run `step-brief --task T03` first; DCF/APV tab defaults from capital.py + "why methods differ" box
 
 ## Needed from owner
 - none

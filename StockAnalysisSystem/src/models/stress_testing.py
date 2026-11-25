@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from StockAnalysisSystem.src.valuation.capital import LONG_RUN_GROWTH, market_discount_rate
+
 
 @dataclass(frozen=True)
 class Shock:
@@ -45,20 +47,24 @@ HISTORICAL_CRISES = [
     {"name": "2022 rate shock", "start": "2022-01-03", "end": "2022-10-12", "market_drawdown": -0.254},
 ]
 
-#: Approximate sensitivity of an EV/EBITDA multiple to discount rates (multiple ~ 1 / (r - g))
-_BASE_DISCOUNT = 0.09
-_BASE_GROWTH = 0.025
 
+def rate_multiple_factor(rate_bp: float, base_discount: Optional[float] = None,
+                         growth: float = LONG_RUN_GROWTH) -> float:
+    """
+    Multiple scaling when discount rates move by ``rate_bp``: (r - g) / (r + d - g), multiple ~ 1 / (r - g).
 
-def rate_multiple_factor(rate_bp: float, base_discount: float = _BASE_DISCOUNT, growth: float = _BASE_GROWTH) -> float:
-    """Multiple scaling when discount rates move by ``rate_bp``: (r - g) / (r + d - g)."""
+    ``base_discount`` defaults to the market discount rate rf + ERP (valuation/capital.py).
+    """
+    if base_discount is None:
+        base_discount = market_discount_rate()
     shifted = base_discount + rate_bp / 10_000 - growth
     return (base_discount - growth) / shifted if shifted > 0 else 0.0
 
 
 def scenario_valuations(revenue: float, ebitda: float, ev_ebitda: float, net_debt: float, shares: float,
                         debt: float = 0.0, interest_expense: float = 0.0,
-                        scenarios: Optional[List[Shock]] = None) -> pd.DataFrame:
+                        scenarios: Optional[List[Shock]] = None,
+                        base_discount: Optional[float] = None) -> pd.DataFrame:
     """
     Equity value per share under each shock (first row = base case).
 
@@ -69,6 +75,7 @@ def scenario_valuations(revenue: float, ebitda: float, ev_ebitda: float, net_deb
         raise ValueError("Positive revenue, EBITDA, EV/EBITDA and shares are required.")
     margin = ebitda / revenue
     interest = abs(interest_expense or 0.0)
+    base_discount = market_discount_rate() if base_discount is None else base_discount
 
     def row(name: str, description: str, rev: float, mgn: float, mult: float, int_cost: float) -> Dict[str, Any]:
         stressed_ebitda = rev * max(mgn, 0.0)
@@ -81,7 +88,7 @@ def scenario_valuations(revenue: float, ebitda: float, ev_ebitda: float, net_deb
 
     rows = [row("Base case", "Latest EBITDA at the current multiple.", revenue, margin, ev_ebitda, interest)]
     for shock in scenarios or SCENARIOS:
-        mult = ev_ebitda * (1 + shock.multiple) * rate_multiple_factor(shock.rate_bp)
+        mult = ev_ebitda * (1 + shock.multiple) * rate_multiple_factor(shock.rate_bp, base_discount)
         int_cost = interest + max(debt or 0.0, 0.0) * shock.floating_debt * shock.rate_bp / 10_000
         rows.append(row(shock.name, shock.description, revenue * (1 + shock.revenue), margin + shock.margin_pts,
                         mult, int_cost))
