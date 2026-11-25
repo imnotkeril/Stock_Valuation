@@ -44,8 +44,11 @@ Framework (from adoption on):
 - [x] brief/T03 - 2 items (stack/python, known-traps); owns valuation.py + test_pages_interaction.py
 - [x] build/T03 DCF slider default = shared WACC, APV inputs (tax, Kd, beta, rf) from capital.py, rf caption, "Why do DCF, APV and the Sector Model differ?" expander on DCF + APV — 35 passed (pages_interaction + app), ruff clean; live AAPL DCF default 9.49 % (was table 12 %), XOM 6.59 % (was 9 %), caption "rf 4.91 % (FRED DGS10, as of 2026-11-24)"
 
+- [x] brief/T04 - 2 items (stack/python, known-traps); sector widgets already ticker-scoped, DCF/APV/Risk were not
+- [x] build/T04 main.reset_company_widgets() drops val_*/risk_* state when the analysed ticker changes — 22 passed (widget_state + pages_interaction), red check: 2 fail without the fix; ruff clean
+
 ## Next
-- [ ] build/T04 - run `step-brief --task T04` first; ticker-scoped Valuation/Risk widget state
+- [ ] build/T05 - run `step-brief --task T05` first; Valuation Filter sanity layer (outlier flag, real method)
 
 ## Needed from owner
 - none

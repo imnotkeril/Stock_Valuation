@@ -344,6 +344,9 @@ def render_peer_snapshot(bundle: Dict[str, Any]) -> None:
 # Company analysis page
 # ---------------------------------------------------------------------------
 SYNCED_TICKER_KEY = "_ca_synced_ticker"
+#: Widget-key prefixes of per-company inputs (pages/company_analysis/valuation.py, risk.py; the sector
+#: model's keys start with "val_sector"). Cleared when the analysed company changes.
+COMPANY_WIDGET_PREFIXES = ("val_", "risk_")
 
 
 def _company_selector() -> Optional[str]:
@@ -389,7 +392,22 @@ def _date_range_selector() -> tuple:
     return str(today - timedelta(days=days)), str(today)
 
 
+def reset_company_widgets(state=None) -> List[str]:
+    """
+    Drop the Valuation / Risk widget state so the next company starts from its own defaults
+    (sliders keep their value per key, so without this JPM would show AAPL's DCF inputs).
+    """
+    state = st.session_state if state is None else state
+    stale = [key for key in list(state.keys()) if isinstance(key, str) and key.startswith(COMPANY_WIDGET_PREFIXES)]
+    for key in stale:
+        del state[key]
+    return stale
+
+
 def _set_request(ticker: str, start_date: str, end_date: str, period: str) -> None:
+    previous = (st.session_state.get(REQUEST_KEY) or {}).get('ticker')
+    if previous and previous != ticker.upper():
+        reset_company_widgets()
     st.session_state[REQUEST_KEY] = {'ticker': ticker.upper(), 'start_date': start_date, 'end_date': end_date,
                                      'period': period}
     st.session_state[nav.ACTIVE_TICKER_KEY] = ticker.upper()

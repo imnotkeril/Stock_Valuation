@@ -32,7 +32,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_pages_interaction.py StockAnalysisSystem/tests/test_app.py && $PY -m ruff check StockAnalysisSystem`
   done: DCF slider default = shared WACC (not the static sector table); APV uses the same rf/ERP; caption "rf x.xx % (FRED DGS10, as of <date>)"; expander explains why DCF, APV and Sector Model differ.
-- [ ] T04 Ticker-scoped widget state (R3 / U1)
+- [x] T04 Ticker-scoped widget state (R3 / U1)
   layer: frontend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/main.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/src/pages/company_analysis/sector_valuation.py, StockAnalysisSystem/src/pages/company_analysis/risk.py, StockAnalysisSystem/tests/test_widget_state.py
   depends: T03
