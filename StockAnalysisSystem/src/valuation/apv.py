@@ -42,10 +42,13 @@ def apv_valuation(base_ufcf: float, growth: float, years: int, terminal_growth: 
                   debt: float, cost_of_debt: float, tax_rate: float, cash: float = 0.0,
                   shares: Optional[float] = None) -> Dict[str, Any]:
     """
-    APV with constant-growth forecast and debt growing with the business after the forecast.
+    APV with a constant-growth forecast and a fixed amount of debt (Modigliani-Miller / Myers).
 
-    Tax shield each year = tax_rate * cost_of_debt * debt, discounted at the cost of debt
-    (debt-like risk); after the horizon it grows at ``terminal_growth``.
+    Tax shield each year = tax_rate * cost_of_debt * debt, discounted at the cost of debt (debt-like
+    risk). After the horizon the shield is a level perpetuity at the cost of debt (shield / Kd), so the
+    whole shield is consistent with the fixed-debt assumption behind Hamada unlevering. Growing it at
+    ``terminal_growth`` while discounting at Kd would mix in constant leverage (Miles-Ezzell /
+    Harris-Pringle), which discounts the shield at the unlevered cost instead (Fernandez 2004).
     """
     if unlevered_cost <= terminal_growth:
         raise ValueError("Unlevered cost of equity must exceed terminal growth.")
@@ -67,8 +70,8 @@ def apv_valuation(base_ufcf: float, growth: float, years: int, terminal_growth: 
                      "tax_shield": shield, "pv_tax_shield": shield / shield_discount})
     terminal_value = fcf * (1 + terminal_growth) / (unlevered_cost - terminal_growth)
     pv_terminal = terminal_value / (1 + unlevered_cost) ** years
-    if shield > 0 and cost_of_debt > terminal_growth:
-        terminal_shield = shield * (1 + terminal_growth) / (cost_of_debt - terminal_growth)
+    if shield > 0 and cost_of_debt > 0:
+        terminal_shield = shield / cost_of_debt
         pv_terminal_shield = terminal_shield / (1 + cost_of_debt) ** years
     else:
         pv_terminal_shield = 0.0
