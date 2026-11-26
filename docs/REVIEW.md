@@ -112,3 +112,19 @@ Tests run: `pytest test_parallel_fetch test_benchmarks test_dcf_fade test_golden
 | R-11 | P2 | Valid, fixed: cache entries older than 30 days skipped; `as_of` = oldest file used. |
 | R-12 | P2 | Valid, fixed: auto-run only on a single search result; exact symbol preselected in Matches. |
 | R-13 | P2 | Valid, fixed: no EV-multiple sample for Financials, note instead. |
+
+## Security — final pass (range 5d67a30..a6bde27, 2026-11-26)
+
+The `security-reviewer` agent was cut by an API rate limit; the build session ran the checks itself.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Dependencies | `pip-audit -r StockAnalysisSystem/requirements.txt`: "No known vulnerabilities found". |
+| 2 | `.env` in git | `git log --all -- .env`: 0 commits. |
+| 3 | Key values in the range | every `.env` value (>= 12 chars) searched in `git log -p 5d67a30..HEAD`: 0 hits. |
+| 4 | Finnhub insider key | sent only as request param `token`; `news_sentiment._cached` drops `token` from the cache-file digest; errors log only the exception type. |
+| 5 | HTML sinks | no new `unsafe_allow_html` in the range; insider names, deal names and sample rows go through `st.dataframe` / `st.metric` (escaped). Pre-existing `_status` uses constant text and colours. |
+| 6 | Threads | per-symbol cache files, rf warmed before the pool, queued work cancelled on stop (R-10); no shared mutable state in models. |
+| 7 | SSRF / uploads | fixed HTTPS hosts only; precedents CSV upload parsed with `pd.read_csv` and `clean_deals` (no formulas evaluated, local single-user file). |
+
+Verified findings: none.

@@ -130,7 +130,14 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   done: green output pasted.
 
 ## Phase 4 — Hardening (review fixes -> QA -> docs -> release prep)
-- [ ] T18 Review fixes for Phase 3 (light `reviewer` pass over the P2 diff, valid findings fixed)
+- [x] T27 Methodology research (owner request, before T18 sign-off): three research agents (DCF/WACC/APV/DDM, sector models, distress + risk metrics) against Damodaran / CFA / McKinsey / Nareit / original papers -> `docs/review/METHODOLOGY_RESEARCH.md`; real discrepancies fixed, each with a test
+  layer: qa · tier: B · owner: quant-research · model: opus
+  owns: docs/review/METHODOLOGY_RESEARCH.md (+ files named by valid findings), StockAnalysisSystem/tests/test_methodology_fixes.py
+  depends: T17
+  uses: none
+  check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
+  done: claim -> source -> code -> verdict -> fix table; fixes committed with tests; open items listed.
+- [x] T18 Review fixes for Phase 3 (light `reviewer` pass over the P2 diff, valid findings fixed)
   layer: qa · tier: B · owner: reviewer · model: opus
   owns: docs/REVIEW.md (+ files named by valid findings)
   depends: T17
@@ -166,7 +173,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_balance_liquidity.py && $PY -m ruff check StockAnalysisSystem`
   done: hand-computed grouping test; four conditions + verdict shown; missing rows handled.
-- [ ] T26 Phase 3b gate
+- [x] T26 Phase 3b gate
   layer: qa · tier: C · owner: qa-tester · model: haiku · owns: - · depends: T22, T23, T24, T25
   uses: none
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
@@ -194,6 +201,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   done: green output pasted; PR text drafted; push/PR only on the owner's yes.
 
 ## Backlog (not planned now; owner decides)
+- Methodology leftovers (METHODOLOGY_RESEARCH.md): RONIC terminal value, marginal tax rate for the debt shield, minority interest / preferred in the DCF-tab bridge, VZ DCF tab (WACC floor + telecom growth).
 - P3: R14 wider ruff + narrow broad excepts + split giant modules; R15 watchlist / "what changed"; R16 sensitivity tornado in PDF; R17 second price source.
 - MacroLens ideas (review 5.1): yield-curve 2s10s/10s3m card, recession probability (probit), regime quadrant + sector tilt table (informational only, never in fair value).
 - `repo-polish` after T21, only on the owner's yes.
