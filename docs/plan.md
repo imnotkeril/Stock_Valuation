@@ -46,7 +46,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:pandas
   check: `$T StockAnalysisSystem/tests/test_valuation_filter.py && $PY -m ruff check StockAnalysisSystem`
   done: results beyond +-100 % flagged "check inputs" and not counted as undervalued by default; Method column shows the model actually used; spread across methods shown; default approach = sector model.
-- [ ] T06 Bank health score, duplicate Altman text, bank stress message, Peer Comparison N/A and 0 % (R5 / U4, U5)
+- [x] T06 Bank health score, duplicate Altman text, bank stress message, Peer Comparison N/A and 0 % (R5 / U4, U5)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/pages/company_analysis/risk.py, StockAnalysisSystem/src/pages/comparison/peer_comparison.py, StockAnalysisSystem/tests/test_risk_page.py, StockAnalysisSystem/tests/test_peer_comparison.py
   depends: T04

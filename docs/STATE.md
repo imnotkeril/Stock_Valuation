@@ -50,8 +50,11 @@ Framework (from adoption on):
 - [x] brief/T05 - 2 items (stack/pandas, known-traps)
 - [x] build/T05 Valuation Filter: default approach = sector model (DCF alias), Method = model + heaviest method, method range/spread -> confidence, |upside| > 100 % flagged "check inputs" and hidden unless ticked — 15 passed (valuation_filter) + 7 page-button tests, ruff clean; live: CHTR +232 % flagged Low, PGR "Financial: Excess Return" $235-$524 Low, AAPL "Technology: DCF (SBC-adjusted FCF)" High
 
+- [x] brief/T06 - 2 items (stack/python, known-traps); test_risk_page.py and test_peer_comparison.py are new files
+- [x] build/T06 bank health score without cash-flow component, distress texts printed once, bank stress-test explanation, scenario caption r = rf + ERP (was 9 %), Peer Comparison method = sector model + heaviest method, WACC/cost of equity, terminal growth and rf instead of N/A / 0.00 % — 7 passed (risk_page + peer_comparison), 18 page-interaction passed, ruff clean
+
 ## Next
-- [ ] build/T06 - run `step-brief --task T06` first; bank Risk tab + Peer Comparison N/A / 0.00 %
+- [ ] build/T07 - run `step-brief --task T07` first; confidence on the recommendation badge
 
 ## Needed from owner
 - none

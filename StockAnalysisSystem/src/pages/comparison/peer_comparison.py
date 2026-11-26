@@ -559,7 +559,7 @@ def run_peer_comparison_page():
                                     "Current Price": f"${current_price:.2f}",
                                     "Fair Value": f"${fair_value:.2f}",
                                     "Upside/Downside": f"{upside:.2f}%",
-                                    "Valuation Method": valuation.get('method', 'N/A').upper(),
+                                    "Valuation Method": valuation_method_label(valuation),
                                 })
 
                     # Display table
@@ -613,7 +613,7 @@ def run_peer_comparison_page():
                         st.subheader(f"Valuation Summary for {primary_ticker}")
 
                         primary_valuation = valuations[primary_ticker]
-                        method = primary_valuation.get('method', 'dcf').upper()
+                        rates = valuation_rates(primary_valuation)
 
                         # Display key valuation parameters
                         col1, col2, col3 = st.columns(3)
@@ -626,28 +626,12 @@ def run_peer_comparison_page():
                             )
 
                         with col2:
-                            if method == 'DCF':
-                                st.metric(
-                                    "Discount Rate",
-                                    f"{primary_valuation.get('discount_rate', 0) * 100:.2f}%"
-                                )
-                            elif method == 'RELATIVE':
-                                st.metric(
-                                    "Avg Multiple",
-                                    f"{primary_valuation.get('average_multiple', 0):.2f}x"
-                                )
+                            st.metric(rates["rate_label"], _pct_or_na(rates["rate"]))
 
                         with col3:
-                            if method == 'DCF':
-                                st.metric(
-                                    "Terminal Growth",
-                                    f"{primary_valuation.get('terminal_growth', 0) * 100:.2f}%"
-                                )
-                            elif method == 'RELATIVE':
-                                st.metric(
-                                    "Sector Discount",
-                                    f"{primary_valuation.get('sector_discount', 0) * 100:.2f}%"
-                                )
+                            st.metric("Terminal Growth", _pct_or_na(rates["terminal_growth"]))
+                        st.caption(f"Method: {valuation_method_label(primary_valuation)}"
+                                   f"{' · rf ' + rates['rf_label'] if rates['rf_label'] else ''}.")
 
                         # Display more details in expandable section
                         with st.expander("View Detailed Valuation Parameters"):
@@ -679,3 +663,41 @@ def run_peer_comparison_page():
 # For direct execution
 if __name__ == "__main__":
     run_peer_comparison_page()
+
+
+def valuation_method_label(result):
+    """The sector model and its heaviest method, e.g. 'Financial: Excess Return (Residual Income)'."""
+    from StockAnalysisSystem.src.pages.screening.valuation_filter import method_label
+
+    if not (result or {}).get("valuation_methods"):
+        return "N/A"
+    return method_label(result)
+
+
+def valuation_rates(result):
+    """
+    Discount rate actually used by the model (WACC, or cost of equity for equity-only models such as
+    banks), terminal growth and the risk-free rate label; None where the model has none.
+    """
+    assumptions = (result or {}).get("assumptions") or {}
+    capital = assumptions.get("cost_of_capital") or assumptions.get("wacc_components") or {}
+    rate, label = assumptions.get("discount_rate"), "Discount Rate (WACC)"
+    if not isinstance(rate, (int, float)):
+        rate = assumptions.get("cost_of_equity") or capital.get("cost_of_equity")
+        label = "Cost of Equity"
+    if not isinstance(rate, (int, float)):
+        rate = capital.get("wacc")
+        label = "Discount Rate (WACC)"
+    terminal = assumptions.get("terminal_growth")
+    rf = assumptions.get("risk_free_rate")
+    rf_label = None
+    if isinstance(rf, (int, float)):
+        as_of = assumptions.get("risk_free_rate_as_of")
+        rf_label = f"{rf:.2%} ({assumptions.get('risk_free_rate_source') or 'source n/a'}" \
+                   f"{', as of ' + as_of if as_of else ''})"
+    return {"rate": rate if isinstance(rate, (int, float)) else None, "rate_label": label,
+            "terminal_growth": terminal if isinstance(terminal, (int, float)) else None, "rf_label": rf_label}
+
+
+def _pct_or_na(value):
+    return f"{value * 100:.2f}%" if isinstance(value, (int, float)) else "n/a"

@@ -75,11 +75,11 @@ def render_company_risk(ticker: str, financial_data: Dict[str, Any], company_inf
     """
     sector = canonical_sector(company_info, financial_data)
     if has_any_statement(financial_data):
-        render_section("Financial health", _render_health_score, financial_data)
+        render_section("Financial health", _render_health_score, financial_data, sector)
         render_section("Distress models", _render_distress_models, financial_data, sector)
         render_section("Liquidity and solvency", _render_liquidity, financial_data, company_info, price_data,
                        sector)
-        render_section("Stress test", _render_stress_test, financial_data)
+        render_section("Stress test", _render_stress_test, financial_data, sector)
         render_section("Scenario analysis", _render_scenarios, financial_data, company_info, price_data, sector)
     else:
         st.info("Financial statements are unavailable, so only market risk can be assessed.")
@@ -89,15 +89,24 @@ def render_company_risk(ticker: str, financial_data: Dict[str, Any], company_inf
 # ---------------------------------------------------------------------------
 # Fundamental risk
 # ---------------------------------------------------------------------------
-def _render_health_score(financial_data: Dict[str, Any]) -> None:
-    st.subheader("Financial health score")
+def health_score(financial_data: Dict[str, Any], sector: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Financial health score. For banks and insurers the cash-flow component is left out (free cash flow
+    is not meaningful when deposits and reserves are operating liabilities) and the weights rebalance.
+    """
     analyzer = FinancialStatementAnalyzer()
     income = get_statement(financial_data, "income_statement")
     balance = get_statement(financial_data, "balance_sheet")
     cash_flow = get_statement(financial_data, "cash_flow")
-    health = safe_call(lambda: analyzer.calculate_financial_health_score(
-        analyzer.analyze_income_statement(income), analyzer.analyze_balance_sheet(balance),
-        analyzer.analyze_cash_flow(cash_flow)), default={}, label="financial health score") or {}
+    cash_analysis = {} if sector == "Financials" else analyzer.analyze_cash_flow(cash_flow)
+    return analyzer.calculate_financial_health_score(
+        analyzer.analyze_income_statement(income), analyzer.analyze_balance_sheet(balance), cash_analysis)
+
+
+def _render_health_score(financial_data: Dict[str, Any], sector: Optional[str] = None) -> None:
+    st.subheader("Financial health score")
+    health = safe_call(lambda: health_score(financial_data, sector), default={},
+                       label="financial health score") or {}
     score = to_float(health.get("overall_score"))
     if score is None:
         st.info("Not enough data to compute a financial health score.")
@@ -114,6 +123,9 @@ def _render_health_score(financial_data: Dict[str, Any]) -> None:
         show_chart(score_bar_chart(components, "Score by component"), key=f"{KEY}health_components")
     if health.get("assessment_summary"):
         st.markdown(health["assessment_summary"])
+    if sector == "Financials":
+        st.caption("Bank / insurer: the cash-flow component is excluded, because free cash flow is not "
+                   "meaningful when deposits and policy reserves are operating liabilities.")
     strengths, weaknesses = health.get("strengths") or [], health.get("weaknesses") or []
     col1, col2 = st.columns(2)
     with col1:
@@ -148,14 +160,18 @@ def _render_distress_models(financial_data: Dict[str, Any], sector: str) -> None
     level = assessment.get("overall_risk_level", "N/A")
     st.markdown(f"Overall distress risk: <span style='color:{assessment.get('overall_color', '#e0e0e0')};"
                 f"font-weight:bold'>{level}</span>", unsafe_allow_html=True)
+    shown = set()  # each explanation is printed once (the overall text often repeats a model's text)
     if assessment.get("overall_description"):
         st.caption(assessment["overall_description"])
+        shown.add(_normalized(assessment["overall_description"]))
 
     applicable = {k: v for k, v in models.items() if isinstance(v, dict) and v.get("applicable", True)
                   and to_float(v.get("score")) is not None}
     if not applicable:
-        reasons = {v.get("interpretation") for v in models.values() if isinstance(v, dict) and v.get("interpretation")}
-        st.info(" ".join(sorted(reasons)) or "The distress models are not applicable to this company.")
+        reasons = {v.get("interpretation") for v in models.values() if isinstance(v, dict) and v.get("interpretation")
+                   and _normalized(v.get("interpretation")) not in shown}
+        if reasons or not shown:
+            st.info(" ".join(sorted(reasons)) or "The distress models are not applicable to this company.")
     else:
         columns = st.columns(len(applicable))
         for column, (key, model) in zip(columns, applicable.items()):
@@ -171,7 +187,10 @@ def _render_distress_models(financial_data: Dict[str, Any], sector: str) -> None
                     fig = gauge_chart(model.get("score"), model.get("model", key), axis, zones,
                                       bar_color=model.get("color"))
                 show_chart(fig, key=f"{KEY}gauge_{key}")
-                st.caption(model.get("interpretation", ""))
+                text = model.get("interpretation", "")
+                if text and _normalized(text) not in shown:
+                    st.caption(text)
+                    shown.add(_normalized(text))
 
         rows = [{"Model": m.get("model", k), "Score": fmt_number(m.get("score")),
                  "Zone": str(m.get("assessment", "")).title(), "Formula": m.get("formula", "")}
@@ -186,6 +205,10 @@ def _render_distress_models(financial_data: Dict[str, Any], sector: str) -> None
     if flags:
         st.markdown("**Red flags**")
         st.markdown("\n".join(f"- {flag}" for flag in flags))
+
+
+def _normalized(text: Any) -> str:
+    return " ".join(str(text or "").split()).lower()
 
 
 def _render_liquidity(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
@@ -207,6 +230,7 @@ def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, An
     """Macro shock scenarios on an EV/EBITDA valuation and historical crisis drawdowns."""
     from StockAnalysisSystem.src.models.stress_testing import historical_scenarios, scenario_valuations
     from StockAnalysisSystem.src.pages.company_analysis.page_helpers import market_snapshot
+    from StockAnalysisSystem.src.valuation.capital import LONG_RUN_GROWTH, market_discount_rate
 
     st.subheader("Scenario analysis")
     snapshot = market_snapshot(financial_data, company_info, price_data)
@@ -238,7 +262,8 @@ def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, An
         worst = table.iloc[1:].sort_values("change").iloc[0]
         st.caption(f"Worst case: **{worst['scenario']}** ({fmt_pct(worst['change'], signed=True)}). The base case "
                    "values the company at its current multiple, so it equals the market price up to the EV bridge. "
-                   "Rate shocks scale the multiple by (r - g) / (r + shock - g) with r = 9 %, g = 2.5 %.")
+                   f"Rate shocks scale the multiple by (r - g) / (r + shock - g) with r = rf + ERP = "
+                   f"{market_discount_rate():.1%}, g = {LONG_RUN_GROWTH:.1%}.")
 
     st.markdown("**Historical crises** - S&P 500 peak-to-trough drawdowns")
     beta = to_float(snapshot.get("beta"))
@@ -256,9 +281,14 @@ def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, An
                "sensitivity; actual drawdowns come from the loaded price history.")
 
 
-def _render_stress_test(financial_data: Dict[str, Any]) -> None:
+def _render_stress_test(financial_data: Dict[str, Any], sector: Optional[str] = None) -> None:
     """Effect of a revenue decline on operating income, given fixed vs variable costs."""
     st.subheader("Revenue stress test")
+    if sector == "Financials":
+        st.info("The revenue / operating-income stress test does not apply to banks and insurers: their "
+                "risk sits in credit losses, funding costs and capital ratios, not in operating leverage. "
+                "See the historical crises in Scenario analysis below.")
+        return
     income = get_statement(financial_data, "income_statement")
     revenue = get_latest(income, "revenue")
     operating_income = get_latest(income, "operating_income")
