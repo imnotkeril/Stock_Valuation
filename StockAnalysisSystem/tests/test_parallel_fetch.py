@@ -52,7 +52,7 @@ def test_rate_limiter_spaces_task_starts():
     # Six starts 20 ms apart cannot all happen in less than 5 x 20 ms, however many workers run.
     begin = time.monotonic()
     ss.parallel_map(lambda _: None, range(6), workers=6, limiter=ss.RateLimiter(0.02))
-    assert time.monotonic() - begin >= 0.095
+    assert time.monotonic() - begin >= 0.08  # 5 gaps x 20 ms, minus Windows clock resolution (~15 ms)
 
 
 def test_screener_parallel_matches_sequential(data_loader):
@@ -80,5 +80,4 @@ def test_valuation_filter_parallel_matches_sequential(data_loader, approach):
     key = [(r["symbol"], round(r["fair_value"], 6)) for r in sequential]
     assert [(r["symbol"], round(r["fair_value"], 6)) for r in parallel] == key
     assert parallel.hidden_outliers == sequential.hidden_outliers
-    if approach != "Relative":  # offline fixtures carry no sector multiples for the relative leg
-        assert key, "margin of safety -1000 % keeps every valued stock"
+    assert key, "margin of safety -1000 % keeps every valued stock (review R-08: relative leg must run)"

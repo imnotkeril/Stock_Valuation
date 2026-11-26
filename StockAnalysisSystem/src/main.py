@@ -361,11 +361,12 @@ def _mark_search_submitted() -> None:
 
 
 def unique_match(query: str, results: List[Dict[str, Any]]) -> Optional[str]:
-    """The ticker a query clearly means: an exact symbol match, else the only result; None if ambiguous."""
-    wanted = query.strip().upper()
+    """
+    The ticker a query clearly means: the only search result; None when several match. An exact symbol
+    among several results ("C" -> C, CRM, CSCO) is not auto-run, because the box also commits on blur
+    and the user may be about to pick another match (review R-12); it is preselected instead.
+    """
     symbols = [str(r.get('symbol', '')).upper() for r in results]
-    if wanted in symbols:
-        return wanted
     return symbols[0] if len(symbols) == 1 and symbols[0] else None
 
 
@@ -379,7 +380,7 @@ def _company_selector() -> Optional[str]:
         st.session_state[SYNCED_TICKER_KEY] = active
     query = st.text_input("Search company or ticker", key="ca_search", placeholder="e.g. Apple or AAPL",
                           on_change=_mark_search_submitted,
-                          help="Press Enter: a unique match (or an exact ticker) is analysed at once.")
+                          help="Press Enter: a query with a single match is analysed at once; otherwise pick from Matches.")
     if query.strip():
         results = search_tickers(query.strip())
         if not results:
@@ -390,7 +391,8 @@ def _company_selector() -> Optional[str]:
         if unique:
             st.session_state[SEARCH_PICK_KEY] = unique
         options = [f"{r['symbol']} — {r.get('name', '')}" for r in results]
-        choice = st.selectbox("Matches", options, key="ca_search_choice")
+        exact = [i for i, r in enumerate(results) if str(r.get('symbol', '')).upper() == query.strip().upper()]
+        choice = st.selectbox("Matches", options, index=exact[0] if exact else 0, key="ca_search_choice")
         return choice.split(" — ")[0] if choice else None
 
     options = list(POPULAR_TICKERS)

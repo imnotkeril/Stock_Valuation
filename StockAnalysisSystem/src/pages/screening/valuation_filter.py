@@ -740,8 +740,6 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     # Results list
     valuation_results = ScreenResults()
 
-    # Get sector benchmarks for relative valuation
-    sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector if sector != "All" else None)
 
     def dcf_overrides(stock_sector, income_stmt, model_data=None):
         """
@@ -839,7 +837,9 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                 try:
                     # Get sector avg multiples
                     stock_sector = company_info.get('sector', sector if sector != "All" else None)
-                    sector_multiples = sector_benchmarks.get(stock_sector, {}).get('valuation', {})
+                    # get_sector_benchmarks(sector) returns {category: {...}} for that one sector (R-08)
+                    sector_multiples = (ratio_analyzer.get_sector_benchmarks(stock_sector) or {}).get(
+                        'valuation', {}) or {}
 
                     # Calculate relative valuation
                     relative_result = calculate_relative_valuation(
@@ -849,6 +849,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                         sector_multiples,
                         current_price,
                         discounts=multiple_discounts,
+                        sector=stock_sector,
                     )
                 except Exception as e:
                     logger.warning(f"Relative valuation failed for {symbol}: {str(e)}")
@@ -1093,7 +1094,8 @@ def _fmt_multiple(value):
     return f"{value:.2f}x" if isinstance(value, (int, float)) else "N/A"
 
 
-def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price, discounts=None):
+def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price, discounts=None,
+                                 sector=None):
     """
     Calculate fair value using relative valuation methods
 
@@ -1105,6 +1107,9 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
         current_price: Current stock price
         discounts: Required discount to each sector multiple, e.g. {"P/E": 0.15}; the fair
             multiple is sector average x (1 - discount)
+        sector: When given, multiples that mislead for the sector (P/B for asset-light firms, P/S and
+            EV/EBITDA for financials; ``industry.benchmarks.irrelevant_multiples``) are left out, as on
+            the Relative tab (review R-09)
 
     Returns:
         Dictionary with relative valuation results
@@ -1117,6 +1122,11 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
 
     # Extract sector averages, reduced by the required discount
     discounts = discounts or {}
+    if sector:
+        from StockAnalysisSystem.src.industry.benchmarks import irrelevant_multiples
+
+        excluded = irrelevant_multiples(sector)
+        sector_multiples = {k: v for k, v in (sector_multiples or {}).items() if k not in excluded}
 
     def required_multiple(key, label):
         multiple = sector_multiples.get(key)

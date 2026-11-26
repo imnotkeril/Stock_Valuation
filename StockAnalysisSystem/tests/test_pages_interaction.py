@@ -70,7 +70,7 @@ def test_unique_match_picks_exact_symbol_or_single_result():
     from StockAnalysisSystem.src.main import unique_match
 
     many = [{"symbol": "AAPL"}, {"symbol": "AAPD"}]
-    assert unique_match("aapl", many) == "AAPL"
+    assert unique_match("aapl", many) is None  # exact symbol among several: preselected, not auto-run (R-12)
     assert unique_match("apple", [{"symbol": "AAPL"}]) == "AAPL"
     assert unique_match("app", many) is None
     assert unique_match("x", []) is None

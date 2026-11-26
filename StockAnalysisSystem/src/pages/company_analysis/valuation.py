@@ -403,7 +403,10 @@ def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, A
     sector = canonical_sector(company_info, financial_data)
     deals = pt.load_deals()
     sample_mode = deals.empty and st.session_state.get(f"{KEY}deals_sample", False)
-    if deals.empty and not sample_mode:
+    if sector == "Financials":
+        st.caption("Deal EV/Revenue and EV/EBITDA are not meaningful for banks and insurers (as on the Relative "
+                   "tab), so no sample is offered; bank deals are usually priced on P/TBV or P/E.")
+    elif deals.empty and not sample_mode:
         st.button("Load an illustrative sample", key=f"{KEY}deals_sample_load", icon=":material/science:",
                   on_click=lambda: st.session_state.__setitem__(f"{KEY}deals_sample", True),
                   help="Five fictional deals with rounded, typical multiples for this sector, to show how the tab "

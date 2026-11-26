@@ -646,14 +646,19 @@ def parallel_map(func: Callable[[Any], Any], items: Sequence[Any], workers: int 
         return results
     with ThreadPoolExecutor(max_workers=min(workers, total), initializer=_attach_streamlit_context()) as pool:
         futures = {pool.submit(run, item): i for i, item in enumerate(items)}
-        for done, future in enumerate(as_completed(futures), start=1):
-            i = futures[future]
-            try:
-                results[i] = future.result()
-            except Exception:
-                logger.exception("Task failed for %s", label(items[i]))
-            if progress_callback:
-                progress_callback(done, total, label(items[i]))
+        try:
+            for done, future in enumerate(as_completed(futures), start=1):
+                i = futures[future]
+                try:
+                    results[i] = future.result()
+                except Exception:
+                    logger.exception("Task failed for %s", label(items[i]))
+                if progress_callback:
+                    progress_callback(done, total, label(items[i]))
+        except BaseException:
+            # Streamlit rerun / stop (raised from the progress bar) or Ctrl+C: drop queued downloads
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
     return results
 
 
