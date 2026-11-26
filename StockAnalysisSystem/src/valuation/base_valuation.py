@@ -83,23 +83,97 @@ RECOMMENDATION_THRESHOLDS = (
 )
 
 
-def get_recommendation(upside_pct: Optional[float]) -> Dict[str, Any]:
+#: Method spread (max - min) / fair value above which the methods disagree.
+SPREAD_MEDIUM, SPREAD_HIGH = 0.3, 0.6
+#: Terminal value share of a DCF above which the value rests on the far future.
+TERMINAL_SHARE_HIGH = 0.8
+#: |upside| above this (percent) is implausible rather than a signal.
+IMPLAUSIBLE_UPSIDE_PCT = 100.0
+SOFT_COLOR = "#b0bec5"
+
+
+def assess_confidence(methods: Dict[str, Dict[str, Any]], summary: Dict[str, Any],
+                      weights: Optional[Dict[str, float]] = None,
+                      financial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Confidence in a blended fair value: ``{"level": "High" | "Medium" | "Low", "reasons": [str]}``.
+
+    One penalty point each for: methods spread more than 30 % of the fair value (two above 60 %),
+    a single usable method, a DCF whose terminal value is more than 80 % of its value, fewer than
+    60 % of the weighted methods usable, fewer than three annual statements; two points for an
+    upside beyond +-100 %. 0 points = High, 1 = Medium, 2+ = Low.
+    """
+    reasons: List[str] = []
+    points = 0
+    fair = summary.get('weighted_value')
+    used = summary.get('methods_used') or []
+    if fair and len(used) >= 2 and summary.get('range') is not None:
+        spread = summary['range'] / fair
+        if spread > SPREAD_HIGH:
+            points += 2
+            reasons.append(f"methods disagree (range {spread:.0%} of the fair value)")
+        elif spread > SPREAD_MEDIUM:
+            points += 1
+            reasons.append(f"methods spread {spread:.0%} of the fair value")
+    elif fair:
+        points += 1
+        reasons.append("only one usable method")
+    for key in used:
+        share = to_float((methods.get(key) or {}).get('terminal_value_share'))
+        if share is not None and share > TERMINAL_SHARE_HIGH:
+            points += 1
+            reasons.append(f"{share:.0%} of the {methods[key].get('method', key)} value is terminal value")
+            break
+    planned = [k for k, w in (weights or {}).items() if w and w > 0]
+    if planned and len([k for k in planned if k in used]) / len(planned) < 0.6:
+        points += 1
+        reasons.append(f"{len([k for k in planned if k in used])} of {len(planned)} weighted methods usable")
+    income = (financial_data or {}).get('income_statement')
+    if isinstance(income, pd.DataFrame) and 0 < income.shape[1] < 3:
+        points += 1
+        reasons.append(f"only {income.shape[1]} years of statements")
+    upside = summary.get('potential_upside')
+    if upside is not None and abs(upside) > IMPLAUSIBLE_UPSIDE_PCT:
+        points += 2
+        reasons.append(f"upside {upside:+.0f} % is implausibly large; check the inputs")
+    level = "High" if points == 0 else "Medium" if points == 1 else "Low"
+    return {"level": level, "reasons": reasons}
+
+
+def get_recommendation(upside_pct: Optional[float], confidence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Translate an upside/downside percentage into an investment recommendation.
 
     Args:
         upside_pct: Upside of fair value over the current price, in percent.
+        confidence: Optional result of :func:`assess_confidence`. With a Low level a
+            Buy/Sell-type label is softened to "Below model value" / "Above model value"
+            (the price relative to the model), keeping the strong label in ``model_label``.
 
     Returns:
-        Dict with ``label``, ``color`` and ``rationale`` keys. ``label`` is
+        Dict with ``label``, ``color``, ``rationale`` and, with ``confidence``,
+        ``confidence`` / ``confidence_reasons`` / ``model_label``. ``label`` is
         ``"N/A"`` when the upside is unknown.
     """
     if upside_pct is None or not np.isfinite(upside_pct):
         return {"label": "N/A", "color": "#9e9e9e", "rationale": "Insufficient data to generate a recommendation."}
+    result = {"label": "Sell", "color": "#faa1a4", "rationale": RECOMMENDATION_THRESHOLDS[-1][3]}
     for threshold, label, color, rationale in RECOMMENDATION_THRESHOLDS:
         if upside_pct > threshold:
-            return {"label": label, "color": color, "rationale": rationale}
-    return {"label": "Sell", "color": "#faa1a4", "rationale": RECOMMENDATION_THRESHOLDS[-1][3]}
+            result = {"label": label, "color": color, "rationale": rationale}
+            break
+    if not confidence:
+        return result
+    result.update(confidence=confidence.get("level"), confidence_reasons=list(confidence.get("reasons") or []),
+                  model_label=result["label"])
+    if confidence.get("level") == "Low" and result["label"] != "Hold":
+        below = upside_pct > 0
+        result.update(
+            label="Below model value" if below else "Above model value", color=SOFT_COLOR,
+            rationale=(f"The price is {'below' if below else 'above'} the model value ({upside_pct:+.0f} %), "
+                       f"but confidence is low ({'; '.join(confidence.get('reasons') or [])}), so this is not "
+                       f"read as a '{result['label']}' signal."))
+    return result
 
 
 def _finite_positive(value: Any) -> Optional[float]:
@@ -377,7 +451,8 @@ class BaseValuation:
             'current_price': current_price,
             'value_per_share': summary['weighted_value'],
             'potential_upside': summary['potential_upside'],
-            'recommendation': get_recommendation(summary['potential_upside']),
+            'recommendation': get_recommendation(
+                summary['potential_upside'], assess_confidence(methods, summary, weights, financial_data)),
             'valuation_summary': summary,
             'valuation_methods': methods,
             'assumptions': clean_result(assumptions or {}),

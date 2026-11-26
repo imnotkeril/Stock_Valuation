@@ -53,7 +53,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_risk_page.py StockAnalysisSystem/tests/test_peer_comparison.py && $PY -m ruff check StockAnalysisSystem`
   done: Financials health score excludes the FCF component; Altman paragraph printed once; revenue stress test explains the bank case; Peer Comparison shows the real method and rates instead of N/A / 0.00 %.
-- [ ] T07 Confidence on the recommendation badge (R6)
+- [x] T07 Confidence on the recommendation badge (R6)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/valuation/base_valuation.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_recommendation.py
   depends: T04

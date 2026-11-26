@@ -117,9 +117,13 @@ def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: D
     cols[3].markdown(
         f"<div class='metric-card'><div class='metric-label'>Recommendation</div>"
         f"<div class='metric-value' style='color:{recommendation.get('color', '#9e9e9e')}'>"
-        f"{recommendation.get('label', 'N/A')}</div></div>", unsafe_allow_html=True)
+        f"{recommendation.get('label', 'N/A')}</div>"
+        f"{_confidence_line(recommendation)}</div>", unsafe_allow_html=True)
     if recommendation.get("rationale"):
         st.caption(recommendation["rationale"])
+    if recommendation.get("confidence_reasons") and recommendation.get("confidence") != "Low":
+        st.caption(f"Confidence {recommendation['confidence'].lower()}: "
+                   f"{'; '.join(recommendation['confidence_reasons'])}.")
 
     methods = result.get("valuation_methods") or {}
     weights = (result.get("valuation_summary") or {}).get("weights") or {}
@@ -141,6 +145,14 @@ def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: D
     st.dataframe(pd.DataFrame(rows), hide_index=True, key=f"{KEY}summary_table")
     st.caption(f"Model: {result.get('model')} · subsector: {result.get('subsector') or 'n/a'}. "
                "Adjust subsector, methods and assumptions in the Sector Model tab.")
+
+
+def _confidence_line(recommendation: Dict[str, Any]) -> str:
+    """Small 'Confidence: X' line under the recommendation badge (empty when unknown)."""
+    level = recommendation.get("confidence")
+    if not level:
+        return ""
+    return f"<div class='metric-label'>Confidence: {level}</div>"
 
 
 # ---------------------------------------------------------------------------

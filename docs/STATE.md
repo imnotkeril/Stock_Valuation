@@ -53,8 +53,11 @@ Framework (from adoption on):
 - [x] brief/T06 - 2 items (stack/python, known-traps); test_risk_page.py and test_peer_comparison.py are new files
 - [x] build/T06 bank health score without cash-flow component, distress texts printed once, bank stress-test explanation, scenario caption r = rf + ERP (was 9 %), Peer Comparison method = sector model + heaviest method, WACC/cost of equity, terminal growth and rf instead of N/A / 0.00 % — 7 passed (risk_page + peer_comparison), 18 page-interaction passed, ruff clean
 
+- [x] brief/T07 - 2 items (stack/python, known-traps)
+- [x] build/T07 assess_confidence (method spread, single method, terminal share > 80 %, usable/weighted methods, < 3 statement years, |upside| > 100 %) on every recommendation; Low softens Buy/Sell to "Below/Above model value"; badge shows confidence — 111 passed (recommendation + sector_models + foundation), ruff clean; live: AAPL Sell High, JPM Reduce Medium, XOM/MSFT "Above model value" Low, PGR/CHTR "Below model value" Low
+
 ## Next
-- [ ] build/T07 - run `step-brief --task T07` first; confidence on the recommendation badge
+- [ ] gate/T08 - run `step-brief --task T08` first; P1 gate (full suite, ruff, live, AC20.1-AC20.6)
 
 ## Needed from owner
 - none
