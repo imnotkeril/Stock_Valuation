@@ -362,12 +362,15 @@ def _mark_search_submitted() -> None:
 
 def unique_match(query: str, results: List[Dict[str, Any]]) -> Optional[str]:
     """
-    The ticker a query clearly means: the only search result; None when several match. An exact symbol
+    The ticker a query clearly means: the only (US) search result; None when several match. An exact symbol
     among several results ("C" -> C, CRM, CSCO) is not auto-run, because the box also commits on blur
     and the user may be about to pick another match (review R-12); it is preselected instead.
     """
     symbols = [str(r.get('symbol', '')).upper() for r in results]
-    return symbols[0] if len(symbols) == 1 and symbols[0] else None
+    # Yahoo search also lists foreign lines of the same company (AAPL.SAO, APC.DE): count US listings only
+    primary = [s for s in symbols if s and not any(ch in s for ch in ".:")]
+    candidates = primary if primary else symbols
+    return candidates[0] if len(candidates) == 1 and candidates[0] else None
 
 
 def _company_selector() -> Optional[str]:

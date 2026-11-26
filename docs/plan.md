@@ -180,7 +180,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   done: green output pasted.
 
 ## Phase 4 (cont.) — QA, docs, release
-- [ ] T19 QA: browser pass of every page for AAPL/JPM/XOM, `docs/QA.md` updated
+- [x] T19 QA: browser pass of every page for AAPL/JPM/XOM, `docs/QA.md` updated
   layer: qa · tier: C · owner: qa-tester · model: sonnet
   owns: docs/QA.md
   depends: T26

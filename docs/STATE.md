@@ -76,9 +76,10 @@ Framework (from adoption on):
 - [x] research/T27 methodology research (owner): 3 research agents -> docs/review/METHODOLOGY_RESEARCH.md; fixed Zmijewski probit (6c04793), DCF tab on unlevered FCF + SBC window, generic FCFF minus SBC, one tax rule, terminal g capped at rf (f1b4d12), leases out of debt, common equity / NI to common for banks, Nareit FFO, telecom cash margin (5ba4387), APV terminal shield perpetuity at Kd (a6bde27) — 10 new golden tests (test_methodology_fixes); open: RONIC TV, marginal tax shield, DCF-tab minority/preferred bridge, VZ DCF tab (backlog)
 - [x] review/T18 round 2: reviewer 1 P1 + 5 P2 (R-08 filter relative leg dead, R-09..R-13) all fixed 6c04793 with tests (test_review_round2_fixes); R-02..R-07 fixed b05fbbb (test_review_round1_fixes); security final: pip-audit clean, .env never committed, 0 key hits in range, no new HTML sinks -> docs/REVIEW.md
 - [x] gate/T26 Phase 3b gate — full suite "533 passed in 178.76s", ruff "All checks passed!"; live AAPL 184.41 -48.1 % Sell High, JPM 278.97 -11.9 % Reduce Medium, XOM 87.00 -45.0 % Above model value Low (T22/T23/T25 by quant agent: de6258e, 3c4d8bb, d5f3396)
+- [x] qa/T19 live QA: AppTest with real data on every page + Company tabs AAPL/JPM/XOM, 0 exceptions/errors/warnings (timings in docs/QA.md); browser pass found one-step pick blocked by foreign listings -> unique_match counts US listings (test added); 5 screenshots in docs/screenshots/
 
 ## Next
-- [ ] qa/T19 browser QA AAPL/JPM/XOM, then T20 docs, T21 release prep, push + PR + CI + merge (owner allowed merge)
+- [ ] docs/T20 METHODOLOGY.md, README, USER_GUIDE with screenshots; then T21, push + PR + CI + merge
 
 ## Needed from owner
 - none

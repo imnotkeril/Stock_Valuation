@@ -73,6 +73,7 @@ def test_unique_match_picks_exact_symbol_or_single_result():
     assert unique_match("aapl", many) is None  # exact symbol among several: preselected, not auto-run (R-12)
     assert unique_match("apple", [{"symbol": "AAPL"}]) == "AAPL"
     assert unique_match("app", many) is None
+    assert unique_match("apple inc", [{"symbol": "AAPL"}, {"symbol": "AAPL.SAO"}, {"symbol": "APC.DE"}]) == "AAPL"
     assert unique_match("x", []) is None
 
 
