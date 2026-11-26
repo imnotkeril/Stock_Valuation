@@ -426,9 +426,16 @@ def _render_sector_performance(ticker: str, prices: pd.DataFrame, sector_prices:
     excess = stock_ret - etf_ret
     cols[2].metric("Excess return", f"{excess * 100:+.1f} pp", delta=f"{excess * 100:+.1f} pp",
                    help="Stock return minus sector ETF return over the period (percentage points).")
-    cols[3].metric("Correlation", fmt_number(correlation), help="Correlation of daily returns.")
+    cols[3].metric("Correlation", fmt_number(correlation),
+                   help="Correlation of daily returns with the sector ETF: 1 = move together, 0 = unrelated.")
     cols[4].metric("Beta vs sector", fmt_number(beta),
-                   help="Sensitivity of the stock's daily returns to the sector ETF's daily returns.")
+                   help="Slope of the stock's daily returns on the sector ETF's: 1 = moves one for one with the "
+                        "sector. Not the market beta used in the cost of capital (that is measured against "
+                        "the S&P 500 and Blume-adjusted).")
+    if correlation is not None and correlation < 0.5:
+        st.caption(f"Low correlation ({correlation:.2f}) means the sector ETF explains little of {ticker}'s daily "
+                   "moves, so the beta against it is small too. This is common when one company is a large "
+                   "weight in its own ETF or the ETF mixes unlike businesses; it says nothing about market risk.")
 
 
 # ---------------------------------------------------------------------------

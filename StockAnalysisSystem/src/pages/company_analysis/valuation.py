@@ -535,7 +535,7 @@ def _render_asset_based(financial_data: Dict[str, Any], snapshot: Dict[str, Opti
     cols = st.columns(len(values))
     for col, (label, value) in zip(cols, values.items()):
         col.metric(f"{label} / share", fmt_price(value),
-                   delta=f"P/x {price / value:.2f}" if price and value and value > 0 else None,
+                   delta=f"Price is {price / value:.2f}x this" if price and value and value > 0 else None,
                    delta_color="off")
     show_chart(value_comparison_chart(list(values), list(values.values()), price, "Asset values per share"),
                key=f"{KEY}asset_chart")

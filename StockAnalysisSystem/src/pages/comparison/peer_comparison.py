@@ -22,6 +22,11 @@ logging.basicConfig(
 logger = logging.getLogger('peer_comparison')
 
 
+def _activate(state_key):
+    """Button callback: keep the results on screen from the next rerun on."""
+    st.session_state[state_key] = True
+
+
 def run_peer_comparison_page():
     """Main function to run the peer comparison page"""
     st.title("Peer Comparison Analysis")
@@ -136,6 +141,12 @@ def run_peer_comparison_page():
             peer_tickers = []
 
     # Main content area - show comparison results
+    if primary_ticker and not compare_button:
+        st.info(f"Pick peers, the period and metrics in the sidebar, then run the comparison for "
+                f"**{primary_ticker}** and {len(peer_tickers)} peer(s). It loads data and runs a full "
+                "valuation for each company (about 2 s per company on a cold cache).")
+        st.button("Compare companies", type="primary", key="peer_compare_main", icon=":material/compare_arrows:",
+                  on_click=_activate, args=("peer_compare_active",))
     if primary_ticker and compare_button:
         # Display loading message
         with st.spinner(f"Analyzing {primary_ticker} and peer companies..."):

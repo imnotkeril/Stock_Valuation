@@ -102,7 +102,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_dcf_fade.py && $PY -m ruff check StockAnalysisSystem && $LIVE`
   done: linear growth fade to terminal; SBC deduction toggle (default on for Technology); multi-stage/Monte Carlo/scenario DCF either reachable or removed with the doc claims.
-- [ ] T14 UX U6-U9: empty-state hints + main-area run buttons, one-step company pick, static Sector Outlook labelled, clearer labels (R10)
+- [x] T14 UX U6-U9: empty-state hints + main-area run buttons, one-step company pick, static Sector Outlook labelled, clearer labels (R10)
   layer: frontend · tier: C · owner: frontend-dev · model: sonnet
   owns: StockAnalysisSystem/src/main.py, StockAnalysisSystem/src/pages/comparison/peer_comparison.py, StockAnalysisSystem/src/pages/comparison/sector_analysis.py, StockAnalysisSystem/src/pages/company_analysis/overview.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_pages_interaction.py
   depends: T13

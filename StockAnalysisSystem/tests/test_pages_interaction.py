@@ -64,3 +64,34 @@ def test_dcf_and_apv_use_the_shared_cost_of_capital(aapl):
     assert any(c.startswith("Same inputs as the WACC: rf 4.50 %") for c in captions), captions
     labels = [e.label for e in at.expander]
     assert labels.count("Why do DCF, APV and the Sector Model differ?") == 2, labels
+
+
+def test_unique_match_picks_exact_symbol_or_single_result():
+    from StockAnalysisSystem.src.main import unique_match
+
+    many = [{"symbol": "AAPL"}, {"symbol": "AAPD"}]
+    assert unique_match("aapl", many) == "AAPL"
+    assert unique_match("apple", [{"symbol": "AAPL"}]) == "AAPL"
+    assert unique_match("app", many) is None
+    assert unique_match("x", []) is None
+
+
+def test_enter_on_exact_ticker_analyses_it():
+    at = AppTest.from_file(MAIN, default_timeout=600)
+    at.run()
+    at.sidebar.radio(key=nav.NAV_KEY).set_value(nav.COMPANY_ANALYSIS).run()
+    at.sidebar.text_input(key="ca_search").input("JPM").run()
+    assert not _problems(at), _problems(at)
+    assert any("(JPM)" in h.value for h in at.header), [h.value for h in at.header]
+
+
+@pytest.mark.parametrize("page, key", [(nav.PEER_COMPARISON, "peer_compare_main"),
+                                       (nav.SECTOR_ANALYSIS, "sector_analyze_main")])
+def test_comparison_pages_offer_a_main_area_run_button(page, key):
+    at = AppTest.from_file(MAIN, default_timeout=600)
+    at.run()
+    at.sidebar.radio(key=nav.NAV_KEY).set_value(page).run()
+    assert at.info, "empty-state hint missing"
+    at.button(key=key).click().run()
+    assert not _problems(at), _problems(at)
+    assert not [b for b in at.button if b.key == key], "hint should disappear once results show"

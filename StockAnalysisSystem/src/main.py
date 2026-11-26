@@ -283,7 +283,8 @@ def render_company_header(bundle: Dict[str, Any]) -> None:
                    delta=f"{day_change:+.2f}% 1D" if day_change is not None else None)
     cols[1].metric("1-month change", f"{month_change:+.2f}%" if month_change is not None else "N/A")
     first_date = f"{pd.Timestamp(close.index[0]):%Y-%m-%d}" if not close.empty else bundle['start_date']
-    cols[2].metric(f"Change since {first_date}", f"{range_change:+.2f}%" if range_change is not None else "N/A")
+    cols[2].metric("Change over chart range", f"{range_change:+.2f}%" if range_change is not None else "N/A",
+                   help=f"Price change from the first close in the selected range ({first_date}) to the last close.")
     cols[3].metric("Market cap", format_large_number(market.get('market_cap')))
     pe = to_float(info.get('pe_ratio'))
     cols[4].metric("P/E (TTM)", f"{pe:.1f}" if pe else "N/A")
@@ -349,6 +350,25 @@ SYNCED_TICKER_KEY = "_ca_synced_ticker"
 COMPANY_WIDGET_PREFIXES = ("val_", "risk_")
 
 
+SEARCH_SUBMITTED_KEY = "_ca_search_submitted"
+SEARCH_PICK_KEY = "_ca_search_pick"
+
+
+def _mark_search_submitted() -> None:
+    """text_input callback: Enter (or leaving the box) after typing a query."""
+    st.session_state[SEARCH_SUBMITTED_KEY] = True
+    st.session_state.pop(SEARCH_PICK_KEY, None)
+
+
+def unique_match(query: str, results: List[Dict[str, Any]]) -> Optional[str]:
+    """The ticker a query clearly means: an exact symbol match, else the only result; None if ambiguous."""
+    wanted = query.strip().upper()
+    symbols = [str(r.get('symbol', '')).upper() for r in results]
+    if wanted in symbols:
+        return wanted
+    return symbols[0] if len(symbols) == 1 and symbols[0] else None
+
+
 def _company_selector() -> Optional[str]:
     """Sidebar company search / quick pick. Returns the chosen ticker."""
     active = nav.get_active_ticker()
@@ -357,12 +377,18 @@ def _company_selector() -> Optional[str]:
         st.session_state["ca_popular"] = active
         st.session_state["ca_search"] = ""
         st.session_state[SYNCED_TICKER_KEY] = active
-    query = st.text_input("Search company or ticker", key="ca_search", placeholder="e.g. Apple or AAPL")
+    query = st.text_input("Search company or ticker", key="ca_search", placeholder="e.g. Apple or AAPL",
+                          on_change=_mark_search_submitted,
+                          help="Press Enter: a unique match (or an exact ticker) is analysed at once.")
     if query.strip():
         results = search_tickers(query.strip())
         if not results:
             st.warning("No companies found. You can still type an exact ticker.")
+            st.session_state[SEARCH_PICK_KEY] = query.strip().upper()
             return query.strip().upper()
+        unique = unique_match(query, results)
+        if unique:
+            st.session_state[SEARCH_PICK_KEY] = unique
         options = [f"{r['symbol']} — {r.get('name', '')}" for r in results]
         choice = st.selectbox("Matches", options, key="ca_search_choice")
         return choice.split(" — ")[0] if choice else None
@@ -424,6 +450,9 @@ def render_company_analysis() -> None:
         if st.button("Analyze company", type="primary", key="ca_analyze", icon=":material/query_stats:",
                      disabled=not ticker, width="stretch"):
             _set_request(ticker, start_date, end_date, period)
+        elif st.session_state.pop(SEARCH_SUBMITTED_KEY, False) and st.session_state.get(SEARCH_PICK_KEY):
+            # Enter on a query that names one company: analyse it without the extra button click
+            _set_request(st.session_state.pop(SEARCH_PICK_KEY), start_date, end_date, period)
 
     request = st.session_state.get(REQUEST_KEY)
     active = nav.get_active_ticker()
