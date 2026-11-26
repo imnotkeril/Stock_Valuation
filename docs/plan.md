@@ -74,7 +74,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: skill:verification-before-completion, agent:security-reviewer (owner of the security pass: FRED fetch, env override, deps, secrets)
   check: `$T && $PY -m ruff check StockAnalysisSystem`
   done: `docs/REVIEW.md` lists findings with dispositions; every valid P0/P1 fixed and re-tested.
-- [ ] T10 Phase 2 gate
+- [x] T10 Phase 2 gate
   layer: qa · tier: C · owner: qa-tester · model: haiku · owns: - · depends: T09
   uses: none
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`

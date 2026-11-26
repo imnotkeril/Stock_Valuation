@@ -64,6 +64,7 @@ Framework (from adoption on):
 - [x] build/T13 DCF tab: growth fades linearly to terminal (default on), SBC deduction toggle (default on when reported); dcf_models variants kept (used by tech/retail/manufacturing models, not dead) — 11 passed (dcf_fade + golden), ruff clean; live DCF tab AAPL 230.52 -> 168.00 (sector DCF 181), XOM 71.94 -> 82.91, MSFT 157.62 -> 125.50
 
 - [x] review/T09 reviewer: 1 P1 + 6 P2, security-reviewer: 0 (pip-audit clean, .env never committed) -> docs/REVIEW.md; R-01 fixed (confidence counts only methods that ran) — 71 passed (recommendation + sector_models), ruff clean; R-02..R-07 (P2) open for T18
+- [x] gate/T10 Phase 2 gate (new session, worktree review-fixes-finish) — full suite "464 passed in 154.18s", ruff "All checks passed!"; live AAPL fair 184.47 -48.1 % Sell High (wacc 9.49 %, rf 4.91 %), JPM 278.54 -12.1 % Reduce Medium, XOM 86.30 -45.4 % Above model value Low
 
 ## Next
 - [ ] gate/T10 - run `step-brief --task T10` first; then T14 (UX U6-U9), T15, T16, T17, T18 (incl. REVIEW.md R-02..R-07), T19-T21
