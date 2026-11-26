@@ -58,6 +58,8 @@ Framework (from adoption on):
 
 - [x] gate/T08 P1 gate — full suite "446 passed in 146.50s", ruff "All checks passed!"; live check AAPL Sell High (fair 184.47), JPM Reduce Medium (278.54), XOM Above model value Low (86.30), PGR/CHTR Below model value Low; browser (port 8502): AAPL Valuation shows "Default WACC 9.49%: rf 4.91 % (FRED DGS10, as of 2026-11-24)", Confidence: High, why-differ expander, Sharpe + scenario on live rf; JPM Risk: cash-flow component excluded, bank stress-test text, Confidence: Medium; Valuation Filter defaults to Sector model with outlier toggle. Gate found a repeated distress sentence for JPM -> risk.unique_sentences() (sentence-level dedupe, test added, browser recheck 1x) — risk tests 4 passed, ruff clean. AC20.1-AC20.6 met.
 - [x] build/T11 (run while the T09 review agents work; tests-only, no overlap) golden values: DCF tab projection, sector revenue DCF, WACC, Hamada Ku, APV, residual income, DDM = Gordon, justified P/B, all hand-computed in comments — 8 passed, ruff clean
+- [x] brief/T12 - 2 items (stack/pandas, known-traps)
+- [x] build/T12 Relative tab: live medians of cached universe companies (>= 5 per multiple, dated, never downloads) else static medians with the source named; P/B dropped outside book-value sectors, P/S + EV/EBITDA dropped for Financials ("Used" column, average over used only) — 5 passed (test_benchmarks), ruff clean; live: Technology P/E 21.5 (n=6, as of 2026-11-26), Financials P/E 11.8 (n=8), Energy static
 
 ## Next
 - [ ] review/T09 - run `step-brief --task T09` first; reviewer + security-reviewer agents on P1 diff (b6b2045..HEAD)

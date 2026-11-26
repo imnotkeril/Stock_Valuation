@@ -88,7 +88,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: none
   check: `$T StockAnalysisSystem/tests/test_golden_values.py`
   done: each formula checked against a hand calculation written in the test.
-- [ ] T12 Relative valuation: live universe medians, method relevance filter, benchmark date (R8)
+- [x] T12 Relative valuation: live universe medians, method relevance filter, benchmark date (R8)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/industry/benchmarks.py, StockAnalysisSystem/src/industry/universe.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_benchmarks.py
   depends: T09

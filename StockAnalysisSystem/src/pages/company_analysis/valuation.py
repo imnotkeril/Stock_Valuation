@@ -24,6 +24,7 @@ import pandas as pd
 import streamlit as st
 
 from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS, DCF_PARAMETERS
+from StockAnalysisSystem.src.industry.benchmarks import irrelevant_multiples, live_valuation_medians
 from StockAnalysisSystem.src.pages.company_analysis.charts import (
     dcf_cash_flow_chart,
     donut_chart,
@@ -440,7 +441,8 @@ def _render_relative(financial_data: Dict[str, Any], company_info: Dict[str, Any
     st.subheader("Relative valuation")
     sector = canonical_sector(company_info, financial_data)
     ratios = (get_company_ratios(financial_data, company_info, price_data) or {}).get("valuation", {})
-    benchmarks = (get_sector_benchmarks(sector) or {}).get("valuation", {})
+    benchmarks, source = relative_benchmarks(sector, company_info.get("symbol"))
+    excluded = irrelevant_multiples(sector)
     price = snapshot.get("price")
     keys = [k for k in MULTIPLES if to_float(ratios.get(k)) or to_float(benchmarks.get(k))]
     if not keys:
@@ -465,19 +467,37 @@ def _render_relative(financial_data: Dict[str, Any], company_info: Dict[str, Any
                     implied = (ev * bench / current - net_debt) / shares
             else:
                 implied = price * bench / current
-        if implied is not None and implied > 0:
+        if implied is not None and implied > 0 and key not in excluded:
             implied_labels.append(f"At sector {label}")
             implied_values.append(implied)
         rows.append({"Multiple": label, "Company": f"{current:.1f}x" if current else "N/A",
                      "Sector": f"{bench:.1f}x" if bench else "N/A",
                      "Premium / discount": fmt_pct(current / bench - 1, signed=True) if current and bench else "—",
-                     "Implied price": fmt_price(implied) if implied and implied > 0 else "—"})
+                     "Implied price": fmt_price(implied) if implied and implied > 0 else "—",
+                     "Used": f"No: {excluded[key]}" if key in excluded else "Yes"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, key=f"{KEY}relative_table")
+    st.caption(f"Sector multiples: {source}.")
     if implied_values:
         show_chart(value_comparison_chart(implied_labels, implied_values, price,
                                           "Price implied by sector multiples"), key=f"{KEY}relative_implied")
-        st.caption(f"Average implied price: {fmt_price(float(np.mean(implied_values)))}. A premium can be "
-                   "justified by faster growth, higher returns on capital or lower risk.")
+        st.caption(f"Average implied price (multiples marked Used): {fmt_price(float(np.mean(implied_values)))}. "
+                   "A premium can be justified by faster growth, higher returns on capital or lower risk.")
+
+
+def relative_benchmarks(sector: str, symbol: Optional[str] = None) -> tuple:
+    """
+    Sector multiples for the Relative tab: live medians of cached universe companies when at least
+    LIVE_MIN_COMPANIES have a value (per multiple), else the static long-run medians. Returns
+    ``(benchmarks, source description)``.
+    """
+    static = (get_sector_benchmarks(sector) or {}).get("valuation", {})
+    live = live_valuation_medians(sector, exclude=symbol)
+    if not live:
+        return static, "static long-run sector medians (no cached universe data yet)"
+    merged = {**static, **live["values"]}
+    used = ", ".join(f"{MULTIPLES[k][0]} n={live['counts'][k]}" for k in MULTIPLES if k in live["values"])
+    return merged, (f"live medians of {live['companies']} cached {sector} universe companies "
+                    f"({used}; data as of {live['as_of']}); other multiples use static long-run medians")
 
 
 # ---------------------------------------------------------------------------
