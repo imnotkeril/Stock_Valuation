@@ -8,7 +8,8 @@ Sub-tabs:
 * DCF - interactive two-stage DCF on free cash flow with a discount-rate x
   terminal-growth sensitivity grid.
 * Relative - current multiples versus sector benchmarks and the prices they imply.
-* Asset-Based - book, tangible book and adjusted net asset value per share.
+* Asset-Based - book and tangible book value per share, plus orderly / forced liquidation
+  value with editable recovery rates (a floor, not in the weighted fair value).
 * Sector Model - the sector-specific model with its subsector methods and
   adjustable assumptions (pages/company_analysis/sector_valuation.py).
 """
@@ -52,6 +53,7 @@ from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
 )
 from StockAnalysisSystem.src.utils.financial_data import cagr, get_latest, safe_divide, to_float
 from StockAnalysisSystem.src.valuation import capital
+from StockAnalysisSystem.src.valuation import liquidation as liq
 
 logger = logging.getLogger("company_valuation")
 
@@ -94,6 +96,7 @@ def render_company_valuation(ticker: str, financial_data: Dict[str, Any], compan
         render_section("Relative valuation", _render_relative, financial_data, company_info, price_data, snapshot)
     with tabs[4]:
         render_section("Asset-based valuation", _render_asset_based, financial_data, snapshot)
+        render_section("Liquidation value", _render_liquidation, ticker, financial_data, company_info, snapshot)
     with tabs[5]:
         render_section("Sector model", render_sector_valuation, ticker, financial_data, company_info, price_data,
                        key_prefix=f"{KEY}sector")
@@ -542,15 +545,8 @@ def _render_asset_based(financial_data: Dict[str, Any], snapshot: Dict[str, Opti
     if tangible is None:
         intangibles = get_latest(balance, "goodwill_and_intangibles") or get_latest(balance, "goodwill") or 0.0
         tangible = equity - intangibles
-    receivables = get_latest(balance, "receivables") or 0.0
-    inventory = get_latest(balance, "inventory") or 0.0
-    ppe = get_latest(balance, "net_ppe") or 0.0
-    haircut = st.slider("Liquidation haircut on receivables / inventory / PP&E", 0, 80, 30, 5, format="%d%%",
-                        key=f"{KEY}asset_haircut") / 100
-    liquidation = tangible - haircut * (receivables + inventory + ppe)
-
-    values = {"Book value": equity / shares, "Tangible book value": tangible / shares,
-              "Liquidation value": liquidation / shares}
+    # Liquidation value has its own section below (editable recovery rates per asset class).
+    values = {"Book value": equity / shares, "Tangible book value": tangible / shares}
     cols = st.columns(len(values))
     for col, (label, value) in zip(cols, values.items()):
         col.metric(f"{label} / share", fmt_price(value),
@@ -560,3 +556,61 @@ def _render_asset_based(financial_data: Dict[str, Any], snapshot: Dict[str, Opti
                key=f"{KEY}asset_chart")
     st.caption("Asset-based values are a floor for asset-heavy or distressed companies; for asset-light "
                "businesses most value lies in intangibles not recorded on the balance sheet.")
+
+
+def _render_liquidation(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                        snapshot: Dict[str, Optional[float]]) -> None:
+    """Orderly / forced liquidation value per share with editable recovery rates (src/valuation/liquidation.py)."""
+    from StockAnalysisSystem.src.pages.company_analysis.risk import is_balance_sheet_lender
+
+    st.subheader("Liquidation value")
+    balance = get_statement(financial_data, "balance_sheet")
+    books = liq.asset_classes(balance)
+    liabilities = get_latest(balance, "total_liabilities")
+    shares, price = snapshot.get("shares"), snapshot.get("price")
+    if books is None or liabilities is None or not shares:
+        st.info("Total assets, total liabilities or the share count is unavailable.")
+        return
+    sector = canonical_sector(company_info, financial_data)
+    if is_balance_sheet_lender(ticker, financial_data, company_info, sector):
+        st.info("Not meaningful for banks and insurers: their assets are loans and securities and their liabilities "
+                "are deposits / policy reserves, so a regulatory resolution, not an asset sale, applies. Shown for "
+                "reference only.", icon=":material/info:")
+    rates = pd.DataFrame({
+        "Asset class": list(liq.ASSET_CLASSES.values()),
+        "Book value ($B)": [books[k] / 1e9 for k in liq.ASSET_CLASSES],
+        "Orderly %": [liq.ORDERLY_RATES[k] * 100 for k in liq.ASSET_CLASSES],
+        "Forced %": [liq.FORCED_RATES[k] * 100 for k in liq.ASSET_CLASSES],
+    })
+    pct = {"min_value": 0.0, "max_value": 100.0, "step": 5.0, "format": "%.0f%%"}
+    edited = st.data_editor(
+        rates, hide_index=True, width="stretch", key=f"{KEY}liq_rates_{ticker}",
+        disabled=["Asset class", "Book value ($B)"],
+        column_config={"Book value ($B)": st.column_config.NumberColumn(format="%.2f"),
+                       "Orderly %": st.column_config.NumberColumn(help="Recovery in a 6-12 month sale", **pct),
+                       "Forced %": st.column_config.NumberColumn(help="Recovery in a fire sale (weeks)", **pct)})
+    col_o, col_f = st.columns(2)
+    orderly_cost = col_o.number_input("Orderly liquidation costs (% of gross recovery)", 0.0, 50.0,
+                                      liq.ORDERLY_COST * 100, 1.0, key=f"{KEY}liq_cost_orderly") / 100
+    forced_cost = col_f.number_input("Forced liquidation costs (% of gross recovery)", 0.0, 50.0,
+                                     liq.FORCED_COST * 100, 1.0, key=f"{KEY}liq_cost_forced") / 100
+
+    def _rates(column: str) -> Dict[str, float]:
+        values = pd.to_numeric(edited[column], errors="coerce").fillna(0.0).clip(0.0, 100.0) / 100
+        return dict(zip(liq.ASSET_CLASSES, values.tolist()))
+
+    results = {
+        "Orderly liquidation": liq.liquidation_value(books, liabilities, shares, _rates("Orderly %"), orderly_cost),
+        "Forced liquidation": liq.liquidation_value(books, liabilities, shares, _rates("Forced %"), forced_cost),
+    }
+    cols = st.columns(len(results))
+    for col, (label, result) in zip(cols, results.items()):
+        value = result.per_share
+        col.metric(f"{label} / share", fmt_price(value),
+                   delta=f"Price is {price / value:.2f}x this" if price and value and value > 0 else None,
+                   delta_color="off",
+                   help=f"Recovered {fmt_money(result.gross_recovery)} - costs {fmt_money(result.costs)} - "
+                        f"liabilities {fmt_money(result.total_liabilities)}, floored at 0")
+    st.caption("Liquidation value = sum(asset class x recovery rate) - liquidation costs - all liabilities, floored "
+               "at zero. It is a floor, not in the weighted fair value. Defaults are textbook recovery ranges; "
+               "goodwill and intangibles recover nothing in a break-up.")

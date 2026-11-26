@@ -138,7 +138,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   check: `$T && $PY -m ruff check StockAnalysisSystem`
   done: REVIEW.md round 2 with dispositions.
 ## Phase 3b — Owner knowledge-base gaps, small rows (SPEC F22, `docs/sources/KNOWLEDGE_BASE_GAP.md`)
-- [ ] T22 Liquidation value method: orderly + forced recovery rates per asset class, editable, floor only (AC22.1)
+- [x] T22 Liquidation value method: orderly + forced recovery rates per asset class, editable, floor only (AC22.1)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/valuation/liquidation.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_liquidation.py
   depends: T18
