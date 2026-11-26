@@ -123,7 +123,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: none
   check: `$T StockAnalysisSystem/tests/test_precedent_transactions.py && $PY -m ruff check StockAnalysisSystem`
   done: tab explains it is user-owned data, offers an "illustrative" sample; states whether it counts in fair value.
-- [ ] T17 Phase 3 gate
+- [x] T17 Phase 3 gate
   layer: qa · tier: C · owner: qa-tester · model: haiku · owns: - · depends: T11, T12, T13, T14, T15, T16
   uses: none
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`

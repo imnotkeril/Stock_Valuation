@@ -68,6 +68,7 @@ Framework (from adoption on):
 - [x] build/T14 UX: Peer/Sector main-area hint + run button (callback keeps results), Enter on exact ticker / single match analyses at once (unique_match), "Sector notes (static)" tab + caption, "Change over chart range" (date in help), asset tab "Price is N.NNx this", beta/correlation help + low-correlation caption — 39 passed (pages_interaction + app), ruff clean
 - [x] build/T15 parallel_map (6 workers, shared RateLimiter 50 ms between starts, results in input order, failures -> None, progress in caller thread, Streamlit ctx attached) for screen_stocks + perform_valuation_analysis (progress bar); rf warmed once before the pool — 23 passed (parallel_fetch + valuation_filter; parallel == sequential on fixtures), ruff clean; live cold: 24 tickers 30.3 s -> 5.7 s, full universe 132 tickers 33.4 s (was 3 min 20 s), 0 failures
 - [x] build/T16 Precedents: info "Not part of the weighted fair value" (cross-check only), "Load an illustrative sample" (5 fictional deals, rounded sector levels, source ILLUSTRATIVE SAMPLE, not saved until Save) + warning whenever sample rows feed the values — 8 passed (precedent_transactions), ruff clean
+- [x] gate/T17 Phase 3 gate — full suite "478 passed in 164.10s", ruff "All checks passed!"; live AAPL 184.47 -48.1 % Sell High, JPM 278.54 -12.1 % Reduce Medium, XOM 86.30 -45.4 % Above model value Low (unchanged: T14-T16 touch UI/speed only)
 
 ## Next
 - [ ] gate/T10 - run `step-brief --task T10` first; then T14 (UX U6-U9), T15, T16, T17, T18 (incl. REVIEW.md R-02..R-07), T19-T21
