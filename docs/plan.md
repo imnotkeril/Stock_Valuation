@@ -137,10 +137,46 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: skill:verification-before-completion
   check: `$T && $PY -m ruff check StockAnalysisSystem`
   done: REVIEW.md round 2 with dispositions.
+## Phase 3b — Owner knowledge-base gaps, small rows (SPEC F22, `docs/sources/KNOWLEDGE_BASE_GAP.md`)
+- [ ] T22 Liquidation value method: orderly + forced recovery rates per asset class, editable, floor only (AC22.1)
+  layer: backend · tier: B · owner: quant-research · model: sonnet
+  owns: StockAnalysisSystem/src/valuation/liquidation.py, StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/tests/test_liquidation.py
+  depends: T18
+  uses: stack:python
+  check: `$T StockAnalysisSystem/tests/test_liquidation.py && $PY -m ruff check StockAnalysisSystem && $LIVE`
+  done: hand-computed golden test; section on the Valuation tab; not in the weighted fair value (stated).
+- [ ] T23 Risk-adjusted ratios on the Risk tab: Sortino, Treynor, Calmar, Information ratio, Jensen's alpha (AC22.2)
+  layer: backend · tier: B · owner: quant-research · model: sonnet
+  owns: StockAnalysisSystem/src/models/performance_ratios.py, StockAnalysisSystem/src/pages/company_analysis/risk.py, StockAnalysisSystem/tests/test_performance_ratios.py
+  depends: T22
+  uses: stack:python
+  check: `$T StockAnalysisSystem/tests/test_performance_ratios.py StockAnalysisSystem/tests/test_risk_page.py && $PY -m ruff check StockAnalysisSystem`
+  done: golden values on a hand-made return series; N/A rules tested; definitions in captions.
+- [ ] T24 Insider transactions via Finnhub (key optional, missing key = explanation) (AC22.3)
+  layer: data · tier: B · owner: backend-dev · model: sonnet
+  owns: StockAnalysisSystem/src/utils/insider.py, StockAnalysisSystem/src/pages/company_analysis/overview.py, StockAnalysisSystem/tests/test_insider.py
+  depends: T18
+  uses: stack:python
+  check: `$T StockAnalysisSystem/tests/test_insider.py && $PY -m ruff check StockAnalysisSystem`
+  done: recorded-shape fixture parsed; no key -> info text, no request; HTTP error -> empty table, no exception.
+- [ ] T25 A1-A4 / P1-P4 balance liquidity grouping on Financials > Ratios (AC22.4)
+  layer: backend · tier: B · owner: quant-research · model: sonnet
+  owns: StockAnalysisSystem/src/models/balance_liquidity.py, StockAnalysisSystem/src/pages/company_analysis/financials.py, StockAnalysisSystem/tests/test_balance_liquidity.py
+  depends: T22
+  uses: stack:python
+  check: `$T StockAnalysisSystem/tests/test_balance_liquidity.py && $PY -m ruff check StockAnalysisSystem`
+  done: hand-computed grouping test; four conditions + verdict shown; missing rows handled.
+- [ ] T26 Phase 3b gate
+  layer: qa · tier: C · owner: qa-tester · model: haiku · owns: - · depends: T22, T23, T24, T25
+  uses: none
+  check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
+  done: green output pasted.
+
+## Phase 4 (cont.) — QA, docs, release
 - [ ] T19 QA: browser pass of every page for AAPL/JPM/XOM, `docs/QA.md` updated
   layer: qa · tier: C · owner: qa-tester · model: sonnet
   owns: docs/QA.md
-  depends: T18
+  depends: T26
   uses: none
   check: `$T && $LIVE`
   done: QA.md lists pages checked, timings, issues; no tracebacks.
@@ -178,6 +214,10 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
 | AC21.5 R11 | T15 |
 | AC21.6 R12 / U10 | T16 |
 | AC21.7 R13 | T11 |
+| AC22.1 | T22 |
+| AC22.2 | T23 |
+| AC22.3 | T24 |
+| AC22.4 | T25 |
 
 # History (pre-framework plan, kept as written)
 

@@ -56,6 +56,8 @@ from StockAnalysisSystem.src.valuation import capital
 logger = logging.getLogger("company_valuation")
 
 KEY = "val_"
+#: APV cost-of-debt slider ceiling (%): risk-free rate (<= 20 %, rates.PLAUSIBLE_RANGE) + 8 % spread cap.
+KD_SLIDER_MAX = 28.0
 
 #: Multiples compared in the relative valuation: key -> (label, metric description)
 MULTIPLES = {
@@ -329,8 +331,10 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}apv_terminal") / 100
     with col3:
-        kd = st.slider("Cost of debt", 1.0, 15.0, round(inputs["cost_of_debt"] * 100, 2), 0.25, format="%.2f%%",
-                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt.") / 100
+        kd_default = min(max(round(inputs["cost_of_debt"] * 100, 2), 1.0), KD_SLIDER_MAX)
+        kd = st.slider("Cost of debt", 1.0, KD_SLIDER_MAX, kd_default, 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt, kept within the risk-free "
+                                                "rate + 0.5 to 8 %.") / 100
         tax_rate = st.slider("Tax rate", 0.0, 35.0, round(inputs["tax_rate"] * 100, 1), 0.5, format="%.1f%%",
                              key=f"{KEY}apv_tax", help="Default: effective tax rate (same as the WACC).") / 100
     st.caption(f"Same inputs as the WACC: {_rate_caption(components)}.")
@@ -363,7 +367,7 @@ def _render_method_differences(components: Dict[str, Any]) -> None:
     """Why DCF, APV and the Sector Model give different values for one company (review R2)."""
     with st.expander("Why do DCF, APV and the Sector Model differ?"):
         st.markdown(
-            f"All three use the **same cost of capital**: risk-free rate {components['risk_free_rate_label']}, "
+            f"By default all three start from the **same cost of capital**: risk-free rate {components['risk_free_rate_label']}, "
             f"equity risk premium {components['equity_risk_premium']:.1%}, Blume-adjusted beta "
             f"{components['adjusted_beta']:.2f}, cost of equity {components['cost_of_equity']:.2%}, "
             f"WACC {components['wacc']:.2%}. They differ in what they discount:\n\n"
@@ -374,8 +378,10 @@ def _render_method_differences(components: Dict[str, Any]) -> None:
             "- **Sector Model tab**: the sector's own methods (for example SBC-adjusted DCF for technology, "
             "cycle-normalised DCF for industrials, residual income for banks) blended with multiples. Its "
             "weighted value is the Fair Value Summary.\n\n"
-            "So the gap between them comes from the cash-flow definition, the starting year, growth and "
-            "the method mix, not from the discount rate.")
+            "With the default sliders the gap between them comes from the cash-flow definition, the starting "
+            "year, growth and the method mix. Moving the DCF discount-rate or APV cost-of-equity slider adds "
+            "a rate difference on top. Equity models (banks and insurers, dividend discount) discount at the "
+            "cost of equity above, not at the WACC.")
 
 
 # ---------------------------------------------------------------------------

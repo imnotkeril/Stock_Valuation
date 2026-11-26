@@ -11,6 +11,7 @@ from StockAnalysisSystem.src.utils.financial_data import build_financial_data, c
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
+from StockAnalysisSystem.src.valuation import capital
 from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
 from StockAnalysisSystem.src.pages.screening.stock_screener import (
     DEFAULT_WORKERS, get_stock_universe, get_stocks_by_sector, get_stocks_by_sector_and_subsector,
@@ -742,12 +743,17 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     # Get sector benchmarks for relative valuation
     sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector if sector != "All" else None)
 
-    def dcf_overrides(stock_sector, income_stmt):
-        """Model assumptions = sector defaults shifted by the user's adjustments."""
+    def dcf_overrides(stock_sector, income_stmt, model_data=None):
+        """
+        Model assumptions shifted by the user's adjustments. The discount-rate adjustment moves the shared
+        cost of capital the model uses by default (WACC; cost of equity for financials), so 0 and +0.25 %
+        are continuous (review R-02).
+        """
         defaults = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(normalize_sector(stock_sector), {})}
         overrides = {}
         if discount_rate_adj:
-            overrides["discount_rate"] = defaults["default_discount_rate"] + discount_rate_adj
+            overrides["discount_rate"] = shared_discount_rate(model_data, stock_sector,
+                                                              defaults["default_discount_rate"]) + discount_rate_adj
         if terminal_growth_adj:
             overrides["terminal_growth"] = max(defaults["terminal_growth_rate"] + terminal_growth_adj, 0.0)
         if growth_rate_adj:
@@ -815,12 +821,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     stock_sector = company_info.get('sector', sector if sector != "All" else None)
 
                     # Perform DCF valuation with adjusted parameters
+                    model_data = build_financial_data(income_stmt, balance_sheet, cash_flow, company_info, price_data)
                     dcf_result = valuation_factory.get_company_valuation(
                         symbol,
                         sector=stock_sector,
-                        financial_data=build_financial_data(income_stmt, balance_sheet, cash_flow,
-                                                            company_info, price_data),
-                        **dcf_overrides(stock_sector, income_stmt)
+                        financial_data=model_data,
+                        **dcf_overrides(stock_sector, income_stmt, model_data)
                     )
                     if dcf_result.get('value_per_share') is None:
                         dcf_result = None
@@ -911,8 +917,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     confidence_level = "Medium"
                     notes = "Based on sector average multiples. DCF valuation not available."
 
-            # Calculate upside and sanity-check it
-            sanity = sanity_check(fair_value, current_price, method_values or valuation_components)
+            # Calculate upside and sanity-check it. Combined: the range spans the model's methods and the
+            # relative leg, because both feed the blended fair value (review R-03).
+            range_values = method_values or valuation_components
+            if approach == "Combined" and dcf_result and relative_result and relative_result.get('fair_value'):
+                range_values = {**method_values, "Relative (multiples)": relative_result['fair_value']}
+            sanity = sanity_check(fair_value, current_price, range_values)
             upside = sanity["upside"]
             if sanity["flag"]:
                 notes = f"{notes} Check inputs: {sanity['reason']}".strip()
@@ -1003,9 +1013,23 @@ def method_values_of(result):
     values = {}
     for key, method in methods.items():
         value = method.get("value_per_share")
-        if key in weights and isinstance(value, (int, float)) and value > 0:
+        if (weights.get(key) or 0) > 0 and isinstance(value, (int, float)) and value > 0:
             values[method.get("method") or key] = float(value)
     return values
+
+
+def shared_discount_rate(financial_data, sector, fallback):
+    """The model's default discount rate: shared WACC, or the cost of equity for financials."""
+    if not financial_data:
+        return fallback
+    try:
+        components = capital.cost_of_capital_for(financial_data, fallback)
+    except Exception as e:  # noqa: BLE001 - incomplete statements: keep the sector default
+        logger.warning(f"Shared cost of capital unavailable: {e}")
+        return fallback
+    key = "cost_of_equity" if normalize_sector(sector) == "Financials" else "wacc"
+    value = components.get(key)
+    return float(value) if isinstance(value, (int, float)) else fallback
 
 
 def method_label(result):

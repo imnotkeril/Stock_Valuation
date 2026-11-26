@@ -671,9 +671,6 @@ def run_peer_comparison_page():
                 logger.error(f"Error in peer comparison: {str(e)}")
 
 
-# For direct execution
-if __name__ == "__main__":
-    run_peer_comparison_page()
 
 
 def valuation_method_label(result):
@@ -712,3 +709,8 @@ def valuation_rates(result):
 
 def _pct_or_na(value):
     return f"{value * 100:.2f}%" if isinstance(value, (int, float)) else "n/a"
+
+
+# For direct execution
+if __name__ == "__main__":
+    run_peer_comparison_page()

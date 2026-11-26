@@ -74,13 +74,15 @@ def render_company_risk(ticker: str, financial_data: Dict[str, Any], company_inf
         price_data: Daily OHLCV price history.
     """
     sector = canonical_sector(company_info, financial_data)
+    lender = is_balance_sheet_lender(ticker, financial_data, company_info, sector)
     if has_any_statement(financial_data):
-        render_section("Financial health", _render_health_score, financial_data, sector)
+        render_section("Financial health", _render_health_score, financial_data, sector, lender)
         render_section("Distress models", _render_distress_models, financial_data, sector)
         render_section("Liquidity and solvency", _render_liquidity, financial_data, company_info, price_data,
-                       sector)
-        render_section("Stress test", _render_stress_test, financial_data, sector)
-        render_section("Scenario analysis", _render_scenarios, financial_data, company_info, price_data, sector)
+                       sector, lender)
+        render_section("Stress test", _render_stress_test, financial_data, sector, lender)
+        render_section("Scenario analysis", _render_scenarios, financial_data, company_info, price_data, sector,
+                       lender)
     else:
         st.info("Financial statements are unavailable, so only market risk can be assessed.")
     render_section("Market risk", _render_market_risk, price_data, financial_data)
@@ -89,23 +91,46 @@ def render_company_risk(ticker: str, financial_data: Dict[str, Any], company_inf
 # ---------------------------------------------------------------------------
 # Fundamental risk
 # ---------------------------------------------------------------------------
-def health_score(financial_data: Dict[str, Any], sector: Optional[str] = None) -> Dict[str, Any]:
+#: Financial subsectors whose balance sheet is the business (deposits, policy reserves): FCF, operating
+#: leverage and EBITDA scenarios do not apply. Payment networks, asset managers and exchanges keep them.
+LENDER_SUBSECTORS = ("bank", "insurance")
+
+
+def is_balance_sheet_lender(ticker: str, financial_data: Dict[str, Any], company_info: Optional[Dict[str, Any]],
+                            sector: Optional[str]) -> bool:
+    """True for banks and insurers (the financial sector model's subsector), False for V/MA/BLK-type firms."""
+    if sector != "Financials":
+        return False
+    try:
+        from StockAnalysisSystem.src.valuation.sector_specific.financial_sector import FinancialSectorValuation
+
+        return FinancialSectorValuation().detect_subsector(ticker, financial_data, company_info) in LENDER_SUBSECTORS
+    except Exception:  # noqa: BLE001 - unknown shape: keep the conservative bank treatment
+        logger.exception("Financial subsector detection failed for %s", ticker)
+        return True
+
+
+def health_score(financial_data: Dict[str, Any], sector: Optional[str] = None,
+                 lender: Optional[bool] = None) -> Dict[str, Any]:
     """
-    Financial health score. For banks and insurers the cash-flow component is left out (free cash flow
-    is not meaningful when deposits and reserves are operating liabilities) and the weights rebalance.
+    Financial health score. For banks and insurers (``lender``; default: any Financials company) the
+    cash-flow component is left out (free cash flow is not meaningful when deposits and reserves are
+    operating liabilities) and the weights rebalance.
     """
+    lender = (sector == "Financials") if lender is None else lender
     analyzer = FinancialStatementAnalyzer()
     income = get_statement(financial_data, "income_statement")
     balance = get_statement(financial_data, "balance_sheet")
     cash_flow = get_statement(financial_data, "cash_flow")
-    cash_analysis = {} if sector == "Financials" else analyzer.analyze_cash_flow(cash_flow)
+    cash_analysis = {} if lender else analyzer.analyze_cash_flow(cash_flow)
     return analyzer.calculate_financial_health_score(
         analyzer.analyze_income_statement(income), analyzer.analyze_balance_sheet(balance), cash_analysis)
 
 
-def _render_health_score(financial_data: Dict[str, Any], sector: Optional[str] = None) -> None:
+def _render_health_score(financial_data: Dict[str, Any], sector: Optional[str] = None,
+                         lender: bool = False) -> None:
     st.subheader("Financial health score")
-    health = safe_call(lambda: health_score(financial_data, sector), default={},
+    health = safe_call(lambda: health_score(financial_data, sector, lender), default={},
                        label="financial health score") or {}
     score = to_float(health.get("overall_score"))
     if score is None:
@@ -123,7 +148,7 @@ def _render_health_score(financial_data: Dict[str, Any], sector: Optional[str] =
         show_chart(score_bar_chart(components, "Score by component"), key=f"{KEY}health_components")
     if health.get("assessment_summary"):
         st.markdown(health["assessment_summary"])
-    if sector == "Financials":
+    if lender:
         st.caption("Bank / insurer: the cash-flow component is excluded, because free cash flow is not "
                    "meaningful when deposits and policy reserves are operating liabilities.")
     strengths, weaknesses = health.get("strengths") or [], health.get("weaknesses") or []
@@ -227,7 +252,7 @@ def unique_sentences(texts) -> str:
 
 
 def _render_liquidity(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
-                      sector: str) -> None:
+                      sector: str, lender: bool = False) -> None:
     st.subheader("Liquidity and solvency")
     ratios = get_company_ratios(financial_data, company_info, price_data)
     table = benchmark_table(ratios, get_sector_benchmarks(sector), LIQUIDITY_KEYS)
@@ -235,13 +260,13 @@ def _render_liquidity(financial_data: Dict[str, Any], company_info: Dict[str, An
         st.info("Liquidity and leverage ratios are unavailable for this company.")
         return
     st.dataframe(table, hide_index=True, key=f"{KEY}liquidity_table")
-    if sector == "Financials":
+    if lender:
         st.caption("For banks and insurers, current ratio and debt-based leverage are not meaningful: "
                    "deposits and policy reserves are operating liabilities, not financing.")
 
 
 def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,
-                      sector: str) -> None:
+                      sector: str, lender: bool = False) -> None:
     """Macro shock scenarios on an EV/EBITDA valuation and historical crisis drawdowns."""
     from StockAnalysisSystem.src.models.stress_testing import historical_scenarios, scenario_valuations
     from StockAnalysisSystem.src.pages.company_analysis.page_helpers import market_snapshot
@@ -256,7 +281,7 @@ def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, An
     income = get_statement(financial_data, "income_statement")
     revenue, ebitda = get_latest(income, "revenue"), get_latest(income, "ebitda")
     ev = snapshot.get("enterprise_value")
-    if sector == "Financials":
+    if lender:
         st.info("EBITDA-based scenarios do not apply to banks and insurers; see the historical crises below.")
     elif not (revenue and ebitda and ebitda > 0 and ev and ev > 0 and snapshot.get("shares")):
         st.info("Revenue, positive EBITDA, enterprise value and shares are required for the macro scenarios.")
@@ -296,10 +321,11 @@ def _render_scenarios(financial_data: Dict[str, Any], company_info: Dict[str, An
                "sensitivity; actual drawdowns come from the loaded price history.")
 
 
-def _render_stress_test(financial_data: Dict[str, Any], sector: Optional[str] = None) -> None:
+def _render_stress_test(financial_data: Dict[str, Any], sector: Optional[str] = None,
+                        lender: bool = False) -> None:
     """Effect of a revenue decline on operating income, given fixed vs variable costs."""
     st.subheader("Revenue stress test")
-    if sector == "Financials":
+    if lender:
         st.info("The revenue / operating-income stress test does not apply to banks and insurers: their "
                 "risk sits in credit losses, funding costs and capital ratios, not in operating leverage. "
                 "See the historical crises in Scenario analysis below.")

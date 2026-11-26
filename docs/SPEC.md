@@ -142,6 +142,13 @@ CSV, JSON downloads.
 - AC21.6 Given the Precedents tab, when it is empty, then it explains its status and offers labelled sample data (R12).
 - AC21.7 Given the test suite, when it runs, then golden hand-computed values for DCF, APV, WACC and residual income pass (R13).
 
+### F22 Owner knowledge-base gaps, small rows (source `docs/sources/KNOWLEDGE_BASE_GAP.md`, 2026-11-26)
+- AC22.1 Given any company with a balance sheet, when the Valuation tab opens, then a **Liquidation value** section shows orderly and forced liquidation value per share from asset-class recovery rates (cash 100 %, receivables, inventory, PP&E, other assets) minus all liabilities, with editable recovery rates; it is a floor, not part of the weighted fair value.
+- AC22.2 Given a price history and the sector ETF / S&P 500 benchmark, when the Risk tab opens, then **Sortino, Treynor, Calmar, Information ratio and Jensen's alpha** are shown next to Sharpe with one-line definitions; each is N/A when its input is missing (no benchmark, beta <= 0, no drawdown).
+- AC22.3 Given `FINNHUB_API_KEY`, when the Overview tab opens, then recent **insider transactions** (date, name, buy/sell, shares, price) and a 90-day net buy/sell summary are listed; without the key the section explains how to enable it and never raises.
+- AC22.4 Given a balance sheet, when Financials > Ratios opens, then the **A1-A4 / P1-P4 liquidity grouping** (assets by liquidity, liabilities by maturity) is shown with the four classic conditions A1>=P1, A2>=P2, A3>=P3, A4<=P4 and a verdict (absolutely liquid or not).
+- Candidates left for the owner (not built): value adjustments (control premium, non-core assets, contingent liabilities), own models for Materials / Utilities / Staples (medium); bank capital adequacy CET1 (blocked: not in yfinance); Porter / moat / management (not computable).
+
 ## 4. Non-functional requirements
 - Works without network in tests (`STOCK_ANALYSIS_OFFLINE=1`); CI green on 3.11–3.13.
 - `ruff check` clean; no secrets in code or new commits.
