@@ -78,8 +78,10 @@ Framework (from adoption on):
 - [x] gate/T26 Phase 3b gate — full suite "533 passed in 178.76s", ruff "All checks passed!"; live AAPL 184.41 -48.1 % Sell High, JPM 278.97 -11.9 % Reduce Medium, XOM 87.00 -45.0 % Above model value Low (T22/T23/T25 by quant agent: de6258e, 3c4d8bb, d5f3396)
 - [x] qa/T19 live QA: AppTest with real data on every page + Company tabs AAPL/JPM/XOM, 0 exceptions/errors/warnings (timings in docs/QA.md); browser pass found one-step pick blocked by foreign listings -> unique_match counts US listings (test added); 5 screenshots in docs/screenshots/
 
+- [x] docs/T20 - 7 commands verified: `pytest -o addopts="" -p no:warnings` 533 passed; `ruff check StockAnalysisSystem` clean; `docs_check.py` ok (readme links 5 screenshots + METHODOLOGY; METHODOLOGY mentions WACC, liquidation, Sortino, Zmijewski; "not investment advice" in README, USER_GUIDE, METHODOLOGY; all relative links resolve); `run.py` health `/_stcore/health` 200; `docker build` ok + `docker run --env-file .env` health 200; `pip install -r requirements*.txt --dry-run` satisfied; README env names == `.env.example` (5 of 5). No HTTP API (0 routes), so `/llms.txt` n/a. METHODOLOGY.md, README, USER_GUIDE, CHANGELOG, SPEC F20-F22 Done
+
 ## Next
-- [ ] docs/T20 METHODOLOGY.md, README, USER_GUIDE with screenshots; then T21, push + PR + CI + merge
+- [ ] docs/T21 Release prep: final gate, CHANGELOG entry check, PR proposal to the owner (no push)
 
 ## Needed from owner
 - none

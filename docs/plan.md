@@ -187,7 +187,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: none
   check: `$T && $LIVE`
   done: QA.md lists pages checked, timings, issues; no tracebacks.
-- [ ] T20 Docs: METHODOLOGY.md (how numbers are made), README + USER_GUIDE with screenshots, SPEC/CHANGELOG refresh, disclaimer (R7)
+- [x] T20 Docs: METHODOLOGY.md (how numbers are made), README + USER_GUIDE with screenshots, SPEC/CHANGELOG refresh, disclaimer (R7)
   layer: docs · tier: C · owner: tech-writer · model: sonnet
   owns: README.md, docs/METHODOLOGY.md, docs/USER_GUIDE.md, docs/SPEC.md, CHANGELOG.md, docs/screenshots/**, StockAnalysisSystem/tools/docs_check.py (created here: README links screenshots + METHODOLOGY, disclaimer present)
   depends: T16

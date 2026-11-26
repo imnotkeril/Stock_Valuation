@@ -125,7 +125,7 @@ CSV, JSON downloads.
   Loaded with `load_dotenv` from `StockAnalysisSystem/.env` or repo-root `.env`. No keys in code.
 - Cache: `src/data/cache` (git-ignored); last cached copy served when a provider fails.
 
-### F20 Review fixes: credible numbers (P1) — source `docs/review/PRODUCT_REVIEW.md` §5 P1
+### F20 Review fixes: credible numbers (P1) — Done — source `docs/review/PRODUCT_REVIEW.md` §5 P1
 - AC20.1 Given network access, when any valuation runs, then the risk-free rate is FRED DGS10 (as-of date shown), with stale-cache and constant fallbacks and a user override (R1).
 - AC20.2 Given one company, when the DCF tab, APV and the sector model compute a discount rate, then they share one cost-of-capital module (same rf, ERP, beta rule, Kd band) and a note explains why their values differ (R2).
 - AC20.3 Given AAPL was analysed, when the user switches to JPM, then every Valuation/Risk control shows JPM defaults (R3).
@@ -133,7 +133,7 @@ CSV, JSON downloads.
 - AC20.5 Given a bank, when the Risk tab and Peer Comparison render, then no FCF penalty, no duplicate Altman text, no N/A method and no 0.00 % rates appear (R5).
 - AC20.6 Given a valuation, when the recommendation badge renders, then it carries a confidence level and softens the label when confidence is low (R6).
 
-### F21 Review fixes: the product explains itself (P2)
+### F21 Review fixes: the product explains itself (P2) — Done
 - AC21.1 Given a reader of the docs, when they open README/USER_GUIDE, then screenshots and `docs/METHODOLOGY.md` explain how each number is made (R7).
 - AC21.2 Given the Relative tab, when universe data is cached, then live sector medians (dated) are used and irrelevant multiples are dropped (R8).
 - AC21.3 Given the DCF tab, when growth is set, then it fades to terminal growth and SBC can be deducted (R9).
@@ -142,7 +142,7 @@ CSV, JSON downloads.
 - AC21.6 Given the Precedents tab, when it is empty, then it explains its status and offers labelled sample data (R12).
 - AC21.7 Given the test suite, when it runs, then golden hand-computed values for DCF, APV, WACC and residual income pass (R13).
 
-### F22 Owner knowledge-base gaps, small rows (source `docs/sources/KNOWLEDGE_BASE_GAP.md`, 2026-11-26)
+### F22 Owner knowledge-base gaps, small rows — Done (source `docs/sources/KNOWLEDGE_BASE_GAP.md`, 2026-11-26)
 - AC22.1 Given any company with a balance sheet, when the Valuation tab opens, then a **Liquidation value** section shows orderly and forced liquidation value per share from asset-class recovery rates (cash 100 %, receivables, inventory, PP&E, other assets) minus all liabilities, with editable recovery rates; it is a floor, not part of the weighted fair value.
 - AC22.2 Given a price history and the sector ETF / S&P 500 benchmark, when the Risk tab opens, then **Sortino, Treynor, Calmar, Information ratio and Jensen's alpha** are shown next to Sharpe with one-line definitions; each is N/A when its input is missing (no benchmark, beta <= 0, no drawdown).
 - AC22.3 Given `FINNHUB_API_KEY`, when the Overview tab opens, then recent **insider transactions** (date, name, buy/sell, shares, price) and a 90-day net buy/sell summary are listed; without the key the section explains how to enable it and never raises.
