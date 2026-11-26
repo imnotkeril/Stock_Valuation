@@ -159,7 +159,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_insider.py && $PY -m ruff check StockAnalysisSystem`
   done: recorded-shape fixture parsed; no key -> info text, no request; HTTP error -> empty table, no exception.
-- [ ] T25 A1-A4 / P1-P4 balance liquidity grouping on Financials > Ratios (AC22.4)
+- [x] T25 A1-A4 / P1-P4 balance liquidity grouping on Financials > Ratios (AC22.4)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/models/balance_liquidity.py, StockAnalysisSystem/src/pages/company_analysis/financials.py, StockAnalysisSystem/tests/test_balance_liquidity.py
   depends: T22
