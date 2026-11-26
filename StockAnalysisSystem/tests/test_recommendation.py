@@ -25,10 +25,20 @@ def test_disagreement_terminal_share_and_missing_methods_lower_confidence():
     values = {"dcf": 60.0, "pe": 150.0}
     weights = {"dcf": 0.4, "pe": 0.3, "ev_ebitda": 0.2, "asset": 0.1}
     methods = _methods(values, dcf={"terminal_value_share": 0.85})
+    methods.update({"ev_ebitda": {"method": "EV/EBITDA", "value_per_share": None, "error": "no EBITDA"},
+                    "asset": {"method": "Asset", "value_per_share": None}})  # ran, no usable value
     confidence = assess_confidence(methods, _summary(values, weights=weights), weights)
     assert confidence["level"] == "Low"
     text = " ".join(confidence["reasons"])
     assert "methods disagree" in text and "terminal value" in text and "2 of 4 weighted methods" in text
+
+
+def test_weights_of_methods_that_never_ran_are_ignored():
+    # Sector-wide default weights list methods of other subsectors; they must not count as unusable.
+    values = {"dcf": 110.0, "pe": 115.0, "ev_ebitda": 112.0}
+    weights = {"dcf": 0.3, "pe": 0.2, "ev_ebitda": 0.2, "reserve_nav": 0.2, "regulated_asset_base": 0.1}
+    confidence = assess_confidence(_methods(values), _summary(values, weights=weights), weights)
+    assert confidence == {"level": "High", "reasons": []}
 
 
 def test_single_method_and_short_history_are_medium_or_low():

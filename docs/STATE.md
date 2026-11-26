@@ -63,8 +63,10 @@ Framework (from adoption on):
 - [x] brief/T13 - 2 items (stack/python, known-traps)
 - [x] build/T13 DCF tab: growth fades linearly to terminal (default on), SBC deduction toggle (default on when reported); dcf_models variants kept (used by tech/retail/manufacturing models, not dead) — 11 passed (dcf_fade + golden), ruff clean; live DCF tab AAPL 230.52 -> 168.00 (sector DCF 181), XOM 71.94 -> 82.91, MSFT 157.62 -> 125.50
 
+- [x] review/T09 reviewer: 1 P1 + 6 P2, security-reviewer: 0 (pip-audit clean, .env never committed) -> docs/REVIEW.md; R-01 fixed (confidence counts only methods that ran) — 71 passed (recommendation + sector_models), ruff clean; R-02..R-07 (P2) open for T18
+
 ## Next
-- [ ] review/T09 - run `step-brief --task T09` first; reviewer + security-reviewer agents on P1 diff (b6b2045..HEAD)
+- [ ] gate/T10 - run `step-brief --task T10` first; then T14 (UX U6-U9), T15, T16, T17, T18 (incl. REVIEW.md R-02..R-07), T19-T21
 
 ## Needed from owner
 - none

@@ -124,7 +124,8 @@ def assess_confidence(methods: Dict[str, Dict[str, Any]], summary: Dict[str, Any
             points += 1
             reasons.append(f"{share:.0%} of the {methods[key].get('method', key)} value is terminal value")
             break
-    planned = [k for k, w in (weights or {}).items() if w and w > 0]
+    # Default weight tables can span every subsector: only methods that actually ran count (review R-01)
+    planned = [k for k, w in (weights or {}).items() if w and w > 0 and k in methods]
     if planned and len([k for k in planned if k in used]) / len(planned) < 0.6:
         points += 1
         reasons.append(f"{len([k for k in planned if k in used])} of {len(planned)} weighted methods usable")

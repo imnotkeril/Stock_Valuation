@@ -67,7 +67,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   done: full suite green; live AAPL/JPM/XOM + PGR/CHTR pasted; app opened in the browser (Valuation, Risk, Valuation Filter, Peer Comparison).
 
 ## Phase 2 — Review step (process/review.md) after P1
-- [ ] T09 Review with `reviewer` + `security-reviewer`; fix valid findings
+- [x] T09 Review with `reviewer` + `security-reviewer`; fix valid findings
   layer: qa · tier: B · owner: reviewer · model: opus
   owns: docs/REVIEW.md (+ files named by valid findings)
   depends: T08
