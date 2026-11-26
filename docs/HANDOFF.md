@@ -1,37 +1,49 @@
 # Handoff
-status: consumed
+status: active
 date: 2026-11-26
-from-chat-tokens: ~390k
+from-chat-tokens: ~270k
 
 ## Goal
-Fix the product-review findings (`docs/review/PRODUCT_REVIEW.md` section 5) through the coding-brain framework:
-P1 (T01-T08), review (T09-T10), P2 (T11-T17), hardening (T18-T21). Plan: `docs/plan.md`.
+Finish the product-review fix plan (`docs/plan.md`) through the coding-brain framework, then push branch
+`claude/review-fixes-finish-2bedc3`, open a PR into `master`, get CI green, and **merge it** (owner allowed merge,
+relayed by the parent session: "мерж я тож разрешаю, я ваще все разрешаю тебе с этим проектом сча работать, пока я сплю";
+merge commit or squash, never force-push master; record the merge in STATE). Short Russian report at the end.
 
 ## State
-- Done: P1 T01-T08, T09 review (`docs/REVIEW.md`, R-01 fixed), P2 T11 (golden tests), T12 (live sector medians), T13 (DCF fade + SBC).
-- Open: T10 gate, T14 (UX U6-U9), T15 (parallel fetch), T16 (precedents), T17 gate, T18 (incl. REVIEW.md R-02..R-07), T19 QA, T20 docs, T21 release prep.
-- Running: nothing.
-- Branch/commit: claude/review-fixes-195b14 @ 27f5dda, nothing pushed.
-
-## Decisions
-- Owner (2026-11-26, away): "делай до конца без моих подтверждений" - continue through all tasks without asking; still never push/PR/merge.
-- ERP 4.4 % = Damodaran July 2026 implied US ERP 4.42 % (ADR-007); one Blume beta, Kd rf+0.5..8 %, WACC 6-20 %.
-- T11-T13 ran before T10 (no file overlap); dcf_models DCF variants are used by sector models, kept.
+- Done + committed: T10, T14, T15, T16, T17, T24; R-02..R-07 fixed (b05fbbb, tests `test_review_round1_fixes.py`);
+  plan Phase 3b (T22-T26) + SPEC F22 added.
+- Running when this chat stopped (background agents of the old session; they commit / write files themselves):
+  - quant-research agent building T22 (liquidation), T23 (Sortino/Treynor/Calmar/IR/Jensen), T25 (A1-A4/P1-P4),
+    one commit each. Check `git log` and `docs/plan.md` ticks; finish whatever is not ticked yourself.
+  - 3 methodology research agents writing `research-dcf-wacc.md`, `research-sectors.md`, `research-risk.md` into the
+    notes folder `C:/Users/kykyl/AppData/Roaming/Claude/side-session-notes/local_dd7a30fa-49d1-4161-aa51-b96c1e32339f`.
+    If a file is missing after the others land, redo that area (general-purpose agent with web search).
+- Round-2 review (reviewer agent) done: `review-round2.md` in the same notes folder, R-08 (P1) .. R-13 (P2). Not fixed yet.
+- Branch/commit: claude/review-fixes-finish-2bedc3 @ 92553a9 (+ whatever the quant agent committed), nothing pushed.
 
 ## Next
-1. `node E:/Main/Dev/coding-brain/scripts/step-brief.mjs --project . --task T10`, run the gate (`$T`, ruff, live), tick, STATE line, commit.
-2. T14-T17 in order, each with its step-brief, check, STATE line, commit.
-3. T18 must also fix REVIEW.md R-02..R-07; then T19-T21; final: propose a PR to the owner (no push), report to the parent session.
+1. Wait until the quant agent's commits are in (T22, T23, T25 ticked) or finish them; T26 gate (`$T`, ruff, `$LIVE`).
+2. Methodology research step (new, owner): merge the three research files into `docs/review/METHODOLOGY_RESEARCH.md`
+   (claim -> source -> code -> verdict -> fix); add it to plan.md as a task before T18's tick; fix real discrepancies, each with a test.
+3. T18: copy review-round2.md into `docs/REVIEW.md` as round 2; fix R-08 (filter relative leg: use
+   `ratio_analyzer.get_sector_benchmarks(stock_sector)["valuation"]`; make `tests/test_parallel_fetch.py` require Relative rows),
+   R-09..R-13; dispositions table; then `security-reviewer` agent final pass; tick T18.
+4. T19 QA (browser AAPL/JPM/XOM, `qa-tester`), T20 docs (METHODOLOGY.md citing METHODOLOGY_RESEARCH.md, README, USER_GUIDE
+   with screenshots, `tech-writer`), T21 release prep.
+5. Push, PR into master, bind with ccd_pr tools, CI green, merge, STATE line, report to the parent session
+   (`local_dd7a30fa-49d1-4161-aa51-b96c1e32339f`).
 
 ## Open questions
 - none
 
 ## Traps
-- `$PY` = `E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe`; `.env` copied into this worktree (git-ignored, never print).
-- Bash heredocs with nested quotes break through the `rtk` wrapper: write scripts to the scratchpad with Write and run them.
-- Tests: CACHE_DIR is a tmp dir, so rf in tests = fallback 4.5 %; conftest patches DataLoader public methods (read cache files directly in new code paths that must work in tests).
-- Streamlit preview: `.claude/launch.json` "stock-analysis" on port 8502; restart the server after code edits (rerun does not reload page modules).
+- `$PY` = `E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe`; `.env` is copied into this worktree (git-ignored, never print).
+- No pytest-xdist: run the full suite in the background (~3 min, 478+ tests).
+- Bash heredocs with nested quotes break: write patch scripts with Write into the scratchpad and run them.
+- Helper `tick.py TID 'state line'` (ticks plan.md, adds a STATE line before `## Next`) lived in the old scratchpad; rewrite if needed.
+- Tests: CACHE_DIR is tmp, rf = fallback 4.5 %; conftest patches DataLoader; company tabs must show no st.warning offline.
+- Never `git add -A` while another agent works in the worktree.
 
 ## Verify
-- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect ~470 passed)
+- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect ~500 passed)
 - `$PY -m ruff check StockAnalysisSystem`
