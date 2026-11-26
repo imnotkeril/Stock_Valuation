@@ -57,6 +57,7 @@ Framework (from adoption on):
 - [x] build/T07 assess_confidence (method spread, single method, terminal share > 80 %, usable/weighted methods, < 3 statement years, |upside| > 100 %) on every recommendation; Low softens Buy/Sell to "Below/Above model value"; badge shows confidence — 111 passed (recommendation + sector_models + foundation), ruff clean; live: AAPL Sell High, JPM Reduce Medium, XOM/MSFT "Above model value" Low, PGR/CHTR "Below model value" Low
 
 - [x] gate/T08 P1 gate — full suite "446 passed in 146.50s", ruff "All checks passed!"; live check AAPL Sell High (fair 184.47), JPM Reduce Medium (278.54), XOM Above model value Low (86.30), PGR/CHTR Below model value Low; browser (port 8502): AAPL Valuation shows "Default WACC 9.49%: rf 4.91 % (FRED DGS10, as of 2026-11-24)", Confidence: High, why-differ expander, Sharpe + scenario on live rf; JPM Risk: cash-flow component excluded, bank stress-test text, Confidence: Medium; Valuation Filter defaults to Sector model with outlier toggle. Gate found a repeated distress sentence for JPM -> risk.unique_sentences() (sentence-level dedupe, test added, browser recheck 1x) — risk tests 4 passed, ruff clean. AC20.1-AC20.6 met.
+- [x] build/T11 (run while the T09 review agents work; tests-only, no overlap) golden values: DCF tab projection, sector revenue DCF, WACC, Hamada Ku, APV, residual income, DDM = Gordon, justified P/B, all hand-computed in comments — 8 passed, ruff clean
 
 ## Next
 - [ ] review/T09 - run `step-brief --task T09` first; reviewer + security-reviewer agents on P1 diff (b6b2045..HEAD)

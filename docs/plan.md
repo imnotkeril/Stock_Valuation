@@ -81,7 +81,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   done: green output after review fixes pasted.
 
 ## Phase 3 — P2: the product explains and matches itself
-- [ ] T11 Golden-value tests: hand-computed DCF, APV, WACC, residual income (R13)
+- [x] T11 Golden-value tests: hand-computed DCF, APV, WACC, residual income (R13)
   layer: qa · tier: B · owner: qa-tester · model: sonnet
   owns: StockAnalysisSystem/tests/test_golden_values.py
   depends: T09
