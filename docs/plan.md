@@ -152,7 +152,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_performance_ratios.py StockAnalysisSystem/tests/test_risk_page.py && $PY -m ruff check StockAnalysisSystem`
   done: golden values on a hand-made return series; N/A rules tested; definitions in captions.
-- [ ] T24 Insider transactions via Finnhub (key optional, missing key = explanation) (AC22.3)
+- [x] T24 Insider transactions via Finnhub (key optional, missing key = explanation) (AC22.3)
   layer: data · tier: B · owner: backend-dev · model: sonnet
   owns: StockAnalysisSystem/src/utils/insider.py, StockAnalysisSystem/src/pages/company_analysis/overview.py, StockAnalysisSystem/tests/test_insider.py
   depends: T18

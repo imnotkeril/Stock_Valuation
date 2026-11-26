@@ -97,6 +97,39 @@ def render_company_overview(ticker: str, financial_data: Dict[str, Any], company
     _render_sector_performance(ticker, prices, sector_prices, sector)
     _render_technical_indicators(prices)
     _render_sec_edgar(ticker)
+    _render_insider_transactions(ticker)
+
+
+def _render_insider_transactions(ticker: str) -> None:
+    """Form 4 insider trades from Finnhub (optional key)."""
+    from StockAnalysisSystem.src.utils import insider
+
+    st.subheader("Insider transactions")
+    if not insider.is_configured():
+        st.info(f"Add `{insider.FINNHUB_ENV}` (free at finnhub.io) to `.env` to list insider buys and sells "
+                "reported on SEC Form 4.", icon=":material/info:")
+        return
+    trades = insider.get_insider_transactions(ticker)
+    if trades.empty:
+        st.caption(f"No insider transactions reported for {ticker} in the last 12 months (or Finnhub is unavailable).")
+        return
+    summary = insider.summarize(trades)
+    cols = st.columns(3)
+    cols[0].metric("Open-market buys (90 days)", f"{summary['buys']}",
+                   help=f"{summary['insiders_buying']} insider(s), {fmt_money(summary['buy_value'])}")
+    cols[1].metric("Open-market sells (90 days)", f"{summary['sells']}",
+                   help=f"{summary['insiders_selling']} insider(s), {fmt_money(summary['sell_value'])}")
+    cols[2].metric("Net buy value (90 days)", fmt_money(summary["net_value"]))
+    st.caption("Only open-market purchases (code P) and sales (S) count above. Grants, option exercises and tax "
+               "withholding are routine; many sales are pre-planned (10b5-1), so a single sale says little.")
+    table = trades.head(25).copy()
+    table["date"] = table["date"].dt.strftime("%Y-%m-%d")
+    st.dataframe(table.drop(columns=["code"]), hide_index=True, width="stretch", key=f"{KEY}insider_table",
+                 column_config={"name": "Insider", "type": "Transaction",
+                                "shares": st.column_config.NumberColumn("Shares", format="%+,.0f"),
+                                "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                                "value": st.column_config.NumberColumn("Value", format="$%,.0f"),
+                                "holding_after": st.column_config.NumberColumn("Shares held after", format="%,.0f")})
 
 
 def _render_sec_edgar(ticker: str) -> None:
