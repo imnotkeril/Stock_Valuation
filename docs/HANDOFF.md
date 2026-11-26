@@ -1,16 +1,16 @@
 # Handoff
 status: active
 date: 2026-11-26
-from-chat-tokens: ~265k
+from-chat-tokens: ~330k
 
 ## Goal
 Fix the product-review findings (`docs/review/PRODUCT_REVIEW.md` section 5) through the coding-brain framework:
 P1 (T01-T08), review step with reviewer + security-reviewer (T09-T10), P2 (T11-T17), hardening (T18-T21). Plan: `docs/plan.md`.
 
 ## State
-- Done: adoption, plan + audit, T01 (live rf), T02 (`valuation/capital.py`, ERP 4.4 %, ADR-007), T03 (DCF/APV tabs use the shared WACC), T04 (widget state reset on ticker change).
-- Running: T05 (Valuation Filter sanity layer).
-- Branch/commit: claude/review-fixes-195b14 @ d1ed114, nothing pushed.
+- Done: adoption, plan + audit, P1 T01-T08 (live rf, capital.py + ADR-007, DCF/APV defaults, widget reset, Valuation Filter sanity, bank risk/peer fixes, confidence badge, P1 gate 446 passed + browser check).
+- Running: T09 review: `reviewer` and `security-reviewer` agents write `docs/REVIEW.md` (sections "Reviewer (correctness) - P1", "Security reviewer - P1").
+- Branch/commit: claude/review-fixes-195b14 @ 7efbd38, nothing pushed.
 
 ## Decisions
 - Owner (2026-11-26, away): "делай до конца без моих подтверждений" - continue through all tasks without asking; still never push/PR/merge.
@@ -18,9 +18,9 @@ P1 (T01-T08), review step with reviewer + security-reviewer (T09-T10), P2 (T11-T
 - Per-company widget prefixes `val_`, `risk_` (main.COMPANY_WIDGET_PREFIXES).
 
 ## Next
-1. Run `node E:/Main/Dev/coding-brain/scripts/step-brief.mjs --project . --task T05`, then build T05 (Valuation Filter: flag |upside| > 100 %, real method instead of `DCF`, spread across methods, default approach = sector model; PRODUCT_REVIEW U2).
-2. T06 (bank Risk tab: no FCF penalty, single Altman text, Peer Comparison N/A / 0.00 %), T07 (confidence on the badge), T08 P1 gate.
-3. T09 review with `reviewer` + `security-reviewer` agents, then T10-T21; final: propose a PR to the owner (no push).
+1. Read `docs/REVIEW.md`; if a section is missing, rerun that agent on `git diff b6b2045..HEAD`. Add a disposition column; fix every valid P0/P1 (one commit each), re-run `$T` + ruff, tick T09, STATE line.
+2. `step-brief --task T10` (gate), then P2 T11-T17 (golden tests, live medians, DCF fade/SBC, UX U6-U9, parallel fetch, precedents).
+3. Hardening T18-T21; final: propose a PR to the owner (no push).
 
 ## Open questions
 - none
