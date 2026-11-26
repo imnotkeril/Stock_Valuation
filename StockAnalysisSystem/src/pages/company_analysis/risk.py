@@ -168,10 +168,11 @@ def _render_distress_models(financial_data: Dict[str, Any], sector: str) -> None
     applicable = {k: v for k, v in models.items() if isinstance(v, dict) and v.get("applicable", True)
                   and to_float(v.get("score")) is not None}
     if not applicable:
-        reasons = {v.get("interpretation") for v in models.values() if isinstance(v, dict) and v.get("interpretation")
-                   and _normalized(v.get("interpretation")) not in shown}
+        reasons = unique_sentences(v.get("interpretation") for v in models.values()
+                                   if isinstance(v, dict) and v.get("interpretation")
+                                   and _normalized(v.get("interpretation")) not in shown)
         if reasons or not shown:
-            st.info(" ".join(sorted(reasons)) or "The distress models are not applicable to this company.")
+            st.info(reasons or "The distress models are not applicable to this company.")
     else:
         columns = st.columns(len(applicable))
         for column, (key, model) in zip(columns, applicable.items()):
@@ -209,6 +210,20 @@ def _render_distress_models(financial_data: Dict[str, Any], sector: str) -> None
 
 def _normalized(text: Any) -> str:
     return " ".join(str(text or "").split()).lower()
+
+
+def unique_sentences(texts) -> str:
+    """Join texts, keeping each sentence once (model interpretations often repeat each other)."""
+    import re
+
+    seen, kept = set(), []
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?])\s+", str(text or "").strip()):
+            key = _normalized(sentence)
+            if key and key not in seen:
+                seen.add(key)
+                kept.append(sentence.strip())
+    return " ".join(kept)
 
 
 def _render_liquidity(financial_data: Dict[str, Any], company_info: Dict[str, Any], price_data: pd.DataFrame,

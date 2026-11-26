@@ -60,7 +60,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_recommendation.py StockAnalysisSystem/tests/test_sector_models.py && $PY -m ruff check StockAnalysisSystem && $LIVE`
   done: recommendation carries `confidence` (from method dispersion, terminal-value share, data completeness), shown on the badge; label softened to "Below/Above model value" when confidence is low.
-- [ ] T08 Phase 1 gate
+- [x] T08 Phase 1 gate
   layer: qa · tier: C · owner: qa-tester · model: haiku · owns: - · depends: T01, T02, T03, T04, T05, T06, T07
   uses: none
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
