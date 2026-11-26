@@ -122,23 +122,40 @@ class CommunicationValuation(SectorValuationMixin, BaseValuation):
         margin = average_margin(ctx, "ebitda", 3)
         return margin if margin and margin > 0 else None
 
+    def _cash_margin(self, ctx: ValuationContext) -> Optional[float]:
+        """
+        After-tax cash margin per unit of revenue, 3-year averages:
+        EBIT (1 - t) + D&A - capex = (EBITDA - capex) - t x EBIT. Telecom and cable spend 15-20 % of
+        revenue on capex, so a customer is worth the cash left after the capex that serves them,
+        not EBITDA (Damodaran, valuing intangibles). Capex defaults to D&A when not reported.
+        """
+        ebitda = self._operating_margin(ctx)
+        if ebitda is None:
+            return None
+        da = average_margin(ctx, "da", 3) or 0.0
+        capex = average_margin(ctx, "capex", 3)
+        capex = da if capex is None else capex
+        margin = (ebitda - da) * (1 - ctx.tax_rate) + da - capex
+        return margin if margin > 0 else None
+
     def _subscriber(self, ctx: ValuationContext) -> Dict[str, Any]:
         subscribers, arpu = ctx.params.get("subscribers"), ctx.params.get("arpu_monthly")
         if not subscribers or not arpu:
             return not_applicable("Provide subscribers and monthly ARPU to run the subscriber valuation.")
-        margin = self._operating_margin(ctx)
+        margin = self._cash_margin(ctx)
         if margin is None:
-            return not_applicable("EBITDA margin is not positive.")
+            return not_applicable("Cash margin after capex (EBIT x (1 - t) + D&A - capex) is not positive.")
         churn, rate, growth = ctx.params["churn_rate"], ctx.params["discount_rate"], ctx.params["terminal_growth"]
         denominator = churn + rate - growth
         if denominator <= 0:
             raise ValueError("Churn + discount rate must exceed the growth rate")
-        annual_cash_per_sub = arpu * 12 * margin * (1 - ctx.tax_rate)
+        annual_cash_per_sub = arpu * 12 * margin
         lifetime_value = annual_cash_per_sub / denominator
         customer_base_value = lifetime_value * subscribers * 1e6
         bridge = equity_bridge(customer_base_value, ctx.capital)
         return {**bridge, "value_per_share": ctx.per_share(bridge["equity_value"]),
-                "subscribers_millions": subscribers, "arpu_monthly": arpu, "ebitda_margin": margin,
+                "subscribers_millions": subscribers, "arpu_monthly": arpu, "cash_margin": margin,
+                "ebitda_margin": self._operating_margin(ctx),
                 "churn_rate": churn, "lifetime_value_per_subscriber": lifetime_value,
                 "customer_base_value": customer_base_value}
 
@@ -146,17 +163,18 @@ class CommunicationValuation(SectorValuationMixin, BaseValuation):
         users, revenue_per_user = ctx.params.get("users"), ctx.params.get("revenue_per_user")
         if not users or not revenue_per_user:
             return not_applicable("Provide engaged users and annual revenue per user to run this method.")
-        margin = self._operating_margin(ctx)
+        margin = self._cash_margin(ctx)
         if margin is None:
-            return not_applicable("EBITDA margin is not positive.")
+            return not_applicable("Cash margin after capex (EBIT x (1 - t) + D&A - capex) is not positive.")
         rate, growth = ctx.params["discount_rate"], ctx.params["terminal_growth"]
         if rate <= growth:
             raise ValueError("Discount rate must exceed terminal growth")
-        annual_cash = users * 1e6 * revenue_per_user * margin * (1 - ctx.tax_rate)
+        annual_cash = users * 1e6 * revenue_per_user * margin
         value = annual_cash * (1 + growth) / (rate - growth)
         bridge = equity_bridge(value, ctx.capital)
         return {**bridge, "value_per_share": ctx.per_share(bridge["equity_value"]), "users_millions": users,
-                "revenue_per_user": revenue_per_user, "ebitda_margin": margin,
+                "revenue_per_user": revenue_per_user, "cash_margin": margin,
+                "ebitda_margin": self._operating_margin(ctx),
                 "value_per_user": value / (users * 1e6)}
 
     # ------------------------------------------------------------------

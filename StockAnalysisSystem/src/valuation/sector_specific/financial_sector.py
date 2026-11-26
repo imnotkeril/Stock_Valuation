@@ -207,8 +207,9 @@ class FinancialSectorValuation(SectorSpecificDCF):
         income, balance, _ = self._statements(financial_data)
         shares = self._shares_outstanding(financial_data)
         price = self._current_price(financial_data)
-        book_value = get_latest(balance, 'total_equity')
-        net_income = get_latest(income, 'net_income')
+        # Common shareholders' book and earnings: preferred stock and its dividends are not theirs
+        book_value = get_latest(balance, 'common_equity')
+        net_income = get_latest(income, 'net_income_common')
         roe = self._return_on_equity(financial_data)
 
         payout = overrides.get('payout_ratio')

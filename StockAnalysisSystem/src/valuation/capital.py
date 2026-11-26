@@ -18,7 +18,13 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from StockAnalysisSystem.src.utils.financial_data import get_latest, get_series, safe_divide, to_float
+from StockAnalysisSystem.src.utils.financial_data import (
+    debt_excluding_leases,
+    get_latest,
+    get_series,
+    safe_divide,
+    to_float,
+)
 from StockAnalysisSystem.src.utils.rates import RiskFreeRate, risk_free_rate
 
 #: US equity risk premium: Damodaran's implied ERP for the US, July 2026 update (4.42 %), rounded. ADR-007.
@@ -58,12 +64,12 @@ def market_discount_rate(rf: Optional[RiskFreeRate] = None) -> float:
 
 
 def total_debt(balance: Optional[pd.DataFrame]) -> float:
-    """Total debt (long-term + current debt when the total is missing); 0 when unavailable."""
-    debt = get_latest(balance, "total_debt")
-    if debt is None:
-        parts = [get_latest(balance, "long_term_debt"), get_latest(balance, "short_term_debt")]
-        debt = sum(p for p in parts if p is not None)
-    return max(float(debt or 0.0), 0.0)
+    """
+    Borrowings used by every valuation bridge and the WACC: debt without lease liabilities
+    (utils.financial_data.debt_excluding_leases); 0 when unavailable. Cash flows and EBITDA are after
+    rent, so leases stay an operating cost and are not counted as debt as well.
+    """
+    return float(debt_excluding_leases(balance) or 0.0)
 
 
 def effective_tax_rate(income: Optional[pd.DataFrame]) -> float:
@@ -77,6 +83,19 @@ def effective_tax_rate(income: Optional[pd.DataFrame]) -> float:
     if rate is None or not 0 <= rate <= 0.5:
         return DEFAULT_TAX_RATE
     return float(min(rate, MAX_TAX_RATE))
+
+
+def cap_terminal_growth(terminal_growth: float, rf: Optional[float]) -> Dict[str, Any]:
+    """
+    Stable growth cannot exceed the nominal growth of the economy, proxied by the risk-free rate
+    (Damodaran, "Growth Rates and Terminal Value"). Returns the capped rate and a note when capped.
+    """
+    growth = float(terminal_growth)
+    if rf is not None and growth > rf:
+        return {"terminal_growth": float(rf),
+                "note": f"Terminal growth {growth:.2%} capped at the risk-free rate {rf:.2%}: stable growth "
+                        "cannot exceed nominal economic growth."}
+    return {"terminal_growth": growth, "note": None}
 
 
 def _positive(value: Any) -> Optional[float]:

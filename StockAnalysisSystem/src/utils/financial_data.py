@@ -66,6 +66,13 @@ LINE_ITEM_ALIASES: Dict[str, List[str]] = {
     "net_income": ["Net Income", "Net Income Common Stockholders",
                    "Net Income From Continuing Operation Net Minority Interest",
                    "Net Income Including Noncontrolling Interests"],
+    # Earnings that belong to common shareholders (after preferred dividends): equity valuation inputs
+    "net_income_common": ["Net Income Common Stockholders", "Net Income",
+                          "Net Income From Continuing Operation Net Minority Interest"],
+    # Income-statement sign: positive = gain / charge recognised in net income. Yahoo files REIT
+    # property-sale gains under "Gain On Sale Of Security" (seen for O), so it is the last candidate.
+    "gain_on_sale_of_assets": ["Gain On Sale Of Ppe", "Gain On Sale Of Business", "Gain On Sale Of Security"],
+    "impairment": ["Impairment Of Capital Assets", "Write Off"],
     "diluted_eps": ["Diluted EPS"],
     "basic_eps": ["Basic EPS"],
     "diluted_shares": ["Diluted Average Shares", "Basic Average Shares"],
@@ -79,6 +86,8 @@ LINE_ITEM_ALIASES: Dict[str, List[str]] = {
     "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liabilities"],
     "total_equity": ["Stockholders Equity", "Common Stock Equity", "Total Stockholder Equity",
                      "Total Equity Gross Minority Interest"],
+    # Book value of common equity (excludes preferred): residual income, P/B and ROE
+    "common_equity": ["Common Stock Equity", "Stockholders Equity", "Total Stockholder Equity"],
     "current_assets": ["Current Assets", "Total Current Assets"],
     "current_liabilities": ["Current Liabilities", "Total Current Liabilities"],
     "cash": ["Cash And Cash Equivalents", "Cash Financial", "Cash"],
@@ -89,6 +98,14 @@ LINE_ITEM_ALIASES: Dict[str, List[str]] = {
     "long_term_debt": ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"],
     "short_term_debt": ["Current Debt", "Current Debt And Capital Lease Obligation", "Short Term Debt"],
     "net_debt": ["Net Debt"],
+    # Borrowings without lease liabilities (see debt_excluding_leases); exact labels only
+    "long_term_borrowings": ["Long Term Debt"],
+    "current_borrowings": ["Current Debt"],
+    "long_term_debt_and_leases": ["Long Term Debt And Capital Lease Obligation"],
+    "current_debt_and_leases": ["Current Debt And Capital Lease Obligation"],
+    "lease_liabilities": ["Capital Lease Obligations"],
+    "long_term_lease_liabilities": ["Long Term Capital Lease Obligation"],
+    "current_lease_liabilities": ["Current Capital Lease Obligation"],
     "inventory": ["Inventory"],
     "receivables": ["Accounts Receivable", "Receivables", "Net Receivables"],
     "payables": ["Accounts Payable", "Payables"],
@@ -114,6 +131,10 @@ LINE_ITEM_ALIASES: Dict[str, List[str]] = {
     "dividends_paid": ["Cash Dividends Paid", "Common Stock Dividend Paid", "Dividends Paid"],
     "share_repurchases": ["Repurchase Of Capital Stock", "Common Stock Payments"],
     "stock_based_compensation": ["Stock Based Compensation"],
+    # Cash-flow reconciliation sign: positive = impairment added back to operating cash flow
+    "asset_impairment_charge": ["Asset Impairment Charge"],
+    # Cash-flow reconciliation sign: negative = gain removed from operating cash flow
+    "gain_loss_on_sale_of_ppe": ["Gain Loss On Sale Of PPE", "Gain Loss On Sale Of Business"],
     "change_in_working_capital": ["Change In Working Capital"],
     "cash_flow_depreciation": ["Depreciation And Amortization", "Depreciation Amortization Depletion",
                                "Reconciled Depreciation"],
@@ -245,6 +266,60 @@ def first_available(df: Optional[pd.DataFrame], items: Iterable[ItemSpec],
         if value is not None:
             return value
     return default
+
+
+def _value_at(df: pd.DataFrame, item: ItemSpec, column: Any) -> Optional[float]:
+    label = find_row(df, item)
+    if label is None:
+        return None
+    value = df.loc[label, column]
+    if isinstance(value, pd.Series):  # duplicated labels
+        value = value.iloc[0]
+    return to_float(value)
+
+
+def debt_excluding_leases(balance: Optional[pd.DataFrame]) -> Optional[float]:
+    """
+    Latest interest-bearing borrowings without lease liabilities; None when no debt row exists.
+
+    Yahoo's ``Total Debt`` = ``Long Term Debt`` + ``Current Debt`` + ``Capital Lease Obligations``
+    (operating and finance leases, ASC 842). FCFF, EBITDA and the interest-based cost of debt are
+    all after rent, so counting lease liabilities as debt too would deduct the leases twice
+    (Damodaran: treat leases as debt or as operating costs, never both). Per period, most recent
+    first: long-term + current borrowings (each from its own row, else the "and lease" row minus
+    the lease part); else ``Total Debt`` - lease liabilities. All figures come from one period so a
+    missing latest total is never mixed with an older one. Finance leases cannot be separated in
+    Yahoo data and are excluded with the operating leases.
+    """
+    if is_empty(balance):
+        return None
+
+    def part(column: Any, own: str, combined: str, lease: str) -> Optional[float]:
+        value = _value_at(balance, own, column)
+        if value is not None:
+            return value
+        value = _value_at(balance, combined, column)
+        if value is None:
+            return None
+        return max(value - (_value_at(balance, lease, column) or 0.0), 0.0)
+
+    for column in _sorted_columns(balance, ascending=False):
+        long_term = part(column, "long_term_borrowings", "long_term_debt_and_leases", "long_term_lease_liabilities")
+        current = part(column, "current_borrowings", "current_debt_and_leases", "current_lease_liabilities")
+        if long_term is not None or current is not None:
+            return max((long_term or 0.0) + (current or 0.0), 0.0)
+        total = _value_at(balance, "total_debt", column)
+        if total is not None:
+            leases = _value_at(balance, "lease_liabilities", column)
+            if leases is None:
+                lease_parts = [_value_at(balance, key, column)
+                               for key in ("long_term_lease_liabilities", "current_lease_liabilities")]
+                leases = sum(p for p in lease_parts if p is not None)
+            return max(total - leases, 0.0)
+        short_term = _value_at(balance, "short_term_debt", column)
+        if short_term is not None:
+            return max(short_term, 0.0)
+    return None
 
 
 def latest_period(df: Optional[pd.DataFrame]) -> Optional[Any]:

@@ -30,9 +30,11 @@ from StockAnalysisSystem.src.config import (
 )
 from StockAnalysisSystem.src.valuation.capital import (  # noqa: F401 - effective_tax_rate re-exported
     DEFAULT_TAX_RATE,
+    cap_terminal_growth,
     cost_of_capital_for,
     effective_tax_rate,
     rate_summary,
+    total_debt,
 )
 from StockAnalysisSystem.src.utils.financial_data import (
     build_financial_data,
@@ -203,14 +205,15 @@ def prepare_financial_data(financial_data: Optional[Dict[str, Any]], ticker: str
 # Corporate finance building blocks
 # ---------------------------------------------------------------------------
 def capital_structure(balance: Optional[pd.DataFrame]) -> Dict[str, float]:
-    """Latest debt, cash (incl. short-term investments), minority interest and preferred stock."""
-    debt = get_latest(balance, "total_debt")
-    if debt is None:
-        parts = [get_latest(balance, "long_term_debt"), get_latest(balance, "short_term_debt")]
-        debt = sum(p for p in parts if p is not None)
+    """
+    Latest debt, cash (incl. short-term investments), minority interest and preferred stock.
+
+    Debt excludes lease liabilities (capital.total_debt): FCFF and EBITDA are after rent, so leases
+    are an operating cost here and are not deducted again in the equity bridge.
+    """
     cash = first_available(balance, ["cash_and_short_term_investments", "cash"], 0.0)
     return {
-        "total_debt": max(float(debt or 0.0), 0.0),
+        "total_debt": total_debt(balance),
         "cash": max(float(cash or 0.0), 0.0),
         "minority_interest": max(float(get_latest(balance, "minority_interest", 0.0)), 0.0),
         "preferred_stock": max(float(get_latest(balance, "preferred_stock", 0.0)), 0.0),
@@ -738,6 +741,11 @@ class SectorValuationMixin:
                     source = "not provided"
             if value is not None and spec.get("kind") == "int":
                 value = int(round(value))
+            if name == "terminal_growth" and value is not None:
+                capped = cap_terminal_growth(value, ctx.cost_of_capital.get("risk_free_rate"))
+                if capped["note"]:
+                    ctx.note(capped["note"])
+                value = capped["terminal_growth"]
             ctx.params[name], ctx.sources[name] = value, source
 
     def _select_methods(self, ctx: ValuationContext, requested: Any) -> List[str]:
