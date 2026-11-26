@@ -47,8 +47,11 @@ Framework (from adoption on):
 - [x] brief/T04 - 2 items (stack/python, known-traps); sector widgets already ticker-scoped, DCF/APV/Risk were not
 - [x] build/T04 main.reset_company_widgets() drops val_*/risk_* state when the analysed ticker changes — 22 passed (widget_state + pages_interaction), red check: 2 fail without the fix; ruff clean
 
+- [x] brief/T05 - 2 items (stack/pandas, known-traps)
+- [x] build/T05 Valuation Filter: default approach = sector model (DCF alias), Method = model + heaviest method, method range/spread -> confidence, |upside| > 100 % flagged "check inputs" and hidden unless ticked — 15 passed (valuation_filter) + 7 page-button tests, ruff clean; live: CHTR +232 % flagged Low, PGR "Financial: Excess Return" $235-$524 Low, AAPL "Technology: DCF (SBC-adjusted FCF)" High
+
 ## Next
-- [ ] build/T05 - run `step-brief --task T05` first; Valuation Filter sanity layer (outlier flag, real method)
+- [ ] build/T06 - run `step-brief --task T06` first; bank Risk tab + Peer Comparison N/A / 0.00 %
 
 ## Needed from owner
 - none

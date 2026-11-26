@@ -39,7 +39,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_widget_state.py StockAnalysisSystem/tests/test_pages_interaction.py && $PY -m ruff check StockAnalysisSystem`
   done: after AAPL then JPM the DCF/APV/sector sliders show JPM defaults; keys of the previous ticker are cleared on ticker change (test).
-- [ ] T05 Valuation Filter sanity layer (R4 / U2)
+- [x] T05 Valuation Filter sanity layer (R4 / U2)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/pages/screening/valuation_filter.py, StockAnalysisSystem/tests/test_valuation_filter.py
   depends: T02
