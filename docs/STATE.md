@@ -60,6 +60,8 @@ Framework (from adoption on):
 - [x] build/T11 (run while the T09 review agents work; tests-only, no overlap) golden values: DCF tab projection, sector revenue DCF, WACC, Hamada Ku, APV, residual income, DDM = Gordon, justified P/B, all hand-computed in comments — 8 passed, ruff clean
 - [x] brief/T12 - 2 items (stack/pandas, known-traps)
 - [x] build/T12 Relative tab: live medians of cached universe companies (>= 5 per multiple, dated, never downloads) else static medians with the source named; P/B dropped outside book-value sectors, P/S + EV/EBITDA dropped for Financials ("Used" column, average over used only) — 5 passed (test_benchmarks), ruff clean; live: Technology P/E 21.5 (n=6, as of 2026-11-26), Financials P/E 11.8 (n=8), Energy static
+- [x] brief/T13 - 2 items (stack/python, known-traps)
+- [x] build/T13 DCF tab: growth fades linearly to terminal (default on), SBC deduction toggle (default on when reported); dcf_models variants kept (used by tech/retail/manufacturing models, not dead) — 11 passed (dcf_fade + golden), ruff clean; live DCF tab AAPL 230.52 -> 168.00 (sector DCF 181), XOM 71.94 -> 82.91, MSFT 157.62 -> 125.50
 
 ## Next
 - [ ] review/T09 - run `step-brief --task T09` first; reviewer + security-reviewer agents on P1 diff (b6b2045..HEAD)

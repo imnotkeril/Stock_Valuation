@@ -202,6 +202,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     defaults = _dcf_defaults(sector, fcf, components)
     base_options = {"Latest year": float(fcf.iloc[-1]), f"Average of last {min(len(fcf), 3)} years":
                     float(fcf.tail(3).mean())}
+    sbc = abs(get_latest(get_statement(financial_data, "cash_flow"), "stock_based_compensation") or 0.0)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -209,6 +210,13 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         growth = st.slider("FCF growth (forecast period)", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5,
                            format="%.1f%%", key=f"{KEY}dcf_growth") / 100
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}dcf_years")
+        fade = st.checkbox("Fade growth to terminal growth", value=True, key=f"{KEY}dcf_fade",
+                           help="Growth declines linearly from the forecast rate in year 1 to the terminal rate "
+                                "in the final year, instead of jumping at the end of the forecast.")
+        deduct_sbc = st.checkbox(f"Deduct stock-based compensation ({fmt_money(sbc)} last year)", value=sbc > 0,
+                                 disabled=not sbc, key=f"{KEY}dcf_sbc",
+                                 help="SBC is a real cost to shareholders (dilution) but is added back in "
+                                      "operating cash flow. The Technology sector model deducts it too.")
     with col2:
         discount = st.slider("Discount rate (WACC)", 4.0, 20.0, round(defaults["discount_rate"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}dcf_discount",
@@ -219,7 +227,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     st.caption(f"Default WACC {components['wacc']:.2%}: {_rate_caption(components)}.")
     _render_method_differences(components)
 
-    base_fcf = base_options[base_label]
+    base_fcf = base_options[base_label] - (sbc if deduct_sbc else 0.0)
     net_debt = snapshot.get("net_debt")
     shares = snapshot.get("shares")
     if base_fcf <= 0:
@@ -231,7 +239,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if discount <= terminal:
         st.warning("The discount rate must be higher than the terminal growth rate.")
         return
-    dcf = dcf_projection(base_fcf, growth, discount, terminal, years, net_debt, shares)
+    dcf = dcf_projection(base_fcf, growth, discount, terminal, years, net_debt, shares, fade=fade)
     if dcf is None:
         st.info("Shares outstanding are unavailable, so per-share value cannot be computed.")
         return
@@ -263,7 +271,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     for g in terminal_grid:
         row = []
         for r in discount_grid:
-            point = dcf_projection(base_fcf, growth, r, g, years, net_debt, shares) if r > g else None
+            point = dcf_projection(base_fcf, growth, r, g, years, net_debt, shares, fade=fade) if r > g else None
             row.append(point["value_per_share"] if point else None)
         z.append(row)
     show_chart(sensitivity_heatmap(z, discount_grid, terminal_grid, "Sensitivity: value per share",

@@ -646,9 +646,12 @@ def benchmark_table(ratios: Dict[str, Dict[str, float]], benchmarks: Dict[str, D
 # DCF engine (interactive what-if analysis)
 # ---------------------------------------------------------------------------
 def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: float, terminal_growth: float,
-                   years: int, net_debt: Optional[float], shares: Optional[float]) -> Optional[Dict[str, Any]]:
+                   years: int, net_debt: Optional[float], shares: Optional[float],
+                   fade: bool = False) -> Optional[Dict[str, Any]]:
     """
     Two-stage DCF: ``years`` of FCF growing at ``growth`` then a Gordon terminal value.
+    With ``fade`` the growth rate declines linearly from ``growth`` (year 1) to
+    ``terminal_growth`` (final year), so there is no jump into the terminal stage.
 
     Returns None when the inputs are not meaningful (no FCF, discount rate not
     above terminal growth, no share count).
@@ -658,7 +661,14 @@ def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: floa
         return None
     if discount_rate <= terminal_growth or discount_rate <= -1:
         return None
-    forecast = [base_fcf * (1 + growth) ** year for year in range(1, years + 1)]
+    if fade and years > 1:
+        rates = [growth + (terminal_growth - growth) * i / (years - 1) for i in range(years)]
+    else:
+        rates = [growth] * years
+    forecast, value = [], base_fcf
+    for rate in rates:
+        value *= 1 + rate
+        forecast.append(value)
     discount_factors = [(1 + discount_rate) ** year for year in range(1, years + 1)]
     present_values = [fcf / factor for fcf, factor in zip(forecast, discount_factors)]
     terminal_value = forecast[-1] * (1 + terminal_growth) / (discount_rate - terminal_growth)
@@ -667,6 +677,7 @@ def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: floa
     equity_value = enterprise_value - (to_float(net_debt) or 0.0)
     return {
         "forecast_fcf": forecast,
+        "growth_rates": rates,
         "present_values": present_values,
         "pv_fcf": float(sum(present_values)),
         "terminal_value": terminal_value,

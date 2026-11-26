@@ -95,7 +95,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:pandas
   check: `$T StockAnalysisSystem/tests/test_benchmarks.py && $PY -m ruff check StockAnalysisSystem && $LIVE`
   done: Relative tab uses medians from the cached universe when available (static table as labelled fallback, with date); P/B dropped for asset-light firms, P/S for profitable ones.
-- [ ] T13 Generic DCF: growth fade, SBC toggle, dead DCF variants exposed or removed (R9)
+- [x] T13 Generic DCF: growth fade, SBC toggle, dead DCF variants exposed or removed (R9)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/src/pages/company_analysis/page_helpers.py, StockAnalysisSystem/src/valuation/dcf_models.py, StockAnalysisSystem/tests/test_dcf_fade.py
   depends: T12
