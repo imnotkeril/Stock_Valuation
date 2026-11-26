@@ -389,11 +389,20 @@ def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, A
     st.caption("Value the company at the multiples acquirers paid in comparable deals (these include a control "
                "premium, so they usually exceed trading multiples). Enter deals from press releases, merger proxies "
                "or fairness opinions; the table is saved locally and shared by all companies.")
+    st.info("**Not part of the weighted fair value.** Deal multiples depend on data you enter, so this tab is a "
+            "cross-check next to the Fair Value Summary, never an input to it.", icon=":material/info:")
     sector = canonical_sector(company_info, financial_data)
     deals = pt.load_deals()
+    sample_mode = deals.empty and st.session_state.get(f"{KEY}deals_sample", False)
+    if deals.empty and not sample_mode:
+        st.button("Load an illustrative sample", key=f"{KEY}deals_sample_load", icon=":material/science:",
+                  on_click=lambda: st.session_state.__setitem__(f"{KEY}deals_sample", True),
+                  help="Five fictional deals with rounded, typical multiples for this sector, to show how the tab "
+                       "works. Nothing is saved until you click Save deals.")
+    shown = pt.sample_deals(sector) if sample_mode else (deals if not deals.empty else pt.empty_deals())
     edited = st.data_editor(
-        deals if not deals.empty else pt.empty_deals(), num_rows="dynamic", width="stretch", hide_index=True,
-        key=f"{KEY}deals_editor",
+        shown, num_rows="dynamic", width="stretch", hide_index=True,
+        key=f"{KEY}deals_editor_sample" if sample_mode else f"{KEY}deals_editor",
         column_config={"date": st.column_config.TextColumn("Date (YYYY-MM-DD)"),
                        "sector": st.column_config.TextColumn("Sector", help=f"e.g. {sector}"),
                        "ev_billions": st.column_config.NumberColumn("EV ($B)", format="%.2f"),
@@ -413,7 +422,11 @@ def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, A
             deals = pt.load_deals()
 
     scope = st.radio("Deals to use", [f"{sector} only", "All sectors"], horizontal=True, key=f"{KEY}deals_scope")
-    multiples = pt.deal_multiples(deals, sector if scope.endswith("only") else None)
+    used = edited if sample_mode else deals
+    if pt.is_sample(used):
+        st.warning("These values use the **illustrative sample**, not real transactions. Replace the rows with "
+                   "deals from your own sources before reading anything into them.")
+    multiples = pt.deal_multiples(used, sector if scope.endswith("only") else None)
     if not multiples["deals"]:
         st.info("No matching deals with multiples yet - add some above and click **Save deals**.")
     else:

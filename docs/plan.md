@@ -116,7 +116,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_parallel_fetch.py StockAnalysisSystem/tests/test_valuation_filter.py && $PY -m ruff check StockAnalysisSystem`
   done: 4-8 workers with a shared rate limit; same results as sequential on fixtures; cold screener time measured and pasted.
-- [ ] T16 Precedents: labelled sample data, clear weight status (R12 / U10)
+- [x] T16 Precedents: labelled sample data, clear weight status (R12 / U10)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/pages/company_analysis/valuation.py, StockAnalysisSystem/src/models/precedent_transactions.py, StockAnalysisSystem/tests/test_precedent_transactions.py
   depends: T15

@@ -89,3 +89,30 @@ def test_precedents_tab_renders():
     assert not at.exception, [e.value for e in at.exception]
     labels = [m.label for m in at.metric]
     assert any(label.startswith("Deal EV/Revenue (8.0x, 3 deals)") for label in labels), labels
+
+
+def test_sample_deals_are_labelled_and_sector_specific():
+    sample = pt.sample_deals("Technology")
+    assert len(sample) == 5 and pt.is_sample(sample)
+    assert (sample["source"] == pt.SAMPLE_SOURCE).all()
+    assert sample["target"].str.startswith("Example Target").all()
+    # median of the spread (0.75, 0.9, 1.0, 1.1, 1.3) is the sector level itself
+    stats = pt.deal_multiples(sample, "Technology")
+    assert stats["ev_revenue"]["median"] == pytest.approx(6.0)
+    assert stats["ev_ebitda"]["median"] == pytest.approx(20.0)
+    assert not pt.is_sample(DEALS)
+
+
+def test_empty_tab_offers_sample_and_states_weight_status():
+    at = AppTest.from_file(MAIN, default_timeout=600)
+    at.run()
+    at.sidebar.radio(key=nav.NAV_KEY).set_value(nav.COMPANY_ANALYSIS).run()
+    at.sidebar.selectbox(key="ca_popular").set_value("AAPL").run()
+    at.sidebar.button(key="ca_analyze").click().run()
+    assert any("Not part of the weighted fair value" in i.value for i in at.info)
+    at.button(key="val_deals_sample_load").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("illustrative sample" in w.value for w in at.warning)
+    labels = [m.label for m in at.metric]
+    assert any(label.startswith("Deal EV/Revenue (6.0x, 5 deals)") for label in labels), labels
+    assert pt.load_deals().empty, "sample must not be saved without the Save button"

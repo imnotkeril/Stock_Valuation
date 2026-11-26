@@ -28,6 +28,35 @@ FMP_MA_URL = "https://financialmodelingprep.com/stable/mergers-acquisitions-late
 FMP_FREE_LIMIT = 5
 
 
+#: Label carried by every sample row, so sample deals can never pass for real ones.
+SAMPLE_SOURCE = "ILLUSTRATIVE SAMPLE - not real deals"
+#: Rough, rounded deal-multiple levels per sector used only to build the illustrative sample
+#: (EV/Revenue, EV/EBITDA). They show how the tab works; they are not market data.
+SAMPLE_LEVELS = {
+    "Technology": (6.0, 20.0), "Healthcare": (4.0, 15.0), "Communication Services": (3.0, 10.0),
+    "Consumer Discretionary": (1.5, 11.0), "Consumer Staples": (2.0, 13.0), "Industrials": (2.0, 12.0),
+    "Energy": (1.5, 6.0), "Utilities": (3.0, 11.0), "Real Estate": (10.0, 18.0), "Materials": (1.8, 9.0),
+    "Financials": (3.0, 10.0),
+}
+#: Spread of the five sample deals around the sector level.
+SAMPLE_SPREAD = (0.75, 0.9, 1.0, 1.1, 1.3)
+
+
+def sample_deals(sector: Optional[str]) -> pd.DataFrame:
+    """Five clearly labelled illustrative deals for ``sector`` (fictional parties, rounded multiples)."""
+    ev_revenue, ev_ebitda = SAMPLE_LEVELS.get(sector or "", (2.5, 11.0))
+    rows = [{"date": f"{2021 + i}-06-30", "acquirer": f"Example Acquirer {chr(65 + i)}",
+             "target": f"Example Target {i + 1}", "sector": sector or "Unknown", "ev_billions": None,
+             "ev_revenue": round(ev_revenue * k, 2), "ev_ebitda": round(ev_ebitda * k, 2), "source": SAMPLE_SOURCE}
+            for i, k in enumerate(SAMPLE_SPREAD)]
+    return clean_deals(pd.DataFrame(rows))
+
+
+def is_sample(deals: pd.DataFrame) -> bool:
+    """True when any row comes from :func:`sample_deals`."""
+    return isinstance(deals, pd.DataFrame) and "source" in deals and bool((deals["source"] == SAMPLE_SOURCE).any())
+
+
 def empty_deals() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object" if c in {"date", "acquirer", "target", "sector", "source"}
                                       else "float") for c in COLUMNS})
