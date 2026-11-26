@@ -488,7 +488,7 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             if financial_data is None:
                 financial_data = self._load_financial_data(ticker)
             income, balance, _ = self._statements(financial_data)
-            book_value = get_latest(balance, 'total_equity')
+            book_value = get_latest(balance, 'common_equity')
             roe = self._return_on_equity(financial_data)
             if roe is None:
                 raise ValueError("Return on equity unavailable")
@@ -496,7 +496,7 @@ class SectorSpecificDCF(AdvancedDCFValuation):
             ke = cost_of_equity if cost_of_equity is not None else self._cost_of_equity(financial_data)
             g = terminal_growth if terminal_growth is not None else params['terminal_growth_rate']
             if payout_ratio is None:
-                net_income = get_latest(income, 'net_income')
+                net_income = get_latest(income, 'net_income_common')
                 dps = self._dividends_per_share(financial_data)
                 shares = self._shares_outstanding(financial_data)
                 payout_ratio = clamp(safe_divide(dps * shares, net_income, 0.4), 0.0, 1.0) \
@@ -518,7 +518,7 @@ class SectorSpecificDCF(AdvancedDCFValuation):
     def _sbc_adjusted_fcf(self, financial_data: Dict[str, Any], sbc_haircut: float = 1.0) -> pd.Series:
         """Unlevered FCF minus ``sbc_haircut`` x stock-based compensation (a real, non-cash cost)."""
         _, _, cash_flow = self._statements(financial_data)
-        fcf = self._unlevered_fcf_series(financial_data)
+        fcf = self._unlevered_fcf_series(financial_data, deduct_sbc=False)
         sbc = get_series(cash_flow, 'stock_based_compensation').abs().reindex(fcf.index).fillna(0.0)
         return (fcf - clamp(sbc_haircut, 0.0, 1.0) * sbc).rename('SBC-adjusted FCF')
 

@@ -22,6 +22,7 @@ import streamlit as st
 
 from StockAnalysisSystem.src.config import COLORS, normalize_sector
 from StockAnalysisSystem.src.utils.financial_data import (
+    debt_excluding_leases,
     find_row,
     format_large_number,
     get_latest,
@@ -208,6 +209,34 @@ def free_cash_flow_series(cash_flow: pd.DataFrame) -> pd.Series:
     return result
 
 
+def unlevered_fcf_history(cash_flow: pd.DataFrame, income: pd.DataFrame, tax_rate: float) -> pd.Series:
+    """
+    Chronological unlevered free cash flow: FCF + |interest expense| x (1 - t).
+
+    Reported FCF (OCF - capex) is after interest; a WACC-discounted DCF that then deducts net debt
+    needs the cash flow before financing, otherwise the cost of debt is charged twice. Periods
+    without an interest row add nothing back. Same rule as BaseValuation._unlevered_fcf_series.
+    """
+    fcf = free_cash_flow_series(cash_flow)
+    if fcf.empty:
+        return fcf
+    interest = item_series(income, "interest_expense").abs().reindex(fcf.index).fillna(0.0)
+    return (fcf + interest * (1 - tax_rate)).rename("Unlevered FCF")
+
+
+def dcf_starting_cash_flow(ufcf: pd.Series, sbc: pd.Series, window: int = 1,
+                           deduct_sbc: bool = True) -> Tuple[float, float]:
+    """
+    Starting cash flow for the DCF tab: mean of the latest ``window`` unlevered FCF values minus
+    the mean stock-based compensation of the same periods (0 where SBC is not reported).
+    Returns ``(base, sbc_deducted)``; both chronological series, oldest first.
+    """
+    window = max(int(window), 1)
+    recent = ufcf.dropna().tail(window)
+    sbc_mean = float(sbc.abs().reindex(recent.index).fillna(0.0).mean()) if deduct_sbc and len(recent) else 0.0
+    return float(recent.mean()) - sbc_mean, sbc_mean
+
+
 def ratio_series(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     """Element-wise ratio aligned on periods; NaN where the denominator is 0."""
     if numerator.empty or denominator.empty:
@@ -338,10 +367,8 @@ def market_snapshot(financial_data: Optional[Dict[str, Any]], company_info: Opti
     if shares is None and market_cap and price:
         shares = market_cap / price
 
-    total_debt = get_latest(balance, "total_debt")
-    if total_debt is None:
-        parts = [get_latest(balance, "long_term_debt"), get_latest(balance, "short_term_debt")]
-        total_debt = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+    # Borrowings without lease liabilities, as in every valuation bridge (cash flows are after rent)
+    total_debt = debt_excluding_leases(balance)
     cash = get_latest(balance, "cash_and_short_term_investments")
     if cash is None:
         cash = get_latest(balance, "cash")

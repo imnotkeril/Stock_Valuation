@@ -31,8 +31,11 @@ from StockAnalysisSystem.src.valuation.capital import (  # noqa: F401 - bounds r
     COST_OF_EQUITY_BOUNDS,
     EQUITY_RISK_PREMIUM,
     WACC_BOUNDS,
+    cap_terminal_growth,
     cost_of_capital_for,
+    effective_tax_rate,
     rate_summary,
+    total_debt,
 )
 from StockAnalysisSystem.src.utils.financial_data import (
     build_financial_data,
@@ -735,12 +738,8 @@ class BaseValuation:
 
     @staticmethod
     def _total_debt(balance_sheet: Optional[pd.DataFrame]) -> float:
-        """Total debt (falls back to long-term + current debt); 0 when unavailable."""
-        debt = get_latest(balance_sheet, 'total_debt')
-        if debt is None:
-            parts = [get_latest(balance_sheet, 'long_term_debt'), get_latest(balance_sheet, 'short_term_debt')]
-            debt = sum(p for p in parts if p is not None)
-        return max(float(debt or 0.0), 0.0)
+        """Borrowings without lease liabilities (capital.total_debt, the WACC rule); 0 when unavailable."""
+        return total_debt(balance_sheet)
 
     @staticmethod
     def _cash(balance_sheet: Optional[pd.DataFrame]) -> float:
@@ -808,15 +807,9 @@ class BaseValuation:
         return float(series.mean()) if not series.empty else 0.0
 
     def _effective_tax_rate(self, financial_data: Optional[Dict[str, Any]]) -> float:
-        """Average effective tax rate of the last three profitable years, bounded to [0, 35 %]."""
+        """Effective tax rate: the single rule of capital.effective_tax_rate (ADR-007), as in the WACC."""
         income, _, _ = self._statements(financial_data)
-        tax, pretax = get_series(income, 'tax_provision'), get_series(income, 'pretax_income')
-        aligned = pd.concat([tax, pretax], axis=1, join='inner').head(3)
-        rates = [t / p for t, p in aligned.to_numpy() if p > 0]
-        rate = float(np.mean(rates)) if rates else to_float(get_latest(income, 'tax_rate'))
-        if rate is None or not 0 <= rate <= 0.6:
-            rate = DEFAULT_TAX_RATE
-        return clamp(rate, 0.0, 0.35)
+        return effective_tax_rate(income)
 
     # ------------------------------------------------------------------
     # Discount rates
@@ -879,14 +872,24 @@ class BaseValuation:
             fcf = get_series(income_stmt, 'net_income')
         return fcf.rename('Free Cash Flow')
 
-    def _unlevered_fcf_series(self, financial_data: Optional[Dict[str, Any]]) -> pd.Series:
-        """Free cash flow to the firm: reported FCF + after-tax interest expense (most recent first)."""
+    def _unlevered_fcf_series(self, financial_data: Optional[Dict[str, Any]], deduct_sbc: bool = True) -> pd.Series:
+        """
+        Free cash flow to the firm (most recent first): reported FCF + after-tax interest expense
+        - stock-based compensation. SBC is a real cost (Damodaran) that operating cash flow adds back,
+        so it is deducted unless ``deduct_sbc`` is False; never when FCF fell back to net income,
+        which is already after SBC.
+        """
         income, _, cash_flow = self._statements(financial_data)
         fcf = self._calculate_historical_fcf(income, cash_flow)
         if fcf.empty:
             return fcf
         interest = get_series(income, 'interest_expense').abs().reindex(fcf.index).fillna(0.0)
-        return (fcf + interest * (1 - self._effective_tax_rate(financial_data))).rename('Unlevered FCF')
+        ufcf = fcf + interest * (1 - self._effective_tax_rate(financial_data))
+        from_cash_flow = not get_series(cash_flow, 'free_cash_flow').empty \
+            or not get_series(cash_flow, 'operating_cash_flow').empty
+        if deduct_sbc and from_cash_flow:
+            ufcf = ufcf - get_series(cash_flow, 'stock_based_compensation').abs().reindex(fcf.index).fillna(0.0)
+        return ufcf.rename('Unlevered FCF')
 
     @staticmethod
     def _base_cash_flow(series: pd.Series, average_years: int = 1) -> float:
@@ -1002,11 +1005,15 @@ class BaseValuation:
         series = self._unlevered_fcf_series(financial_data) if cash_flows is None else cash_flows
         base = self._base_cash_flow(series, average_years)
         wacc = self._wacc_components(financial_data, sector)
+        growth_cap = cap_terminal_growth(
+            terminal_growth if terminal_growth is not None else params['terminal_growth_rate'],
+            wacc.get('risk_free_rate'))
         return {
             'base_fcf': base,
             'historical_fcf': series,
             'discount_rate': discount_rate if discount_rate is not None else wacc['wacc'],
-            'terminal_growth': terminal_growth if terminal_growth is not None else params['terminal_growth_rate'],
+            'terminal_growth': growth_cap['terminal_growth'],
+            'terminal_growth_note': growth_cap['note'],
             'forecast_years': int(forecast_years or params['forecast_years']),
             'growth_rate': (growth_rate if growth_rate is not None
                             else self._estimate_company_growth(financial_data, series)),
@@ -1029,6 +1036,8 @@ class BaseValuation:
             'wacc_components': inputs['wacc_components'], 'safety_margin': inputs['safety_margin'],
             'conservative_value': value * (1 - inputs['safety_margin']) if value else None,
         }
+        if inputs.get('terminal_growth_note'):
+            result['note'] = inputs['terminal_growth_note']
         result.update(extra)
         return result
 
@@ -1204,10 +1213,13 @@ class BaseValuation:
             return self._method_error(label, e, ticker)
 
     def _return_on_equity(self, financial_data: Optional[Dict[str, Any]], years: int = 3) -> Optional[float]:
-        """Average ROE (net income / average equity) over the latest ``years`` periods."""
+        """
+        Average ROE on common equity (net income to common / average common equity) over the latest
+        ``years`` periods: preferred dividends and preferred stock belong to preferred holders.
+        """
         income, balance, _ = self._statements(financial_data)
-        net_income = get_series(income, 'net_income', ascending=True)
-        equity = get_series(balance, 'total_equity', ascending=True)
+        net_income = get_series(income, 'net_income_common', ascending=True)
+        equity = get_series(balance, 'common_equity', ascending=True)
         if net_income.empty or equity.empty:
             return None
         average_equity = ((equity + equity.shift(1)) / 2).fillna(equity)
@@ -1266,7 +1278,7 @@ class BaseValuation:
             params = self._get_dcf_parameters(sector)
             income, _, _ = self._statements(financial_data)
             shares = self._shares_outstanding(financial_data)
-            net_income = get_latest(income, 'net_income')
+            net_income = get_latest(income, 'net_income_common')
             eps = net_income / shares if net_income is not None and shares else None
 
             dps = self._dividends_per_share(financial_data)

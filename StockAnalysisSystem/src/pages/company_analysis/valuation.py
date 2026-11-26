@@ -37,6 +37,7 @@ from StockAnalysisSystem.src.pages.company_analysis.charts import (
 from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
     canonical_sector,
     dcf_projection,
+    dcf_starting_cash_flow,
     fmt_money,
     fmt_pct,
     fmt_price,
@@ -44,8 +45,10 @@ from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
     get_company_ratios,
     get_sector_benchmarks,
     get_statement,
+    item_series,
     market_snapshot,
     render_section,
+    unlevered_fcf_history,
 )
 from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
     get_valuation_factory,
@@ -199,19 +202,26 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if sector == "Financials":
         st.info("Free-cash-flow DCF is not meaningful for banks and insurers (debt is raw material, not "
                 "financing). Use the Sector Model tab: excess-return and justified P/B methods.")
-    fcf = free_cash_flow_series(get_statement(financial_data, "cash_flow"))
-    if fcf.empty:
+    cash_flow = get_statement(financial_data, "cash_flow")
+    if free_cash_flow_series(cash_flow).empty:
         st.info("Free cash flow history is unavailable, so a DCF cannot be built.")
         return
     components = _shared_capital(financial_data, sector)
+    # The WACC prices cash flow before financing and net debt is deducted afterwards, so the DCF
+    # starts from unlevered FCF (FCF + after-tax interest), not FCF after interest.
+    fcf = unlevered_fcf_history(cash_flow, get_statement(financial_data, "income_statement"),
+                                components["tax_rate"])
+    sbc_history = item_series(cash_flow, "stock_based_compensation")
     defaults = _dcf_defaults(sector, fcf, components)
-    base_options = {"Latest year": float(fcf.iloc[-1]), f"Average of last {min(len(fcf), 3)} years":
-                    float(fcf.tail(3).mean())}
-    sbc = abs(get_latest(get_statement(financial_data, "cash_flow"), "stock_based_compensation") or 0.0)
+    base_windows = {"Latest year": 1, f"Average of last {min(len(fcf), 3)} years": 3}
+    sbc = abs(get_latest(cash_flow, "stock_based_compensation") or 0.0)
 
     col1, col2 = st.columns(2)
     with col1:
-        base_label = st.radio("Starting free cash flow", list(base_options), horizontal=True, key=f"{KEY}dcf_base")
+        base_label = st.radio("Starting unlevered free cash flow", list(base_windows), horizontal=True,
+                              key=f"{KEY}dcf_base",
+                              help="Free cash flow + interest expense x (1 - tax rate): cash flow to debt and "
+                                   "equity holders, the flow the WACC discounts.")
         growth = st.slider("FCF growth (forecast period)", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5,
                            format="%.1f%%", key=f"{KEY}dcf_growth") / 100
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}dcf_years")
@@ -221,7 +231,8 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         deduct_sbc = st.checkbox(f"Deduct stock-based compensation ({fmt_money(sbc)} last year)", value=sbc > 0,
                                  disabled=not sbc, key=f"{KEY}dcf_sbc",
                                  help="SBC is a real cost to shareholders (dilution) but is added back in "
-                                      "operating cash flow. The Technology sector model deducts it too.")
+                                      "operating cash flow. Deducted over the same years as the starting cash "
+                                      "flow; every model's DCF deducts it too.")
     with col2:
         discount = st.slider("Discount rate (WACC)", 4.0, 20.0, round(defaults["discount_rate"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}dcf_discount",
@@ -232,7 +243,11 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     st.caption(f"Default WACC {components['wacc']:.2%}: {_rate_caption(components)}.")
     _render_method_differences(components)
 
-    base_fcf = base_options[base_label] - (sbc if deduct_sbc else 0.0)
+    base_fcf, _ = dcf_starting_cash_flow(fcf, sbc_history, base_windows[base_label], deduct_sbc)
+    if terminal > components["risk_free_rate"]:
+        st.warning(f"Terminal growth {terminal:.2%} is above the risk-free rate "
+                   f"{components['risk_free_rate']:.2%}: stable growth should not exceed nominal economic "
+                   "growth (the models cap it at the risk-free rate).")
     net_debt = snapshot.get("net_debt")
     shares = snapshot.get("shares")
     if base_fcf <= 0:
@@ -264,7 +279,8 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
 
     left, right = st.columns([2, 1])
     with left:
-        show_chart(dcf_cash_flow_chart(fcf, dcf["forecast_fcf"], dcf["present_values"], "Free cash flow forecast"),
+        show_chart(dcf_cash_flow_chart(fcf, dcf["forecast_fcf"], dcf["present_values"],
+                                       "Unlevered free cash flow forecast"),
                    key=f"{KEY}dcf_chart")
     with right:
         show_chart(donut_chart(["PV of forecast FCF", "PV of terminal value"], [dcf["pv_fcf"], dcf["pv_terminal"]],
@@ -374,10 +390,12 @@ def _render_method_differences(components: Dict[str, Any]) -> None:
             f"equity risk premium {components['equity_risk_premium']:.1%}, Blume-adjusted beta "
             f"{components['adjusted_beta']:.2f}, cost of equity {components['cost_of_equity']:.2%}, "
             f"WACC {components['wacc']:.2%}. They differ in what they discount:\n\n"
-            "- **DCF tab**: reported free cash flow (latest year or a multi-year average) grown at one rate, "
-            "then a terminal value, discounted at the WACC. No stock-based compensation deduction.\n"
+            "- **DCF tab**: unlevered free cash flow (FCF + after-tax interest, latest year or a multi-year "
+            "average, less stock-based compensation of the same years unless unticked) grown at one rate, "
+            "then a terminal value, discounted at the WACC.\n"
             "- **APV tab**: unlevered free cash flow (3-year average FCF + after-tax interest) at the "
-            "*unlevered* cost of equity, plus the present value of interest tax shields at the cost of debt.\n"
+            "*unlevered* cost of equity, plus the present value of interest tax shields at the cost of debt "
+            "(debt held constant, so the shields after the forecast are a level perpetuity).\n"
             "- **Sector Model tab**: the sector's own methods (for example SBC-adjusted DCF for technology, "
             "cycle-normalised DCF for industrials, residual income for banks) blended with multiples. Its "
             "weighted value is the Fair Value Summary.\n\n"
