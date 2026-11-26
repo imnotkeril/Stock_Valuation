@@ -79,9 +79,10 @@ Framework (from adoption on):
 - [x] qa/T19 live QA: AppTest with real data on every page + Company tabs AAPL/JPM/XOM, 0 exceptions/errors/warnings (timings in docs/QA.md); browser pass found one-step pick blocked by foreign listings -> unique_match counts US listings (test added); 5 screenshots in docs/screenshots/
 
 - [x] docs/T20 - 7 commands verified: `pytest -o addopts="" -p no:warnings` 533 passed; `ruff check StockAnalysisSystem` clean; `docs_check.py` ok (readme links 5 screenshots + METHODOLOGY; METHODOLOGY mentions WACC, liquidation, Sortino, Zmijewski; "not investment advice" in README, USER_GUIDE, METHODOLOGY; all relative links resolve); `run.py` health `/_stcore/health` 200; `docker build` ok + `docker run --env-file .env` health 200; `pip install -r requirements*.txt --dry-run` satisfied; README env names == `.env.example` (5 of 5). No HTTP API (0 routes), so `/llms.txt` n/a. METHODOLOGY.md, README, USER_GUIDE, CHANGELOG, SPEC F20-F22 Done
+- [x] release/T21 final gate — "533 passed in 185.98s", ruff "All checks passed!", docs_check ok; live AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low; .env.example documents STOCK_ANALYSIS_RISK_FREE_RATE; owner allowed push, PR and merge
 
 ## Next
-- [ ] docs/T21 Release prep: final gate, CHANGELOG entry check, PR proposal to the owner (no push)
+- [ ] ship: PR into master open, wait for CI green (3.11-3.13), merge (owner allowed), record merge here
 
 ## Needed from owner
 - none

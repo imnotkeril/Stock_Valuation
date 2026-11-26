@@ -194,7 +194,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: module:legal-compliance#qa
   check: `$PY StockAnalysisSystem/tools/docs_check.py`
   done: methodology covers WACC build, weights, thresholds, confidence, each sector model, benchmark source, known biases; screenshots taken after the fixes are linked from README and USER_GUIDE; feature table current; HTML export documented; disclaimer present.
-- [ ] T21 Release prep (no push): final gate, CHANGELOG entry, PR proposal to the owner
+- [x] T21 Release prep (no push): final gate, CHANGELOG entry, PR proposal to the owner
   layer: infra · tier: C · owner: devops · model: haiku · owns: CHANGELOG.md · depends: T20
   uses: none
   check: `$T && $PY -m ruff check StockAnalysisSystem && $LIVE`
