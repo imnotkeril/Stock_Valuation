@@ -87,3 +87,31 @@ Keys migrated from the old folder's `.env.txt` into `.env` (values never printed
 
 All keyed features are now live-checked.
 
+
+## Review-fix QA pass (T19, 2026-11-26)
+
+Live data (Yahoo, FRED, Finnhub key present), branch `claude/review-fixes-finish-2bedc3`.
+
+**Scripted pass** (Streamlit AppTest, real network, every page; every Company Analysis tab renders on load):
+
+| Page / action | Time | Exceptions / errors | Warnings |
+|---|---|---|---|
+| Company Analysis AAPL (all tabs) | 6.4 s | none | none |
+| Company Analysis JPM (all tabs) | 5.3 s | none | none |
+| Company Analysis XOM (all tabs) | 5.7 s | none | none |
+| Peer Comparison (main-area run button) | 5.4 s | none | none |
+| Sector Analysis (main-area run button) | 5.7 s | none | none |
+| Stock Screener run (warm cache) | 34.1 s | none | none |
+| Valuation Filter run | 16.6 s | none | none |
+| Forecasting run | 6.7 s | none | none |
+| Reports generate | 0.8 s | none | none |
+
+New features, live values: AAPL fair value $184.41 (Sell, High), Sortino 1.35, Treynor 40.6 %, Calmar 2.05, IR 0.89,
+Jensen's alpha 22.3 %, liquidation $0.00 (liabilities exceed recoveries), insider: 24 open-market sells in 90 days.
+JPM $278.97, bank note on liquidation / A1-A4. XOM $87.00, orderly liquidation $14.50, Treynor N/A (1-year regression beta <= 0 rule).
+
+**Browser pass** (port 8502, 1440x900): typing "Apple Inc" + Enter analyses AAPL in one step (Yahoo returns AAPL plus
+foreign listings AAPL.SAO, APC.DE; the pick now counts US listings only — found and fixed in this pass, test added).
+Overview, Valuation summary, Risk health and Market risk (new ratios with definitions) render; screenshots in `docs/screenshots/`.
+
+Issues: one found (one-step pick with foreign listings), fixed. Known, backlog: VZ DCF tab far above price (WACC floor + telecom default growth).

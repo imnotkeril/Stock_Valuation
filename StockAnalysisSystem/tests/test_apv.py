@@ -24,15 +24,18 @@ def test_unlevered_fcf_adds_after_tax_interest():
 
 def test_apv_matches_hand_calculation():
     # 2-year forecast, UFCF 100 growing 10%: 110, 121; ku 10%, g 2%
-    # Tax shield = 25% * 5% * 200 = 2.5 per year at kd 5%, growing 2% after year 2
+    # Tax shield = 25% * 5% * 200 = 2.5 per year at kd 5%; fixed debt, so after year 2 it is a level
+    # perpetuity 2.5 / 0.05 = 50 at kd (no growth): PV = 2.5/1.05 + 2.5/1.05^2 + 50/1.05^2
+    # = 2.38095 + 2.26757 + 45.35147 = 50.0 = t x D (Myers: a fixed debt's shields are worth t x D)
     r = apv.apv_valuation(100, 0.10, 2, 0.02, 0.10, debt=200, cost_of_debt=0.05, tax_rate=0.25,
                           cash=50, shares=10)
     pv_fcf = 110 / 1.1 + 121 / 1.1 ** 2
     pv_tv = 121 * 1.02 / 0.08 / 1.1 ** 2
-    pv_ts = 2.5 / 1.05 + 2.5 / 1.05 ** 2 + 2.5 * 1.02 / 0.03 / 1.05 ** 2
+    pv_ts = 2.5 / 1.05 + 2.5 / 1.05 ** 2 + 2.5 / 0.05 / 1.05 ** 2
+    assert pv_ts == pytest.approx(0.25 * 200)
     assert r["pv_forecast_fcf"] == pytest.approx(pv_fcf)
     assert r["pv_terminal_value"] == pytest.approx(pv_tv)
-    assert r["tax_shield_value"] == pytest.approx(pv_ts)
+    assert r["tax_shield_value"] == pytest.approx(50.0)
     equity = pv_fcf + pv_tv + pv_ts - 200 + 50
     assert r["equity_value"] == pytest.approx(equity)
     assert r["value_per_share"] == pytest.approx(equity / 10)

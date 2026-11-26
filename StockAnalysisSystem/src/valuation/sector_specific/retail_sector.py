@@ -172,8 +172,8 @@ class RetailSectorValuation(SectorValuationMixin, AdvancedDCFValuation):
     def _dcf(self, ctx: ValuationContext) -> Dict[str, Any]:
         result = fcff_dcf(ctx, margin_years=3)
         if ctx.subsector in _STORE_BASED and not result.get("note"):
-            result["note"] = ("FCFF is after store rent; lease liabilities reported in total debt are deducted "
-                              "in the equity bridge.")
+            result["note"] = ("FCFF is after store rent, so lease liabilities are left out of debt in the equity "
+                              "bridge (counting both would deduct the leases twice).")
         return result
 
     def _relative(self, ctx: ValuationContext) -> Dict[str, Any]:

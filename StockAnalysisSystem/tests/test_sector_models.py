@@ -102,11 +102,18 @@ def test_subscriber_method_needs_user_metrics(factory, make_company):
     company = make_company("telecom")
     without = _valuate(factory, company, subsector="telecom", methods=["subscriber"])
     assert without["valuation_methods"]["subscriber"]["value_per_share"] is None
-    low_churn = _valuate(factory, company, subsector="telecom", methods=["subscriber"], subscribers=200,
-                         arpu_monthly=56, churn_rate=0.08)["valuation_methods"]["subscriber"]["value_per_share"]
-    high_churn = _valuate(factory, company, subsector="telecom", methods=["subscriber"], subscribers=200,
+    # Value is cash after capex, not EBITDA (sector audit D4). Synthetic telecom: operating margin 22 %,
+    # D&A 10.4 %, capex 13 %, tax 21 % -> cash margin 0.22 x 0.79 + 0.104 - 0.13 = 0.1478 (EBITDA margin 0.324).
+    # 400 m subs, ARPU 56/month, churn 8 %, WACC 6 %, g 2 %: 56 x 12 x 0.1478 = 99.3216 per year,
+    # lifetime 99.3216 / (0.08 + 0.06 - 0.02) = 827.68 -> customer base 827.68 x 400 m = 331.072 bn.
+    low = _valuate(factory, company, subsector="telecom", methods=["subscriber"], subscribers=400,
+                   arpu_monthly=56, churn_rate=0.08)["valuation_methods"]["subscriber"]
+    assert low["cash_margin"] == pytest.approx(0.1478)
+    assert low["lifetime_value_per_subscriber"] == pytest.approx(99.3216 / 0.12)
+    assert low["customer_base_value"] == pytest.approx(331.072e9)
+    high_churn = _valuate(factory, company, subsector="telecom", methods=["subscriber"], subscribers=400,
                           arpu_monthly=56, churn_rate=0.15)["valuation_methods"]["subscriber"]["value_per_share"]
-    assert low_churn and high_churn and high_churn < low_churn
+    assert low["value_per_share"] and high_churn and high_churn < low["value_per_share"]
 
 
 def test_pipeline_rnpv_adds_risk_adjusted_value(factory, make_company):

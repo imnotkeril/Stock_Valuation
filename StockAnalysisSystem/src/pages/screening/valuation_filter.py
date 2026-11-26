@@ -11,8 +11,13 @@ from StockAnalysisSystem.src.utils.financial_data import build_financial_data, c
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
+from StockAnalysisSystem.src.valuation import capital
 from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
-from StockAnalysisSystem.src.pages.screening.stock_screener import get_stock_universe, get_stocks_by_sector, get_stocks_by_sector_and_subsector
+from StockAnalysisSystem.src.pages.screening.stock_screener import (
+    DEFAULT_WORKERS, get_stock_universe, get_stocks_by_sector, get_stocks_by_sector_and_subsector,
+    parallel_map, progress_reporter,
+)
+from StockAnalysisSystem.src.utils.rates import risk_free_rate
 
 # Setup logging
 logging.basicConfig(
@@ -41,15 +46,16 @@ def run_valuation_filter_page():
         # Valuation approaches
         st.subheader("Valuation Approach")
         valuation_approaches = {
-            "DCF": "Discounted Cash Flow - based on future cash flows",
-            "Relative": "Relative Valuation - based on peer multiples",
-            "Combined": "Combined approach using both DCF and multiples"
+            "Sector model": "The company's sector model (as on Company Analysis > Valuation): sector-specific "
+                            "DCF, residual income, NAV or multiples, blended by weight",
+            "Relative": "Relative Valuation - based on sector average multiples",
+            "Combined": "60 % sector model + 40 % sector multiples"
         }
 
         selected_approach = st.selectbox(
             "Select valuation approach:",
             options=list(valuation_approaches.keys()),
-            index=2  # Default to Combined
+            index=0  # Default: the sector model
         )
 
         st.info(valuation_approaches[selected_approach])
@@ -93,9 +99,9 @@ def run_valuation_filter_page():
             index=0
         )
 
-        # DCF parameters expander (if DCF or Combined approach)
-        if selected_approach in ["DCF", "Combined"]:
-            with st.expander("DCF Parameters", expanded=True):
+        # Model parameters expander (sector model or Combined approach)
+        if selected_approach in MODEL_APPROACHES:
+            with st.expander("Model Parameters", expanded=True):
                 # Discount rate adjustment
                 discount_rate_adj = st.slider(
                     "Discount Rate Adjustment (%):",
@@ -196,6 +202,11 @@ def run_valuation_filter_page():
 
         st.info(sort_options[sort_by])
 
+        include_outliers = st.checkbox(
+            f"Include implausible results (|upside| > {OUTLIER_UPSIDE:.0%})", value=False, key="vf_outliers",
+            help="Results this far from the price usually mean bad inputs (unusual capital structure, "
+                 "one-off earnings, a model that does not fit the business). They are flagged 'check inputs'.")
+
         # Max number of results
         max_results = st.slider(
             "Maximum number of results:",
@@ -244,16 +255,19 @@ def run_valuation_filter_page():
                     selected_sector,
                     min_market_cap=min_market_cap,
                     max_market_cap=max_market_cap,
-                    discount_rate_adj=discount_rate_adj / 100 if selected_approach in ["DCF", "Combined"] else 0,
-                    growth_rate_adj=growth_rate_adj / 100 if selected_approach in ["DCF", "Combined"] else 0,
-                    terminal_growth_adj=terminal_growth_adj / 100 if selected_approach in ["DCF", "Combined"] else 0,
-                    margin_of_safety=margin_of_safety / 100 if selected_approach in ["DCF", "Combined"] else 0.25,
+                    discount_rate_adj=discount_rate_adj / 100 if selected_approach in MODEL_APPROACHES else 0,
+                    growth_rate_adj=growth_rate_adj / 100 if selected_approach in MODEL_APPROACHES else 0,
+                    terminal_growth_adj=terminal_growth_adj / 100 if selected_approach in MODEL_APPROACHES else 0,
+                    margin_of_safety=margin_of_safety / 100 if selected_approach in MODEL_APPROACHES else 0.25,
                     pe_discount=pe_discount / 100 if selected_approach in ["Relative", "Combined"] else 0.15,
                     ps_discount=ps_discount / 100 if selected_approach in ["Relative", "Combined"] else 0.15,
                     pb_discount=pb_discount / 100 if selected_approach in ["Relative", "Combined"] else 0.15,
                     ev_ebitda_discount=ev_ebitda_discount / 100 if selected_approach in ["Relative",
-                                                                                         "Combined"] else 0.15
+                                                                                         "Combined"] else 0.15,
+                    include_outliers=include_outliers,
+                    progress_callback=progress_reporter(st.progress(0.0, text="Starting..."), "Valuing"),
                 )
+                hidden_outliers = valuation_results.hidden_outliers
 
                 # Sort the results
                 if sort_by == "Upside Potential":
@@ -286,6 +300,11 @@ def run_valuation_filter_page():
 
                 # Display count of results
                 st.success(f"Found {len(valuation_results)} potentially undervalued stocks.")
+                if hidden_outliers:
+                    st.caption(f"{len(hidden_outliers)} more with upside beyond {OUTLIER_UPSIDE:.0%} hidden as "
+                               f"implausible ({', '.join(hidden_outliers[:10])}"
+                               f"{', ...' if len(hidden_outliers) > 10 else ''}). Tick 'Include implausible "
+                               "results' to list them.")
 
                 # Create tabs for different views
                 tabs = st.tabs(["Summary Table", "Detailed Analysis", "Sector Breakdown", "Fair Value Distribution"])
@@ -306,6 +325,8 @@ def run_valuation_filter_page():
                             "Fair Value": f"${stock.get('fair_value', 0):.2f}",
                             "Upside": f"{stock.get('upside', 0) * 100:.2f}%",
                             "Method": stock.get("valuation_method", "N/A"),
+                            "Method range": _fmt_range(stock.get("method_range")),
+                            "Check": stock.get("flag") or "",
                             "Market Cap": f"${stock.get('market_cap', 0) / 1e9:.2f}B" if stock.get('market_cap',
                                                                                                    0) >= 1e9 else f"${stock.get('market_cap', 0) / 1e6:.2f}M",
                             "P/E": f"{stock.get('pe_ratio', None):.2f}" if stock.get('pe_ratio') is not None else "N/A",
@@ -690,13 +711,18 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
         data_loader: DataLoader instance
         ratio_analyzer: FinancialRatioAnalyzer instance
         valuation_factory: ValuationFactory instance
-        approach: Valuation approach to use ("DCF", "Relative", or "Combined")
+        approach: "Sector model" (alias "DCF"), "Relative" or "Combined"
         sector: Selected sector (or "All")
         **params: Various valuation parameters
 
     Returns:
-        List of stocks that meet the valuation criteria
+        ScreenResults (a list) of stocks above the margin of safety; implausible results
+        (|upside| > OUTLIER_UPSIDE) only when ``include_outliers``, their symbols otherwise in
+        ``.hidden_outliers``.
     """
+    if approach == "DCF":
+        approach = "Sector model"
+    include_outliers = params.get("include_outliers", False)
     # Extract parameters
     min_market_cap = params.get("min_market_cap", 0)
     max_market_cap = params.get("max_market_cap", float('inf'))
@@ -712,17 +738,20 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
     }
 
     # Results list
-    valuation_results = []
+    valuation_results = ScreenResults()
 
-    # Get sector benchmarks for relative valuation
-    sector_benchmarks = ratio_analyzer.get_sector_benchmarks(sector if sector != "All" else None)
 
-    def dcf_overrides(stock_sector, income_stmt):
-        """Model assumptions = sector defaults shifted by the user's adjustments."""
+    def dcf_overrides(stock_sector, income_stmt, model_data=None):
+        """
+        Model assumptions shifted by the user's adjustments. The discount-rate adjustment moves the shared
+        cost of capital the model uses by default (WACC; cost of equity for financials), so 0 and +0.25 %
+        are continuous (review R-02).
+        """
         defaults = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(normalize_sector(stock_sector), {})}
         overrides = {}
         if discount_rate_adj:
-            overrides["discount_rate"] = defaults["default_discount_rate"] + discount_rate_adj
+            overrides["discount_rate"] = shared_discount_rate(model_data, stock_sector,
+                                                              defaults["default_discount_rate"]) + discount_rate_adj
         if terminal_growth_adj:
             overrides["terminal_growth"] = max(defaults["terminal_growth_rate"] + terminal_growth_adj, 0.0)
         if growth_rate_adj:
@@ -731,8 +760,8 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             overrides["revenue_growth"] = base + growth_rate_adj
         return overrides
 
-    # Process each stock in the universe
-    for stock in universe:
+    def analyse(stock):
+        """('row', dict), ('outlier', symbol) or None for one stock."""
         symbol = stock["symbol"]
 
         try:
@@ -740,12 +769,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             company_info = data_loader.get_company_info(symbol)
 
             if not company_info:
-                continue
+                return None
 
             # Market cap filter
             market_cap = company_info.get('market_cap')
             if market_cap is None or not (min_market_cap <= market_cap <= max_market_cap):
-                continue
+                return None
 
             # Get latest price data
             end_date = datetime.now().strftime('%Y-%m-%d')
@@ -754,7 +783,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             price_data = data_loader.get_historical_prices(symbol, start_date_1y, end_date)
 
             if price_data.empty:
-                continue
+                return None
 
             # Get current price
             current_price = price_data['Close'].iloc[-1]
@@ -766,7 +795,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
 
             # Check if we have enough data for valuation
             if income_stmt.empty or balance_sheet.empty:
-                continue
+                return None
 
             # Combine into financial data dict
             financial_data = {
@@ -784,18 +813,18 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
 
             # Perform DCF valuation if needed
             dcf_result = None
-            if approach in ["DCF", "Combined"]:
+            if approach in MODEL_APPROACHES:
                 try:
                     # Get company sector
                     stock_sector = company_info.get('sector', sector if sector != "All" else None)
 
                     # Perform DCF valuation with adjusted parameters
+                    model_data = build_financial_data(income_stmt, balance_sheet, cash_flow, company_info, price_data)
                     dcf_result = valuation_factory.get_company_valuation(
                         symbol,
                         sector=stock_sector,
-                        financial_data=build_financial_data(income_stmt, balance_sheet, cash_flow,
-                                                            company_info, price_data),
-                        **dcf_overrides(stock_sector, income_stmt)
+                        financial_data=model_data,
+                        **dcf_overrides(stock_sector, income_stmt, model_data)
                     )
                     if dcf_result.get('value_per_share') is None:
                         dcf_result = None
@@ -808,7 +837,9 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                 try:
                     # Get sector avg multiples
                     stock_sector = company_info.get('sector', sector if sector != "All" else None)
-                    sector_multiples = sector_benchmarks.get(stock_sector, {}).get('valuation', {})
+                    # get_sector_benchmarks(sector) returns {category: {...}} for that one sector (R-08)
+                    sector_multiples = (ratio_analyzer.get_sector_benchmarks(stock_sector) or {}).get(
+                        'valuation', {}) or {}
 
                     # Calculate relative valuation
                     relative_result = calculate_relative_valuation(
@@ -818,6 +849,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                         sector_multiples,
                         current_price,
                         discounts=multiple_discounts,
+                        sector=stock_sector,
                     )
                 except Exception as e:
                     logger.warning(f"Relative valuation failed for {symbol}: {str(e)}")
@@ -830,15 +862,16 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             confidence_level = "Low"
             notes = ""
 
-            if approach == "DCF" and dcf_result:
+            model_label = method_label(dcf_result) if dcf_result else None
+            method_values = method_values_of(dcf_result) if dcf_result else {}
+            if approach == "Sector model" and dcf_result:
                 fair_value = dcf_result.get('value_per_share')
-                valuation_method = "DCF"
-                valuation_components = {"DCF": fair_value}
+                valuation_method = model_label
+                valuation_components = method_values or {"Sector model": fair_value}
                 valuation_parameters = {
                     **_dcf_parameters(dcf_result)
                 }
-                confidence_level = "Medium"
-                notes = "Based on discounted cash flow analysis."
+                notes = "Based on the sector model."
 
             elif approach == "Relative" and relative_result:
                 fair_value = relative_result.get('fair_value')
@@ -857,9 +890,9 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
 
                     if dcf_value and rel_value:
                         fair_value = dcf_value * 0.6 + rel_value * 0.4
-                        valuation_method = "Combined"
+                        valuation_method = f"Combined: {model_label} + multiples"
                         valuation_components = {
-                            "DCF (60%)": dcf_value,
+                            "Sector model (60%)": dcf_value,
                             "Relative (40%)": rel_value
                         }
                         valuation_parameters = {
@@ -868,17 +901,15 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                             "peer_pb": relative_result.get('parameters', {}).get('peer_pb'),
                             "peer_ps": relative_result.get('parameters', {}).get('peer_ps')
                         }
-                        confidence_level = "High"
-                        notes = "Based on combined DCF and relative valuation methods."
+                        notes = "Based on the sector model and sector multiples."
                 elif dcf_result:
                     fair_value = dcf_result.get('value_per_share')
-                    valuation_method = "DCF"
-                    valuation_components = {"DCF": fair_value}
+                    valuation_method = model_label
+                    valuation_components = method_values or {"Sector model": fair_value}
                     valuation_parameters = {
                         **_dcf_parameters(dcf_result)
                     }
-                    confidence_level = "Medium"
-                    notes = "Based on discounted cash flow analysis. Relative valuation not available."
+                    notes = "Based on the sector model. Relative valuation not available."
                 elif relative_result:
                     fair_value = relative_result.get('fair_value')
                     valuation_method = "Relative"
@@ -887,13 +918,22 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     confidence_level = "Medium"
                     notes = "Based on sector average multiples. DCF valuation not available."
 
-            # Calculate upside
-            upside = (fair_value / current_price - 1) if fair_value and current_price > 0 else None
+            # Calculate upside and sanity-check it. Combined: the range spans the model's methods and the
+            # relative leg, because both feed the blended fair value (review R-03).
+            range_values = method_values or valuation_components
+            if approach == "Combined" and dcf_result and relative_result and relative_result.get('fair_value'):
+                range_values = {**method_values, "Relative (multiples)": relative_result['fair_value']}
+            sanity = sanity_check(fair_value, current_price, range_values)
+            upside = sanity["upside"]
+            if sanity["flag"]:
+                notes = f"{notes} Check inputs: {sanity['reason']}".strip()
 
-            # Apply margin of safety
-            if upside is not None and upside > margin_of_safety:
+            # Apply margin of safety; implausible results only on request
+            if upside is not None and upside > margin_of_safety and sanity["flag"] and not include_outliers:
+                return ("outlier", symbol)
+            elif upside is not None and upside > margin_of_safety:
                 # Stock is potentially undervalued, add to results
-                valuation_results.append({
+                return ("row", {
                     "symbol": symbol,
                     "name": company_info.get('name', stock.get('name', symbol)),
                     "sector": company_info.get('sector', stock.get('sector', 'Unknown')),
@@ -904,7 +944,10 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     "valuation_method": valuation_method,
                     "valuation_components": valuation_components,
                     "valuation_parameters": valuation_parameters,
-                    "confidence_level": confidence_level,
+                    "confidence_level": sanity["confidence"] if fair_value else confidence_level,
+                    "flag": sanity["flag"],
+                    "method_range": sanity["range"],
+                    "method_spread": sanity["spread"],
                     "notes": notes,
                     "market_cap": market_cap,
 
@@ -918,11 +961,119 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     "debt_equity": ratios.get('leverage', {}).get('debt_to_equity'),
                     "dividend_yield": company_info.get('dividend_yield')
                 })
+            return None
 
         except Exception as e:
             logger.error(f"Error processing stock {symbol}: {str(e)}")
+            return None
+
+    risk_free_rate(data_loader)  # warm the shared rate once before the workers start
+    outcomes = parallel_map(analyse, list(universe), workers=params.get("workers") or DEFAULT_WORKERS,
+                            progress_callback=params.get("progress_callback"),
+                            label=lambda stock: stock.get("symbol", "?"))
+    for outcome in outcomes:
+        if not outcome:
+            continue
+        kind, value = outcome
+        if kind == "outlier":
+            valuation_results.hidden_outliers.append(value)
+        else:
+            valuation_results.append(value)
 
     return valuation_results
+
+
+#: Approaches that run the company's sector model.
+MODEL_APPROACHES = ("Sector model", "Combined")
+#: Upside beyond +-100 % is treated as implausible (review R4 / U2).
+OUTLIER_UPSIDE = 1.0
+#: (max - min) / fair value of the weighted methods above this = methods disagree.
+WIDE_SPREAD = 0.6
+
+
+class ScreenResults(list):
+    """Screen rows plus the symbols left out as implausible."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.hidden_outliers = []
+
+
+def _short_model(name):
+    name = str(name or "Model")
+    for suffix in ("SectorValuation", "Valuation"):
+        if name.endswith(suffix) and name != suffix:
+            name = name[: -len(suffix)]
+    return name
+
+
+def method_values_of(result):
+    """Per-share values of the weighted methods of a valuation result, labelled."""
+    methods = (result or {}).get("valuation_methods") or {}
+    weights = ((result or {}).get("valuation_summary") or {}).get("weights") or {}
+    values = {}
+    for key, method in methods.items():
+        value = method.get("value_per_share")
+        if (weights.get(key) or 0) > 0 and isinstance(value, (int, float)) and value > 0:
+            values[method.get("method") or key] = float(value)
+    return values
+
+
+def shared_discount_rate(financial_data, sector, fallback):
+    """The model's default discount rate: shared WACC, or the cost of equity for financials."""
+    if not financial_data:
+        return fallback
+    try:
+        components = capital.cost_of_capital_for(financial_data, fallback)
+    except Exception as e:  # noqa: BLE001 - incomplete statements: keep the sector default
+        logger.warning(f"Shared cost of capital unavailable: {e}")
+        return fallback
+    key = "cost_of_equity" if normalize_sector(sector) == "Financials" else "wacc"
+    value = components.get(key)
+    return float(value) if isinstance(value, (int, float)) else fallback
+
+
+def method_label(result):
+    """The model actually used and its heaviest method, e.g. 'Financial: Residual income (excess return)'."""
+    methods = (result or {}).get("valuation_methods") or {}
+    weights = ((result or {}).get("valuation_summary") or {}).get("weights") or {}
+    model = _short_model((result or {}).get("model"))
+    usable = {k: w for k, w in weights.items() if k in methods}
+    if not usable:
+        return model
+    top = max(usable, key=usable.get)
+    return f"{model}: {methods[top].get('method') or top}"
+
+
+def sanity_check(fair_value, current_price, components=None):
+    """
+    Upside, range and spread of the methods, a 'check inputs' flag and a confidence level.
+
+    Flag when |upside| > OUTLIER_UPSIDE. Confidence: Low when flagged or the methods spread more
+    than WIDE_SPREAD of the fair value, Medium above half of that, High otherwise.
+    """
+    upside = (fair_value / current_price - 1) if fair_value and current_price and current_price > 0 else None
+    values = [v for v in (components or {}).values() if isinstance(v, (int, float)) and v > 0]
+    value_range = (min(values), max(values)) if values else None
+    spread = (value_range[1] - value_range[0]) / fair_value if value_range and fair_value else None
+    flag, reason = None, ""
+    if upside is not None and abs(upside) > OUTLIER_UPSIDE:
+        flag = "check inputs"
+        reason = f"fair value is {upside:+.0%} from the price."
+    if flag or (spread is not None and spread > WIDE_SPREAD):
+        confidence = "Low"
+    elif spread is not None and spread > WIDE_SPREAD / 2:
+        confidence = "Medium"
+    else:
+        confidence = "High" if spread is not None else "Medium"
+    return {"upside": upside, "flag": flag, "reason": reason, "range": value_range, "spread": spread,
+            "confidence": confidence}
+
+
+def _fmt_range(value_range):
+    if not value_range:
+        return "N/A"
+    return f"${value_range[0]:.0f}-${value_range[1]:.0f}"
 
 
 def _dcf_parameters(result):
@@ -943,7 +1094,8 @@ def _fmt_multiple(value):
     return f"{value:.2f}x" if isinstance(value, (int, float)) else "N/A"
 
 
-def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price, discounts=None):
+def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples, current_price, discounts=None,
+                                 sector=None):
     """
     Calculate fair value using relative valuation methods
 
@@ -955,6 +1107,9 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
         current_price: Current stock price
         discounts: Required discount to each sector multiple, e.g. {"P/E": 0.15}; the fair
             multiple is sector average x (1 - discount)
+        sector: When given, multiples that mislead for the sector (P/B for asset-light firms, P/S and
+            EV/EBITDA for financials; ``industry.benchmarks.irrelevant_multiples``) are left out, as on
+            the Relative tab (review R-09)
 
     Returns:
         Dictionary with relative valuation results
@@ -967,6 +1122,11 @@ def calculate_relative_valuation(symbol, company_info, ratios, sector_multiples,
 
     # Extract sector averages, reduced by the required discount
     discounts = discounts or {}
+    if sector:
+        from StockAnalysisSystem.src.industry.benchmarks import irrelevant_multiples
+
+        excluded = irrelevant_multiples(sector)
+        sector_multiples = {k: v for k, v in (sector_multiples or {}).items() if k not in excluded}
 
     def required_multiple(key, label):
         multiple = sector_multiples.get(key)

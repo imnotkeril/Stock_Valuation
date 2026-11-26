@@ -22,6 +22,7 @@ import streamlit as st
 
 from StockAnalysisSystem.src.config import COLORS, normalize_sector
 from StockAnalysisSystem.src.utils.financial_data import (
+    debt_excluding_leases,
     find_row,
     format_large_number,
     get_latest,
@@ -208,6 +209,34 @@ def free_cash_flow_series(cash_flow: pd.DataFrame) -> pd.Series:
     return result
 
 
+def unlevered_fcf_history(cash_flow: pd.DataFrame, income: pd.DataFrame, tax_rate: float) -> pd.Series:
+    """
+    Chronological unlevered free cash flow: FCF + |interest expense| x (1 - t).
+
+    Reported FCF (OCF - capex) is after interest; a WACC-discounted DCF that then deducts net debt
+    needs the cash flow before financing, otherwise the cost of debt is charged twice. Periods
+    without an interest row add nothing back. Same rule as BaseValuation._unlevered_fcf_series.
+    """
+    fcf = free_cash_flow_series(cash_flow)
+    if fcf.empty:
+        return fcf
+    interest = item_series(income, "interest_expense").abs().reindex(fcf.index).fillna(0.0)
+    return (fcf + interest * (1 - tax_rate)).rename("Unlevered FCF")
+
+
+def dcf_starting_cash_flow(ufcf: pd.Series, sbc: pd.Series, window: int = 1,
+                           deduct_sbc: bool = True) -> Tuple[float, float]:
+    """
+    Starting cash flow for the DCF tab: mean of the latest ``window`` unlevered FCF values minus
+    the mean stock-based compensation of the same periods (0 where SBC is not reported).
+    Returns ``(base, sbc_deducted)``; both chronological series, oldest first.
+    """
+    window = max(int(window), 1)
+    recent = ufcf.dropna().tail(window)
+    sbc_mean = float(sbc.abs().reindex(recent.index).fillna(0.0).mean()) if deduct_sbc and len(recent) else 0.0
+    return float(recent.mean()) - sbc_mean, sbc_mean
+
+
 def ratio_series(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     """Element-wise ratio aligned on periods; NaN where the denominator is 0."""
     if numerator.empty or denominator.empty:
@@ -338,10 +367,8 @@ def market_snapshot(financial_data: Optional[Dict[str, Any]], company_info: Opti
     if shares is None and market_cap and price:
         shares = market_cap / price
 
-    total_debt = get_latest(balance, "total_debt")
-    if total_debt is None:
-        parts = [get_latest(balance, "long_term_debt"), get_latest(balance, "short_term_debt")]
-        total_debt = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+    # Borrowings without lease liabilities, as in every valuation bridge (cash flows are after rent)
+    total_debt = debt_excluding_leases(balance)
     cash = get_latest(balance, "cash_and_short_term_investments")
     if cash is None:
         cash = get_latest(balance, "cash")
@@ -646,9 +673,12 @@ def benchmark_table(ratios: Dict[str, Dict[str, float]], benchmarks: Dict[str, D
 # DCF engine (interactive what-if analysis)
 # ---------------------------------------------------------------------------
 def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: float, terminal_growth: float,
-                   years: int, net_debt: Optional[float], shares: Optional[float]) -> Optional[Dict[str, Any]]:
+                   years: int, net_debt: Optional[float], shares: Optional[float],
+                   fade: bool = False) -> Optional[Dict[str, Any]]:
     """
     Two-stage DCF: ``years`` of FCF growing at ``growth`` then a Gordon terminal value.
+    With ``fade`` the growth rate declines linearly from ``growth`` (year 1) to
+    ``terminal_growth`` (final year), so there is no jump into the terminal stage.
 
     Returns None when the inputs are not meaningful (no FCF, discount rate not
     above terminal growth, no share count).
@@ -658,7 +688,14 @@ def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: floa
         return None
     if discount_rate <= terminal_growth or discount_rate <= -1:
         return None
-    forecast = [base_fcf * (1 + growth) ** year for year in range(1, years + 1)]
+    if fade and years > 1:
+        rates = [growth + (terminal_growth - growth) * i / (years - 1) for i in range(years)]
+    else:
+        rates = [growth] * years
+    forecast, value = [], base_fcf
+    for rate in rates:
+        value *= 1 + rate
+        forecast.append(value)
     discount_factors = [(1 + discount_rate) ** year for year in range(1, years + 1)]
     present_values = [fcf / factor for fcf, factor in zip(forecast, discount_factors)]
     terminal_value = forecast[-1] * (1 + terminal_growth) / (discount_rate - terminal_growth)
@@ -667,6 +704,7 @@ def dcf_projection(base_fcf: Optional[float], growth: float, discount_rate: floa
     equity_value = enterprise_value - (to_float(net_debt) or 0.0)
     return {
         "forecast_fcf": forecast,
+        "growth_rates": rates,
         "present_values": present_values,
         "pv_fcf": float(sum(present_values)),
         "terminal_value": terminal_value,

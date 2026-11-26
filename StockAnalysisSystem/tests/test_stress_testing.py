@@ -15,13 +15,14 @@ MAIN = str(Path(__file__).resolve().parents[1] / "src" / "main.py")
 
 def test_rate_multiple_factor():
     assert stx.rate_multiple_factor(0) == pytest.approx(1.0)
-    assert stx.rate_multiple_factor(200) == pytest.approx(0.065 / 0.085)
+    assert stx.rate_multiple_factor(200, base_discount=0.09) == pytest.approx(0.065 / 0.085)
     assert stx.rate_multiple_factor(-10_000) == 0.0
 
 
 def test_scenarios_match_hand_calculation():
-    # revenue 1000, EBITDA 200 (20 %), 10x, net debt 500, debt 600, interest 30, 100 shares
-    table = stx.scenario_valuations(1000, 200, 10, 500, 100, debt=600, interest_expense=-30).set_index("scenario")
+    # revenue 1000, EBITDA 200 (20 %), 10x, net debt 500, debt 600, interest 30, 100 shares, base rate 9 %
+    table = stx.scenario_valuations(1000, 200, 10, 500, 100, debt=600, interest_expense=-30,
+                                    base_discount=0.09).set_index("scenario")
     assert table.loc["Base case", "value_per_share"] == pytest.approx((2000 - 500) / 100)
     rec = table.loc["Recession"]  # revenue 850, margin 17 %, multiple 8x
     assert rec["ebitda"] == pytest.approx(850 * 0.17)

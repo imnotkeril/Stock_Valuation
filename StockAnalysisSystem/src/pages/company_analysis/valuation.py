@@ -8,7 +8,8 @@ Sub-tabs:
 * DCF - interactive two-stage DCF on free cash flow with a discount-rate x
   terminal-growth sensitivity grid.
 * Relative - current multiples versus sector benchmarks and the prices they imply.
-* Asset-Based - book, tangible book and adjusted net asset value per share.
+* Asset-Based - book and tangible book value per share, plus orderly / forced liquidation
+  value with editable recovery rates (a floor, not in the weighted fair value).
 * Sector Model - the sector-specific model with its subsector methods and
   adjustable assumptions (pages/company_analysis/sector_valuation.py).
 """
@@ -24,6 +25,7 @@ import pandas as pd
 import streamlit as st
 
 from StockAnalysisSystem.src.config import SECTOR_DCF_PARAMETERS, DCF_PARAMETERS
+from StockAnalysisSystem.src.industry.benchmarks import irrelevant_multiples, live_valuation_medians
 from StockAnalysisSystem.src.pages.company_analysis.charts import (
     dcf_cash_flow_chart,
     donut_chart,
@@ -35,6 +37,7 @@ from StockAnalysisSystem.src.pages.company_analysis.charts import (
 from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
     canonical_sector,
     dcf_projection,
+    dcf_starting_cash_flow,
     fmt_money,
     fmt_pct,
     fmt_price,
@@ -42,18 +45,24 @@ from StockAnalysisSystem.src.pages.company_analysis.page_helpers import (
     get_company_ratios,
     get_sector_benchmarks,
     get_statement,
+    item_series,
     market_snapshot,
     render_section,
+    unlevered_fcf_history,
 )
 from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
     get_valuation_factory,
     render_sector_valuation,
 )
 from StockAnalysisSystem.src.utils.financial_data import cagr, get_latest, safe_divide, to_float
+from StockAnalysisSystem.src.valuation import capital
+from StockAnalysisSystem.src.valuation import liquidation as liq
 
 logger = logging.getLogger("company_valuation")
 
 KEY = "val_"
+#: APV cost-of-debt slider ceiling (%): risk-free rate (<= 20 %, rates.PLAUSIBLE_RANGE) + 8 % spread cap.
+KD_SLIDER_MAX = 28.0
 
 #: Multiples compared in the relative valuation: key -> (label, metric description)
 MULTIPLES = {
@@ -90,6 +99,7 @@ def render_company_valuation(ticker: str, financial_data: Dict[str, Any], compan
         render_section("Relative valuation", _render_relative, financial_data, company_info, price_data, snapshot)
     with tabs[4]:
         render_section("Asset-based valuation", _render_asset_based, financial_data, snapshot)
+        render_section("Liquidation value", _render_liquidation, ticker, financial_data, company_info, snapshot)
     with tabs[5]:
         render_section("Sector model", render_sector_valuation, ticker, financial_data, company_info, price_data,
                        key_prefix=f"{KEY}sector")
@@ -116,9 +126,13 @@ def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: D
     cols[3].markdown(
         f"<div class='metric-card'><div class='metric-label'>Recommendation</div>"
         f"<div class='metric-value' style='color:{recommendation.get('color', '#9e9e9e')}'>"
-        f"{recommendation.get('label', 'N/A')}</div></div>", unsafe_allow_html=True)
+        f"{recommendation.get('label', 'N/A')}</div>"
+        f"{_confidence_line(recommendation)}</div>", unsafe_allow_html=True)
     if recommendation.get("rationale"):
         st.caption(recommendation["rationale"])
+    if recommendation.get("confidence_reasons") and recommendation.get("confidence") != "Low":
+        st.caption(f"Confidence {recommendation['confidence'].lower()}: "
+                   f"{'; '.join(recommendation['confidence_reasons'])}.")
 
     methods = result.get("valuation_methods") or {}
     weights = (result.get("valuation_summary") or {}).get("weights") or {}
@@ -142,14 +156,39 @@ def _render_summary(ticker: str, financial_data: Dict[str, Any], company_info: D
                "Adjust subsector, methods and assumptions in the Sector Model tab.")
 
 
+def _confidence_line(recommendation: Dict[str, Any]) -> str:
+    """Small 'Confidence: X' line under the recommendation badge (empty when unknown)."""
+    level = recommendation.get("confidence")
+    if not level:
+        return ""
+    return f"<div class='metric-label'>Confidence: {level}</div>"
+
+
 # ---------------------------------------------------------------------------
 # DCF
 # ---------------------------------------------------------------------------
-def _dcf_defaults(sector: str, fcf: pd.Series) -> Dict[str, float]:
-    params = {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(sector, {})}
+def _sector_params(sector: str) -> Dict[str, Any]:
+    return {**DCF_PARAMETERS, **SECTOR_DCF_PARAMETERS.get(sector, {})}
+
+
+def _shared_capital(financial_data: Dict[str, Any], sector: str) -> Dict[str, Any]:
+    """The cost of capital every model uses (valuation/capital.py, ADR-007)."""
+    return capital.cost_of_capital_for(financial_data or {}, float(_sector_params(sector)["default_discount_rate"]))
+
+
+def _rate_caption(components: Dict[str, Any]) -> str:
+    return (f"rf {components['risk_free_rate_label']} · ERP {components['equity_risk_premium']:.1%} · "
+            f"beta {components['adjusted_beta']:.2f} (Blume-adjusted) · cost of equity "
+            f"{components['cost_of_equity']:.2%} · pre-tax cost of debt {components['pre_tax_cost_of_debt']:.2%}")
+
+
+def _dcf_defaults(sector: str, fcf: pd.Series, components: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """DCF defaults: the shared WACC when ``components`` is given, else the sector table rate."""
+    params = _sector_params(sector)
     growth = cagr(fcf.tail(4)) if len(fcf) >= 2 else None
+    rate = components["wacc"] if components else params["default_discount_rate"]
     return {
-        "discount_rate": float(params["default_discount_rate"]),
+        "discount_rate": float(rate),
         "terminal_growth": float(params["terminal_growth_rate"]),
         "forecast_years": int(params["forecast_years"]),
         "growth": float(min(max(growth if growth is not None else 0.05, -0.05), 0.25)),
@@ -163,27 +202,52 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if sector == "Financials":
         st.info("Free-cash-flow DCF is not meaningful for banks and insurers (debt is raw material, not "
                 "financing). Use the Sector Model tab: excess-return and justified P/B methods.")
-    fcf = free_cash_flow_series(get_statement(financial_data, "cash_flow"))
-    if fcf.empty:
+    cash_flow = get_statement(financial_data, "cash_flow")
+    if free_cash_flow_series(cash_flow).empty:
         st.info("Free cash flow history is unavailable, so a DCF cannot be built.")
         return
-    defaults = _dcf_defaults(sector, fcf)
-    base_options = {"Latest year": float(fcf.iloc[-1]), f"Average of last {min(len(fcf), 3)} years":
-                    float(fcf.tail(3).mean())}
+    components = _shared_capital(financial_data, sector)
+    # The WACC prices cash flow before financing and net debt is deducted afterwards, so the DCF
+    # starts from unlevered FCF (FCF + after-tax interest), not FCF after interest.
+    fcf = unlevered_fcf_history(cash_flow, get_statement(financial_data, "income_statement"),
+                                components["tax_rate"])
+    sbc_history = item_series(cash_flow, "stock_based_compensation")
+    defaults = _dcf_defaults(sector, fcf, components)
+    base_windows = {"Latest year": 1, f"Average of last {min(len(fcf), 3)} years": 3}
+    sbc = abs(get_latest(cash_flow, "stock_based_compensation") or 0.0)
 
     col1, col2 = st.columns(2)
     with col1:
-        base_label = st.radio("Starting free cash flow", list(base_options), horizontal=True, key=f"{KEY}dcf_base")
+        base_label = st.radio("Starting unlevered free cash flow", list(base_windows), horizontal=True,
+                              key=f"{KEY}dcf_base",
+                              help="Free cash flow + interest expense x (1 - tax rate): cash flow to debt and "
+                                   "equity holders, the flow the WACC discounts.")
         growth = st.slider("FCF growth (forecast period)", -10.0, 30.0, round(defaults["growth"] * 100, 1), 0.5,
                            format="%.1f%%", key=f"{KEY}dcf_growth") / 100
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}dcf_years")
+        fade = st.checkbox("Fade growth to terminal growth", value=True, key=f"{KEY}dcf_fade",
+                           help="Growth declines linearly from the forecast rate in year 1 to the terminal rate "
+                                "in the final year, instead of jumping at the end of the forecast.")
+        deduct_sbc = st.checkbox(f"Deduct stock-based compensation ({fmt_money(sbc)} last year)", value=sbc > 0,
+                                 disabled=not sbc, key=f"{KEY}dcf_sbc",
+                                 help="SBC is a real cost to shareholders (dilution) but is added back in "
+                                      "operating cash flow. Deducted over the same years as the starting cash "
+                                      "flow; every model's DCF deducts it too.")
     with col2:
         discount = st.slider("Discount rate (WACC)", 4.0, 20.0, round(defaults["discount_rate"] * 100, 2), 0.25,
-                             format="%.2f%%", key=f"{KEY}dcf_discount") / 100
+                             format="%.2f%%", key=f"{KEY}dcf_discount",
+                             help="Default: the WACC shared by every model (CAPM cost of equity, after-tax cost "
+                                  "of debt, market-value weights).") / 100
         terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}dcf_terminal") / 100
+    st.caption(f"Default WACC {components['wacc']:.2%}: {_rate_caption(components)}.")
+    _render_method_differences(components)
 
-    base_fcf = base_options[base_label]
+    base_fcf, _ = dcf_starting_cash_flow(fcf, sbc_history, base_windows[base_label], deduct_sbc)
+    if terminal > components["risk_free_rate"]:
+        st.warning(f"Terminal growth {terminal:.2%} is above the risk-free rate "
+                   f"{components['risk_free_rate']:.2%}: stable growth should not exceed nominal economic "
+                   "growth (the models cap it at the risk-free rate).")
     net_debt = snapshot.get("net_debt")
     shares = snapshot.get("shares")
     if base_fcf <= 0:
@@ -195,7 +259,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if discount <= terminal:
         st.warning("The discount rate must be higher than the terminal growth rate.")
         return
-    dcf = dcf_projection(base_fcf, growth, discount, terminal, years, net_debt, shares)
+    dcf = dcf_projection(base_fcf, growth, discount, terminal, years, net_debt, shares, fade=fade)
     if dcf is None:
         st.info("Shares outstanding are unavailable, so per-share value cannot be computed.")
         return
@@ -215,7 +279,8 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
 
     left, right = st.columns([2, 1])
     with left:
-        show_chart(dcf_cash_flow_chart(fcf, dcf["forecast_fcf"], dcf["present_values"], "Free cash flow forecast"),
+        show_chart(dcf_cash_flow_chart(fcf, dcf["forecast_fcf"], dcf["present_values"],
+                                       "Unlevered free cash flow forecast"),
                    key=f"{KEY}dcf_chart")
     with right:
         show_chart(donut_chart(["PV of forecast FCF", "PV of terminal value"], [dcf["pv_fcf"], dcf["pv_terminal"]],
@@ -227,7 +292,7 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     for g in terminal_grid:
         row = []
         for r in discount_grid:
-            point = dcf_projection(base_fcf, growth, r, g, years, net_debt, shares) if r > g else None
+            point = dcf_projection(base_fcf, growth, r, g, years, net_debt, shares, fade=fade) if r > g else None
             row.append(point["value_per_share"] if point else None)
         z.append(row)
     show_chart(sensitivity_heatmap(z, discount_grid, terminal_grid, "Sensitivity: value per share",
@@ -238,17 +303,14 @@ def _render_dcf(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
 # ---------------------------------------------------------------------------
 # Adjusted present value
 # ---------------------------------------------------------------------------
-def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]]) -> Dict[str, float]:
-    """Default APV inputs from the statements: tax rate, cost of debt, debt, cash, beta."""
+def _apv_inputs(financial_data: Dict[str, Any], snapshot: Dict[str, Optional[float]],
+                components: Dict[str, Any]) -> Dict[str, Any]:
+    """Default APV inputs: tax rate, cost of debt and beta from the shared cost of capital; debt and cash."""
     income = get_statement(financial_data, "income_statement")
-    pretax = get_latest(income, "pretax_income")
-    tax = get_latest(income, "tax_provision")
-    tax_rate = min(max(safe_divide(tax, pretax) or 0.21, 0.0), 0.35) if pretax and pretax > 0 else 0.21
-    interest = abs(get_latest(income, "interest_expense") or 0.0)
-    debt = snapshot.get("total_debt") or 0.0
-    cost_of_debt = min(max(safe_divide(interest, debt) or 0.05, 0.02), 0.15) if debt else 0.05
-    return {"tax_rate": tax_rate, "interest": interest, "debt": debt, "cash": snapshot.get("cash") or 0.0,
-            "cost_of_debt": cost_of_debt, "beta": snapshot.get("beta") or 1.0}
+    return {"tax_rate": components["tax_rate"], "interest": abs(get_latest(income, "interest_expense") or 0.0),
+            "debt": snapshot.get("total_debt") or 0.0, "cash": snapshot.get("cash") or 0.0,
+            "cost_of_debt": components["pre_tax_cost_of_debt"], "beta": components["raw_beta"],
+            "risk_free_rate": components["risk_free_rate"]}
 
 
 def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
@@ -268,11 +330,13 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
     if fcf.empty or not shares:
         st.info("Free cash flow history or shares outstanding are unavailable, so APV cannot be computed.")
         return
-    inputs = _apv_inputs(financial_data, snapshot)
-    defaults = _dcf_defaults(sector, fcf)
-    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"])
-    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: floor at 6 %
-    ku_default = min(max(ku_default, 0.06), 0.20)
+    components = _shared_capital(financial_data, sector)
+    inputs = _apv_inputs(financial_data, snapshot, components)
+    defaults = _dcf_defaults(sector, fcf, components)
+    ku_default = unlevered_cost_of_equity(inputs["beta"], inputs["debt"], market_cap or 0.0, inputs["tax_rate"],
+                                          risk_free=inputs["risk_free_rate"])
+    # Very low betas (e.g. integrated oil in some periods) give implausibly cheap equity: same band as the WACC
+    ku_default = min(max(ku_default, capital.WACC_BOUNDS[0]), capital.WACC_BOUNDS[1])
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -281,14 +345,19 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
         years = st.slider("Forecast years", 3, 15, defaults["forecast_years"], key=f"{KEY}apv_years")
     with col2:
         ku = st.slider("Unlevered cost of equity", 4.0, 20.0, round(ku_default * 100, 2), 0.25, format="%.2f%%",
-                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Hamada) x equity risk premium.") / 100
+                       key=f"{KEY}apv_ku", help="Risk-free rate + unlevered beta (Blume-adjusted, then Hamada) x "
+                                                "equity risk premium.") / 100
         terminal = st.slider("Terminal growth", 0.0, 5.0, round(defaults["terminal_growth"] * 100, 2), 0.25,
                              format="%.2f%%", key=f"{KEY}apv_terminal") / 100
     with col3:
-        kd = st.slider("Cost of debt", 1.0, 15.0, round(inputs["cost_of_debt"] * 100, 2), 0.25, format="%.2f%%",
-                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt.") / 100
+        kd_default = min(max(round(inputs["cost_of_debt"] * 100, 2), 1.0), KD_SLIDER_MAX)
+        kd = st.slider("Cost of debt", 1.0, KD_SLIDER_MAX, kd_default, 0.25, format="%.2f%%",
+                       key=f"{KEY}apv_kd", help="Default: interest expense / total debt, kept within the risk-free "
+                                                "rate + 0.5 to 8 %.") / 100
         tax_rate = st.slider("Tax rate", 0.0, 35.0, round(inputs["tax_rate"] * 100, 1), 0.5, format="%.1f%%",
-                             key=f"{KEY}apv_tax", help="Default: effective tax rate of the last year.") / 100
+                             key=f"{KEY}apv_tax", help="Default: effective tax rate (same as the WACC).") / 100
+    st.caption(f"Same inputs as the WACC: {_rate_caption(components)}.")
+    _render_method_differences(components)
 
     base = unlevered_fcf(float(fcf.tail(3).mean()), inputs["interest"], tax_rate)
     if base <= 0:
@@ -313,6 +382,29 @@ def _render_apv(ticker: str, financial_data: Dict[str, Any], company_info: Dict[
                            "APV composition"), key=f"{KEY}apv_donut")
 
 
+def _render_method_differences(components: Dict[str, Any]) -> None:
+    """Why DCF, APV and the Sector Model give different values for one company (review R2)."""
+    with st.expander("Why do DCF, APV and the Sector Model differ?"):
+        st.markdown(
+            f"By default all three start from the **same cost of capital**: risk-free rate {components['risk_free_rate_label']}, "
+            f"equity risk premium {components['equity_risk_premium']:.1%}, Blume-adjusted beta "
+            f"{components['adjusted_beta']:.2f}, cost of equity {components['cost_of_equity']:.2%}, "
+            f"WACC {components['wacc']:.2%}. They differ in what they discount:\n\n"
+            "- **DCF tab**: unlevered free cash flow (FCF + after-tax interest, latest year or a multi-year "
+            "average, less stock-based compensation of the same years unless unticked) grown at one rate, "
+            "then a terminal value, discounted at the WACC.\n"
+            "- **APV tab**: unlevered free cash flow (3-year average FCF + after-tax interest) at the "
+            "*unlevered* cost of equity, plus the present value of interest tax shields at the cost of debt "
+            "(debt held constant, so the shields after the forecast are a level perpetuity).\n"
+            "- **Sector Model tab**: the sector's own methods (for example SBC-adjusted DCF for technology, "
+            "cycle-normalised DCF for industrials, residual income for banks) blended with multiples. Its "
+            "weighted value is the Fair Value Summary.\n\n"
+            "With the default sliders the gap between them comes from the cash-flow definition, the starting "
+            "year, growth and the method mix. Moving the DCF discount-rate or APV cost-of-equity slider adds "
+            "a rate difference on top. Equity models (banks and insurers, dividend discount) discount at the "
+            "cost of equity above, not at the WACC.")
+
+
 # ---------------------------------------------------------------------------
 # Precedent transactions
 # ---------------------------------------------------------------------------
@@ -324,11 +416,23 @@ def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, A
     st.caption("Value the company at the multiples acquirers paid in comparable deals (these include a control "
                "premium, so they usually exceed trading multiples). Enter deals from press releases, merger proxies "
                "or fairness opinions; the table is saved locally and shared by all companies.")
+    st.info("**Not part of the weighted fair value.** Deal multiples depend on data you enter, so this tab is a "
+            "cross-check next to the Fair Value Summary, never an input to it.", icon=":material/info:")
     sector = canonical_sector(company_info, financial_data)
     deals = pt.load_deals()
+    sample_mode = deals.empty and st.session_state.get(f"{KEY}deals_sample", False)
+    if sector == "Financials":
+        st.caption("Deal EV/Revenue and EV/EBITDA are not meaningful for banks and insurers (as on the Relative "
+                   "tab), so no sample is offered; bank deals are usually priced on P/TBV or P/E.")
+    elif deals.empty and not sample_mode:
+        st.button("Load an illustrative sample", key=f"{KEY}deals_sample_load", icon=":material/science:",
+                  on_click=lambda: st.session_state.__setitem__(f"{KEY}deals_sample", True),
+                  help="Five fictional deals with rounded, typical multiples for this sector, to show how the tab "
+                       "works. Nothing is saved until you click Save deals.")
+    shown = pt.sample_deals(sector) if sample_mode else (deals if not deals.empty else pt.empty_deals())
     edited = st.data_editor(
-        deals if not deals.empty else pt.empty_deals(), num_rows="dynamic", width="stretch", hide_index=True,
-        key=f"{KEY}deals_editor",
+        shown, num_rows="dynamic", width="stretch", hide_index=True,
+        key=f"{KEY}deals_editor_sample" if sample_mode else f"{KEY}deals_editor",
         column_config={"date": st.column_config.TextColumn("Date (YYYY-MM-DD)"),
                        "sector": st.column_config.TextColumn("Sector", help=f"e.g. {sector}"),
                        "ev_billions": st.column_config.NumberColumn("EV ($B)", format="%.2f"),
@@ -348,7 +452,11 @@ def _render_precedents(financial_data: Dict[str, Any], company_info: Dict[str, A
             deals = pt.load_deals()
 
     scope = st.radio("Deals to use", [f"{sector} only", "All sectors"], horizontal=True, key=f"{KEY}deals_scope")
-    multiples = pt.deal_multiples(deals, sector if scope.endswith("only") else None)
+    used = edited if sample_mode else deals
+    if pt.is_sample(used):
+        st.warning("These values use the **illustrative sample**, not real transactions. Replace the rows with "
+                   "deals from your own sources before reading anything into them.")
+    multiples = pt.deal_multiples(used, sector if scope.endswith("only") else None)
     if not multiples["deals"]:
         st.info("No matching deals with multiples yet - add some above and click **Save deals**.")
     else:
@@ -384,7 +492,8 @@ def _render_relative(financial_data: Dict[str, Any], company_info: Dict[str, Any
     st.subheader("Relative valuation")
     sector = canonical_sector(company_info, financial_data)
     ratios = (get_company_ratios(financial_data, company_info, price_data) or {}).get("valuation", {})
-    benchmarks = (get_sector_benchmarks(sector) or {}).get("valuation", {})
+    benchmarks, source = relative_benchmarks(sector, company_info.get("symbol"))
+    excluded = irrelevant_multiples(sector)
     price = snapshot.get("price")
     keys = [k for k in MULTIPLES if to_float(ratios.get(k)) or to_float(benchmarks.get(k))]
     if not keys:
@@ -409,19 +518,37 @@ def _render_relative(financial_data: Dict[str, Any], company_info: Dict[str, Any
                     implied = (ev * bench / current - net_debt) / shares
             else:
                 implied = price * bench / current
-        if implied is not None and implied > 0:
+        if implied is not None and implied > 0 and key not in excluded:
             implied_labels.append(f"At sector {label}")
             implied_values.append(implied)
         rows.append({"Multiple": label, "Company": f"{current:.1f}x" if current else "N/A",
                      "Sector": f"{bench:.1f}x" if bench else "N/A",
                      "Premium / discount": fmt_pct(current / bench - 1, signed=True) if current and bench else "—",
-                     "Implied price": fmt_price(implied) if implied and implied > 0 else "—"})
+                     "Implied price": fmt_price(implied) if implied and implied > 0 else "—",
+                     "Used": f"No: {excluded[key]}" if key in excluded else "Yes"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, key=f"{KEY}relative_table")
+    st.caption(f"Sector multiples: {source}.")
     if implied_values:
         show_chart(value_comparison_chart(implied_labels, implied_values, price,
                                           "Price implied by sector multiples"), key=f"{KEY}relative_implied")
-        st.caption(f"Average implied price: {fmt_price(float(np.mean(implied_values)))}. A premium can be "
-                   "justified by faster growth, higher returns on capital or lower risk.")
+        st.caption(f"Average implied price (multiples marked Used): {fmt_price(float(np.mean(implied_values)))}. "
+                   "A premium can be justified by faster growth, higher returns on capital or lower risk.")
+
+
+def relative_benchmarks(sector: str, symbol: Optional[str] = None) -> tuple:
+    """
+    Sector multiples for the Relative tab: live medians of cached universe companies when at least
+    LIVE_MIN_COMPANIES have a value (per multiple), else the static long-run medians. Returns
+    ``(benchmarks, source description)``.
+    """
+    static = (get_sector_benchmarks(sector) or {}).get("valuation", {})
+    live = live_valuation_medians(sector, exclude=symbol)
+    if not live:
+        return static, "static long-run sector medians (no cached universe data yet)"
+    merged = {**static, **live["values"]}
+    used = ", ".join(f"{MULTIPLES[k][0]} n={live['counts'][k]}" for k in MULTIPLES if k in live["values"])
+    return merged, (f"live medians of {live['companies']} cached {sector} universe companies "
+                    f"({used}; data as of {live['as_of']}); other multiples use static long-run medians")
 
 
 # ---------------------------------------------------------------------------
@@ -439,21 +566,72 @@ def _render_asset_based(financial_data: Dict[str, Any], snapshot: Dict[str, Opti
     if tangible is None:
         intangibles = get_latest(balance, "goodwill_and_intangibles") or get_latest(balance, "goodwill") or 0.0
         tangible = equity - intangibles
-    receivables = get_latest(balance, "receivables") or 0.0
-    inventory = get_latest(balance, "inventory") or 0.0
-    ppe = get_latest(balance, "net_ppe") or 0.0
-    haircut = st.slider("Liquidation haircut on receivables / inventory / PP&E", 0, 80, 30, 5, format="%d%%",
-                        key=f"{KEY}asset_haircut") / 100
-    liquidation = tangible - haircut * (receivables + inventory + ppe)
-
-    values = {"Book value": equity / shares, "Tangible book value": tangible / shares,
-              "Liquidation value": liquidation / shares}
+    # Liquidation value has its own section below (editable recovery rates per asset class).
+    values = {"Book value": equity / shares, "Tangible book value": tangible / shares}
     cols = st.columns(len(values))
     for col, (label, value) in zip(cols, values.items()):
         col.metric(f"{label} / share", fmt_price(value),
-                   delta=f"P/x {price / value:.2f}" if price and value and value > 0 else None,
+                   delta=f"Price is {price / value:.2f}x this" if price and value and value > 0 else None,
                    delta_color="off")
     show_chart(value_comparison_chart(list(values), list(values.values()), price, "Asset values per share"),
                key=f"{KEY}asset_chart")
     st.caption("Asset-based values are a floor for asset-heavy or distressed companies; for asset-light "
                "businesses most value lies in intangibles not recorded on the balance sheet.")
+
+
+def _render_liquidation(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                        snapshot: Dict[str, Optional[float]]) -> None:
+    """Orderly / forced liquidation value per share with editable recovery rates (src/valuation/liquidation.py)."""
+    from StockAnalysisSystem.src.pages.company_analysis.risk import is_balance_sheet_lender
+
+    st.subheader("Liquidation value")
+    balance = get_statement(financial_data, "balance_sheet")
+    books = liq.asset_classes(balance)
+    liabilities = get_latest(balance, "total_liabilities")
+    shares, price = snapshot.get("shares"), snapshot.get("price")
+    if books is None or liabilities is None or not shares:
+        st.info("Total assets, total liabilities or the share count is unavailable.")
+        return
+    sector = canonical_sector(company_info, financial_data)
+    if is_balance_sheet_lender(ticker, financial_data, company_info, sector):
+        st.info("Not meaningful for banks and insurers: their assets are loans and securities and their liabilities "
+                "are deposits / policy reserves, so a regulatory resolution, not an asset sale, applies. Shown for "
+                "reference only.", icon=":material/info:")
+    rates = pd.DataFrame({
+        "Asset class": list(liq.ASSET_CLASSES.values()),
+        "Book value ($B)": [books[k] / 1e9 for k in liq.ASSET_CLASSES],
+        "Orderly %": [liq.ORDERLY_RATES[k] * 100 for k in liq.ASSET_CLASSES],
+        "Forced %": [liq.FORCED_RATES[k] * 100 for k in liq.ASSET_CLASSES],
+    })
+    pct = {"min_value": 0.0, "max_value": 100.0, "step": 5.0, "format": "%.0f%%"}
+    edited = st.data_editor(
+        rates, hide_index=True, width="stretch", key=f"{KEY}liq_rates_{ticker}",
+        disabled=["Asset class", "Book value ($B)"],
+        column_config={"Book value ($B)": st.column_config.NumberColumn(format="%.2f"),
+                       "Orderly %": st.column_config.NumberColumn(help="Recovery in a 6-12 month sale", **pct),
+                       "Forced %": st.column_config.NumberColumn(help="Recovery in a fire sale (weeks)", **pct)})
+    col_o, col_f = st.columns(2)
+    orderly_cost = col_o.number_input("Orderly liquidation costs (% of gross recovery)", 0.0, 50.0,
+                                      liq.ORDERLY_COST * 100, 1.0, key=f"{KEY}liq_cost_orderly") / 100
+    forced_cost = col_f.number_input("Forced liquidation costs (% of gross recovery)", 0.0, 50.0,
+                                     liq.FORCED_COST * 100, 1.0, key=f"{KEY}liq_cost_forced") / 100
+
+    def _rates(column: str) -> Dict[str, float]:
+        values = pd.to_numeric(edited[column], errors="coerce").fillna(0.0).clip(0.0, 100.0) / 100
+        return dict(zip(liq.ASSET_CLASSES, values.tolist()))
+
+    results = {
+        "Orderly liquidation": liq.liquidation_value(books, liabilities, shares, _rates("Orderly %"), orderly_cost),
+        "Forced liquidation": liq.liquidation_value(books, liabilities, shares, _rates("Forced %"), forced_cost),
+    }
+    cols = st.columns(len(results))
+    for col, (label, result) in zip(cols, results.items()):
+        value = result.per_share
+        col.metric(f"{label} / share", fmt_price(value),
+                   delta=f"Price is {price / value:.2f}x this" if price and value and value > 0 else None,
+                   delta_color="off",
+                   help=f"Recovered {fmt_money(result.gross_recovery)} - costs {fmt_money(result.costs)} - "
+                        f"liabilities {fmt_money(result.total_liabilities)}, floored at 0")
+    st.caption("Liquidation value = sum(asset class x recovery rate) - liquidation costs - all liabilities, floored "
+               "at zero. It is a floor, not in the weighted fair value. Defaults are textbook recovery ranges; "
+               "goodwill and intangibles recover nothing in a break-up.")

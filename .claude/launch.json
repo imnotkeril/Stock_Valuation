@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "stock-analysis",
+      "runtimeExecutable": "E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe",
+      "runtimeArgs": ["StockAnalysisSystem/run.py", "--server.port", "8502", "--server.headless", "true"],
+      "port": 8502
+    }
+  ]
+}

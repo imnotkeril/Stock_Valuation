@@ -20,6 +20,11 @@ logging.basicConfig(
 logger = logging.getLogger('sector_analysis')
 
 
+def _activate(state_key):
+    """Button callback: keep the results on screen from the next rerun on."""
+    st.session_state[state_key] = True
+
+
 def run_sector_analysis_page():
     """Main function to run the sector analysis page"""
     st.title("Sector Analysis")
@@ -108,6 +113,11 @@ def run_sector_analysis_page():
         analyze_button = st.session_state.get("sector_analyze_active", False)
 
     # Main content area
+    if not analyze_button:
+        st.info(f"Choose the sector, subsector, period and metrics in the sidebar, then run the analysis for "
+                f"**{selected_sector}**. It loads every company of the sector, so a cold run takes a minute.")
+        st.button("Analyze sector", type="primary", key="sector_analyze_main", icon=":material/insights:",
+                  on_click=_activate, args=("sector_analyze_active",))
     if analyze_button:
         # Display loading message
         with st.spinner(f"Analyzing {selected_sector} sector..."):
@@ -154,7 +164,7 @@ def run_sector_analysis_page():
                     "Key Companies",
                     "Metrics Comparison",
                     "Valuation Heatmap",
-                    "Sector Outlook"
+                    "Sector notes (static)"
                 ])
 
                 # Tab 1: Sector Performance
@@ -571,7 +581,9 @@ def run_sector_analysis_page():
 
                 # Tab 5: Sector Outlook
                 with tabs[4]:
-                    st.subheader(f"{sector_title} Sector Outlook")
+                    st.subheader(f"{sector_title}: sector notes")
+                    st.caption("Static reference notes written into the app (value drivers, risks, typical "
+                               "themes). They are not computed from current data and are not a forecast.")
 
                     from StockAnalysisSystem.src.config import normalize_sector
                     from StockAnalysisSystem.src.pages.company_analysis.sector_valuation import (
@@ -610,7 +622,7 @@ def run_sector_analysis_page():
 
                         # Show sector recommendations
                         if 'outlook' in sector_benchmark:
-                            st.markdown("### Sector Outlook")
+                            st.markdown("### Editorial view (static)")
                             outlook = sector_benchmark['outlook']
 
                             # Display sentiment

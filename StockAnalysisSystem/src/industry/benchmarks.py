@@ -384,3 +384,81 @@ def get_sector_benchmarks(sector: str) -> Dict[str, Any]:
         logger.warning(f"Could not load ratio benchmarks for {canonical}: {e}")
         ratios = {}
     return {"sector": canonical, "etf": get_sector_etf(canonical), "ratios": ratios}
+
+
+# ---------------------------------------------------------------------------
+# Live sector medians from cached universe data (review R8)
+# ---------------------------------------------------------------------------
+#: Multiples compared in relative valuation, with the plausible band used when taking medians.
+LIVE_MULTIPLES = {"pe_ratio": (0.0, 200.0), "ps_ratio": (0.0, 100.0), "pb_ratio": (0.0, 100.0),
+                  "ev_ebitda": (0.0, 150.0)}
+#: A live median needs at least this many companies with the multiple.
+#: Cached company info older than this is not used for live medians; ``as_of`` = oldest file used.
+LIVE_MAX_AGE_DAYS = 30
+LIVE_MIN_COMPANIES = 5
+#: Sectors where book value anchors value (P/B is meaningful).
+BOOK_VALUE_SECTORS = frozenset({"Financials", "Real Estate", "Utilities", "Energy", "Materials"})
+
+
+def irrelevant_multiples(sector: Optional[str]) -> Dict[str, str]:
+    """Multiples that mislead for a sector: ``{key: reason}`` (excluded from the implied price)."""
+    canonical = normalize_sector(sector)
+    excluded: Dict[str, str] = {}
+    if canonical not in BOOK_VALUE_SECTORS:
+        excluded["pb_ratio"] = "book value says little for asset-light businesses"
+    if canonical == "Financials":
+        excluded["ps_ratio"] = "revenue is not a meaningful scale for banks and insurers"
+        excluded["ev_ebitda"] = "EBITDA and enterprise value are not meaningful for banks and insurers"
+    return excluded
+
+
+def live_valuation_medians(sector: Optional[str], data_loader: Optional[Any] = None,
+                           exclude: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Median P/E, P/S, P/B and EV/EBITDA of the sector's universe companies whose company info is
+    already cached (never downloads). ``None`` when fewer than LIVE_MIN_COMPANIES have a value.
+
+    Returns:
+        ``{"values": {key: median}, "counts": {key: n}, "companies": n, "as_of": "YYYY-MM-DD"}``
+        where ``as_of`` is the date of the newest cached company info used.
+    """
+    from datetime import datetime, timedelta
+
+    from StockAnalysisSystem.src.industry.universe import get_universe
+    from StockAnalysisSystem.src.utils.data_loader import DataLoader
+
+    loader = data_loader or DataLoader(offline=True)
+    samples: Dict[str, list] = {key: [] for key in LIVE_MULTIPLES}
+    companies, oldest = 0, None
+    cutoff = datetime.now() - timedelta(days=LIVE_MAX_AGE_DAYS)
+    for record in get_universe(normalize_sector(sector)):
+        symbol = record["symbol"]
+        if exclude and symbol == str(exclude).upper():
+            continue
+        path = loader._cache_path(f"{symbol}_info_yfinance.json")
+        if not path.exists():
+            continue
+        stamp = datetime.fromtimestamp(path.stat().st_mtime)
+        if stamp < cutoff:  # stale entries would make the median older than its date (review R-11)
+            continue
+        try:
+            info = json.loads(path.read_text(encoding="utf-8")) or {}
+        except Exception as e:  # one broken cache entry must not hide the others
+            logger.debug(f"Cached info unreadable for {symbol}: {e}")
+            continue
+        if not info:
+            continue
+        companies += 1
+        oldest = stamp if oldest is None or stamp < oldest else oldest
+        for key, (low, high) in LIVE_MULTIPLES.items():
+            try:
+                value = float(info.get(key))
+            except (TypeError, ValueError):
+                continue
+            if low < value < high:
+                samples[key].append(value)
+    values = {k: float(pd.Series(v).median()) for k, v in samples.items() if len(v) >= LIVE_MIN_COMPANIES}
+    if not values:
+        return None
+    return {"values": values, "counts": {k: len(samples[k]) for k in values}, "companies": companies,
+            "as_of": oldest.strftime("%Y-%m-%d") if oldest else None}

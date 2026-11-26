@@ -596,6 +596,7 @@ def _render_ratios(ticker: str, financial_data: Dict[str, Any], company_info: Di
     categories = [cat for cat in RATIO_CATEGORIES if ratios.get(cat)]
     if not categories:
         st.info("Not enough financial data to calculate ratios.")
+        render_section("balance liquidity", _render_balance_liquidity, ticker, financial_data, company_info, sector)
         return
 
     category = st.radio("Category", categories, format_func=lambda c: RATIO_CATEGORIES[c], horizontal=True,
@@ -642,6 +643,39 @@ def _render_ratios(ticker: str, financial_data: Dict[str, Any], company_info: Di
                 show_chart(fig, key=f"{KEY}ratio_trend_x")
 
     _render_sector_key_ratios(sector, ratios)
+    render_section("balance liquidity", _render_balance_liquidity, ticker, financial_data, company_info, sector)
+
+
+def _render_balance_liquidity(ticker: str, financial_data: Dict[str, Any], company_info: Dict[str, Any],
+                              sector: str) -> None:
+    """A1-A4 / P1-P4 grouping with the four classic conditions (models/balance_liquidity.py)."""
+    from StockAnalysisSystem.src.models import balance_liquidity as bl
+    from StockAnalysisSystem.src.pages.company_analysis.risk import is_balance_sheet_lender
+
+    st.markdown("**Balance-sheet liquidity (A1-A4 / P1-P4)**")
+    if is_balance_sheet_lender(ticker, financial_data, company_info, sector):
+        st.info("Does not apply to banks and insurers: they report no current / non-current split, and their "
+                "liquidity is set by regulation (LCR / NSFR), not by matching asset and liability groups.")
+        return
+    result = bl.balance_liquidity(get_statement(financial_data, "balance_sheet"))
+    if result is None:
+        st.info("Needs total and current assets, total and current liabilities and equity on the balance sheet.")
+        return
+    table = bl.liquidity_table(result)
+    for col in ("Asset value", "Liability value", "Surplus / deficit"):
+        table[col] = table[col].map(fmt_money)
+    table["Met"] = table["Met"].map({True: "Yes", False: "No"})
+    st.dataframe(table, hide_index=True, key=f"{KEY}balance_liquidity")
+    met = sum(result.conditions.values())
+    verdict = ("**Absolutely liquid**: all four conditions hold." if result.absolutely_liquid else
+               f"**Not absolutely liquid**: {met} of 4 conditions hold.")
+    st.markdown(f"{verdict} Current liquidity (A1+A2)-(P1+P2) = {fmt_money(result.current_liquidity)}; "
+                f"prospective liquidity A3-P3 = {fmt_money(result.prospective_liquidity)}.")
+    missing = f" Missing rows taken as 0: {', '.join(result.assumed_zero)}." if result.assumed_zero else ""
+    st.caption("Assets grouped by how fast they turn into cash, liabilities by how soon they fall due (Sheremet / "
+               "Savitskaya). Absolute liquidity needs A1 >= P1, A2 >= P2, A3 >= P3 and A4 <= P4. A3 and P2 are the "
+               "remaining current items; US large caps with buybacks and supplier financing often fail A1 >= P1 "
+               "without being in trouble." + missing)
 
 
 def _render_sector_key_ratios(sector: str, ratios: Dict[str, Dict[str, float]]) -> None:

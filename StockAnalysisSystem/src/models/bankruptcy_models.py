@@ -19,7 +19,7 @@ Bankruptcy / financial distress models.
   B = EBIT / TA, C = EBT / current liabilities, D = sales / TA; S < 0.862 = distress.
 
 * Zmijewski (1984): X = -4.336 - 4.513 ROA + 5.679 (TL / TA) + 0.004 (CA / CL),
-  probability of distress = 1 / (1 + e^-X); probability >= 0.5 = distress.
+  probability of distress = Phi(X) (probit, standard normal CDF); probability >= 0.5 = distress.
 
 All inputs come from the same (most recent) fiscal period.
 """
@@ -276,7 +276,7 @@ class BankruptcyAnalyzer:
         inputs = self._inputs(financial_data)
         result = self._base_result("zmijewski", "Zmijewski", inputs)
         result.update(threshold=ZMIJEWSKI_CUTOFF, probability=None,
-                      formula="X = -4.336 - 4.513 ROA + 5.679 TL/TA + 0.004 CA/CL; P = 1 / (1 + e^-X)")
+                      formula="X = -4.336 - 4.513 ROA + 5.679 TL/TA + 0.004 CA/CL; P = Phi(X) (probit)")
         missing = self._missing(inputs, ["total_assets", "total_liabilities", "net_income", "current_assets",
                                          "current_liabilities"])
         assets, current_liabilities = inputs["total_assets"], inputs["current_liabilities"]
@@ -288,7 +288,8 @@ class BankruptcyAnalyzer:
             "liquidity": inputs["current_assets"] / current_liabilities,
         }
         score = -4.336 - 4.513 * components["roa"] + 5.679 * components["leverage"] + 0.004 * components["liquidity"]
-        probability = 1.0 / (1.0 + math.exp(-score))
+        # Zmijewski (1984) is a probit model: P = standard normal CDF of X (not the logistic of Ohlson 1980)
+        probability = 0.5 * (1.0 + math.erf(score / math.sqrt(2.0)))
         zone = "safe" if probability < ZMIJEWSKI_CUTOFF else "distress"
         interpretation = (f"Estimated probability of financial distress {probability:.1%} "
                           f"({'below' if zone == 'safe' else 'above'} the 50 % cut-off).")

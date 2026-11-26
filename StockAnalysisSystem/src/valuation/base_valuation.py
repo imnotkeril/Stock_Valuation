@@ -24,27 +24,33 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from StockAnalysisSystem.src.config import DCF_PARAMETERS, RISK_FREE_RATE, SECTOR_DCF_PARAMETERS, normalize_sector
+from StockAnalysisSystem.src.config import DCF_PARAMETERS, SECTOR_DCF_PARAMETERS, normalize_sector
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
+from StockAnalysisSystem.src.utils.rates import RiskFreeRate, risk_free_rate
+from StockAnalysisSystem.src.valuation.capital import (  # noqa: F401 - bounds re-exported for callers
+    COST_OF_EQUITY_BOUNDS,
+    EQUITY_RISK_PREMIUM,
+    WACC_BOUNDS,
+    cap_terminal_growth,
+    cost_of_capital_for,
+    effective_tax_rate,
+    rate_summary,
+    total_debt,
+)
 from StockAnalysisSystem.src.utils.financial_data import (
     build_financial_data,
     cagr,
     get_latest,
     get_series,
     is_empty,
-    safe_divide,
     to_float,
 )
 
 logger = logging.getLogger(__name__)
 
-#: Long-run equity risk premium used in CAPM.
-EQUITY_RISK_PREMIUM = 0.055
 #: Corporate tax rate used when the effective rate cannot be derived.
 DEFAULT_TAX_RATE = 0.21
-#: Bounds applied to estimated (not user-supplied) rates.
-WACC_BOUNDS = (0.05, 0.20)
-COST_OF_EQUITY_BOUNDS = (0.045, 0.25)
+#: Bounds applied to estimated (not user-supplied) growth.
 GROWTH_BOUNDS = (-0.05, 0.25)
 #: A method value outside this band around the share price is treated as implausible.
 PLAUSIBLE_PRICE_MULTIPLE = (0.01, 20.0)
@@ -80,23 +86,98 @@ RECOMMENDATION_THRESHOLDS = (
 )
 
 
-def get_recommendation(upside_pct: Optional[float]) -> Dict[str, Any]:
+#: Method spread (max - min) / fair value above which the methods disagree.
+SPREAD_MEDIUM, SPREAD_HIGH = 0.3, 0.6
+#: Terminal value share of a DCF above which the value rests on the far future.
+TERMINAL_SHARE_HIGH = 0.8
+#: |upside| above this (percent) is implausible rather than a signal.
+IMPLAUSIBLE_UPSIDE_PCT = 100.0
+SOFT_COLOR = "#b0bec5"
+
+
+def assess_confidence(methods: Dict[str, Dict[str, Any]], summary: Dict[str, Any],
+                      weights: Optional[Dict[str, float]] = None,
+                      financial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Confidence in a blended fair value: ``{"level": "High" | "Medium" | "Low", "reasons": [str]}``.
+
+    One penalty point each for: methods spread more than 30 % of the fair value (two above 60 %),
+    a single usable method, a DCF whose terminal value is more than 80 % of its value, fewer than
+    60 % of the weighted methods usable, fewer than three annual statements; two points for an
+    upside beyond +-100 %. 0 points = High, 1 = Medium, 2+ = Low.
+    """
+    reasons: List[str] = []
+    points = 0
+    fair = summary.get('weighted_value')
+    used = summary.get('methods_used') or []
+    if fair and len(used) >= 2 and summary.get('range') is not None:
+        spread = summary['range'] / fair
+        if spread > SPREAD_HIGH:
+            points += 2
+            reasons.append(f"methods disagree (range {spread:.0%} of the fair value)")
+        elif spread > SPREAD_MEDIUM:
+            points += 1
+            reasons.append(f"methods spread {spread:.0%} of the fair value")
+    elif fair:
+        points += 1
+        reasons.append("only one usable method")
+    for key in used:
+        share = to_float((methods.get(key) or {}).get('terminal_value_share'))
+        if share is not None and share > TERMINAL_SHARE_HIGH:
+            points += 1
+            reasons.append(f"{share:.0%} of the {methods[key].get('method', key)} value is terminal value")
+            break
+    # Default weight tables can span every subsector: only methods that actually ran count (review R-01)
+    planned = [k for k, w in (weights or {}).items() if w and w > 0 and k in methods]
+    if planned and len([k for k in planned if k in used]) / len(planned) < 0.6:
+        points += 1
+        reasons.append(f"{len([k for k in planned if k in used])} of {len(planned)} weighted methods usable")
+    income = (financial_data or {}).get('income_statement')
+    if isinstance(income, pd.DataFrame) and 0 < income.shape[1] < 3:
+        points += 1
+        reasons.append(f"only {income.shape[1]} years of statements")
+    upside = summary.get('potential_upside')
+    if upside is not None and abs(upside) > IMPLAUSIBLE_UPSIDE_PCT:
+        points += 2
+        reasons.append(f"upside {upside:+.0f} % is implausibly large; check the inputs")
+    level = "High" if points == 0 else "Medium" if points == 1 else "Low"
+    return {"level": level, "reasons": reasons}
+
+
+def get_recommendation(upside_pct: Optional[float], confidence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Translate an upside/downside percentage into an investment recommendation.
 
     Args:
         upside_pct: Upside of fair value over the current price, in percent.
+        confidence: Optional result of :func:`assess_confidence`. With a Low level a
+            Buy/Sell-type label is softened to "Below model value" / "Above model value"
+            (the price relative to the model), keeping the strong label in ``model_label``.
 
     Returns:
-        Dict with ``label``, ``color`` and ``rationale`` keys. ``label`` is
+        Dict with ``label``, ``color``, ``rationale`` and, with ``confidence``,
+        ``confidence`` / ``confidence_reasons`` / ``model_label``. ``label`` is
         ``"N/A"`` when the upside is unknown.
     """
     if upside_pct is None or not np.isfinite(upside_pct):
         return {"label": "N/A", "color": "#9e9e9e", "rationale": "Insufficient data to generate a recommendation."}
+    result = {"label": "Sell", "color": "#faa1a4", "rationale": RECOMMENDATION_THRESHOLDS[-1][3]}
     for threshold, label, color, rationale in RECOMMENDATION_THRESHOLDS:
         if upside_pct > threshold:
-            return {"label": label, "color": color, "rationale": rationale}
-    return {"label": "Sell", "color": "#faa1a4", "rationale": RECOMMENDATION_THRESHOLDS[-1][3]}
+            result = {"label": label, "color": color, "rationale": rationale}
+            break
+    if not confidence:
+        return result
+    result.update(confidence=confidence.get("level"), confidence_reasons=list(confidence.get("reasons") or []),
+                  model_label=result["label"])
+    if confidence.get("level") == "Low" and result["label"] != "Hold":
+        below = upside_pct > 0
+        result.update(
+            label="Below model value" if below else "Above model value", color=SOFT_COLOR,
+            rationale=(f"The price is {'below' if below else 'above'} the model value ({upside_pct:+.0f} %), "
+                       f"but confidence is low ({'; '.join(confidence.get('reasons') or [])}), so this is not "
+                       f"read as a '{result['label']}' signal."))
+    return result
 
 
 def _finite_positive(value: Any) -> Optional[float]:
@@ -190,7 +271,6 @@ class BaseValuation:
             data_loader: DataLoader used when ``financial_data`` is not supplied.
         """
         self.data_loader = data_loader if data_loader else DataLoader()
-        self.risk_free_rate = RISK_FREE_RATE
         self.dcf_parameters = DCF_PARAMETERS
         self.sector_dcf_parameters = SECTOR_DCF_PARAMETERS
 
@@ -321,6 +401,7 @@ class BaseValuation:
                                     else params['terminal_growth_rate']),
                 'forecast_years': rate_kwargs['forecast_years'] or params['forecast_years'],
                 'cost_of_equity': wacc['cost_of_equity'],
+                **rate_summary(wacc),
                 'wacc_components': wacc,
                 'user_overrides': overrides,
             }
@@ -374,7 +455,8 @@ class BaseValuation:
             'current_price': current_price,
             'value_per_share': summary['weighted_value'],
             'potential_upside': summary['potential_upside'],
-            'recommendation': get_recommendation(summary['potential_upside']),
+            'recommendation': get_recommendation(
+                summary['potential_upside'], assess_confidence(methods, summary, weights, financial_data)),
             'valuation_summary': summary,
             'valuation_methods': methods,
             'assumptions': clean_result(assumptions or {}),
@@ -572,7 +654,8 @@ class BaseValuation:
                 ticker, financial_data, methods,
                 weights=kwargs.get('weights') or self.get_method_weights(subsector),
                 sector=sector, subsector=subsector,
-                assumptions={**assumptions, 'user_overrides': overrides}, notes=notes,
+                assumptions={**rate_summary(self._wacc_components(financial_data, sector)), **assumptions,
+                             'user_overrides': overrides}, notes=notes,
             )
         except Exception as e:
             logger.error(f"{self.__class__.__name__} valuation failed for {ticker}: {e}")
@@ -655,12 +738,8 @@ class BaseValuation:
 
     @staticmethod
     def _total_debt(balance_sheet: Optional[pd.DataFrame]) -> float:
-        """Total debt (falls back to long-term + current debt); 0 when unavailable."""
-        debt = get_latest(balance_sheet, 'total_debt')
-        if debt is None:
-            parts = [get_latest(balance_sheet, 'long_term_debt'), get_latest(balance_sheet, 'short_term_debt')]
-            debt = sum(p for p in parts if p is not None)
-        return max(float(debt or 0.0), 0.0)
+        """Borrowings without lease liabilities (capital.total_debt, the WACC rule); 0 when unavailable."""
+        return total_debt(balance_sheet)
 
     @staticmethod
     def _cash(balance_sheet: Optional[pd.DataFrame]) -> float:
@@ -728,15 +807,9 @@ class BaseValuation:
         return float(series.mean()) if not series.empty else 0.0
 
     def _effective_tax_rate(self, financial_data: Optional[Dict[str, Any]]) -> float:
-        """Average effective tax rate of the last three profitable years, bounded to [0, 35 %]."""
+        """Effective tax rate: the single rule of capital.effective_tax_rate (ADR-007), as in the WACC."""
         income, _, _ = self._statements(financial_data)
-        tax, pretax = get_series(income, 'tax_provision'), get_series(income, 'pretax_income')
-        aligned = pd.concat([tax, pretax], axis=1, join='inner').head(3)
-        rates = [t / p for t, p in aligned.to_numpy() if p > 0]
-        rate = float(np.mean(rates)) if rates else to_float(get_latest(income, 'tax_rate'))
-        if rate is None or not 0 <= rate <= 0.6:
-            rate = DEFAULT_TAX_RATE
-        return clamp(rate, 0.0, 0.35)
+        return effective_tax_rate(income)
 
     # ------------------------------------------------------------------
     # Discount rates
@@ -749,43 +822,13 @@ class BaseValuation:
         return params
 
     def _wacc_components(self, financial_data: Optional[Dict[str, Any]], sector: Optional[str] = None) -> Dict[str, Any]:
-        """
-        CAPM cost of equity and WACC with their inputs.
+        """CAPM cost of equity and WACC with their inputs: the shared rule in valuation/capital.py (ADR-007)."""
+        fallback = self._get_dcf_parameters(sector)['default_discount_rate']
+        return cost_of_capital_for(financial_data or {}, fallback, rf=self.risk_free())
 
-        Ke = rf + beta * ERP (beta defaults to 1.0); Kd = interest / debt bounded
-        to [rf + 0.5 %, 15 %]; weights from market cap (book equity fallback)
-        and book debt; WACC bounded to WACC_BOUNDS.
-        """
-        income, balance, _ = self._statements(financial_data)
-        market = self._market_data(financial_data)
-        raw_beta = to_float(market.get('beta'))
-        if raw_beta is None:
-            raw_beta = to_float(self._company_info(financial_data).get('beta'))
-        beta = clamp(raw_beta, 0.3, 3.0) if raw_beta is not None else 1.0
-        rf = self.risk_free_rate
-        cost_of_equity = clamp(rf + beta * EQUITY_RISK_PREMIUM, *COST_OF_EQUITY_BOUNDS)
-
-        debt = self._total_debt(balance)
-        interest = abs(get_latest(income, 'interest_expense') or 0.0)
-        implied_kd = safe_divide(interest, debt)
-        cost_of_debt = clamp(implied_kd, rf + 0.005, 0.15) if implied_kd else rf + 0.02
-        tax_rate = self._effective_tax_rate(financial_data)
-
-        equity = self._market_cap(financial_data) or _finite_positive(get_latest(balance, 'total_equity'))
-        if equity:
-            equity_weight = equity / (equity + debt)
-        else:
-            equity_weight = 0.7
-        debt_weight = 1 - equity_weight
-        raw_wacc = equity_weight * cost_of_equity + debt_weight * cost_of_debt * (1 - tax_rate)
-        return {
-            'risk_free_rate': rf, 'beta': beta, 'beta_assumed': raw_beta is None,
-            'equity_risk_premium': EQUITY_RISK_PREMIUM, 'cost_of_equity': cost_of_equity,
-            'pre_tax_cost_of_debt': cost_of_debt, 'tax_rate': tax_rate,
-            'after_tax_cost_of_debt': cost_of_debt * (1 - tax_rate),
-            'equity_weight': equity_weight, 'debt_weight': debt_weight,
-            'wacc': clamp(raw_wacc, *WACC_BOUNDS),
-        }
+    def risk_free(self) -> RiskFreeRate:
+        """Current risk-free rate (utils.rates): override -> FRED DGS10 -> fallback constant."""
+        return risk_free_rate(self.data_loader)
 
     def _calculate_discount_rate(self, ticker: str, financial_data: Dict[str, Any],
                                  sector: Optional[str] = None) -> Optional[float]:
@@ -829,14 +872,24 @@ class BaseValuation:
             fcf = get_series(income_stmt, 'net_income')
         return fcf.rename('Free Cash Flow')
 
-    def _unlevered_fcf_series(self, financial_data: Optional[Dict[str, Any]]) -> pd.Series:
-        """Free cash flow to the firm: reported FCF + after-tax interest expense (most recent first)."""
+    def _unlevered_fcf_series(self, financial_data: Optional[Dict[str, Any]], deduct_sbc: bool = True) -> pd.Series:
+        """
+        Free cash flow to the firm (most recent first): reported FCF + after-tax interest expense
+        - stock-based compensation. SBC is a real cost (Damodaran) that operating cash flow adds back,
+        so it is deducted unless ``deduct_sbc`` is False; never when FCF fell back to net income,
+        which is already after SBC.
+        """
         income, _, cash_flow = self._statements(financial_data)
         fcf = self._calculate_historical_fcf(income, cash_flow)
         if fcf.empty:
             return fcf
         interest = get_series(income, 'interest_expense').abs().reindex(fcf.index).fillna(0.0)
-        return (fcf + interest * (1 - self._effective_tax_rate(financial_data))).rename('Unlevered FCF')
+        ufcf = fcf + interest * (1 - self._effective_tax_rate(financial_data))
+        from_cash_flow = not get_series(cash_flow, 'free_cash_flow').empty \
+            or not get_series(cash_flow, 'operating_cash_flow').empty
+        if deduct_sbc and from_cash_flow:
+            ufcf = ufcf - get_series(cash_flow, 'stock_based_compensation').abs().reindex(fcf.index).fillna(0.0)
+        return ufcf.rename('Unlevered FCF')
 
     @staticmethod
     def _base_cash_flow(series: pd.Series, average_years: int = 1) -> float:
@@ -952,11 +1005,15 @@ class BaseValuation:
         series = self._unlevered_fcf_series(financial_data) if cash_flows is None else cash_flows
         base = self._base_cash_flow(series, average_years)
         wacc = self._wacc_components(financial_data, sector)
+        growth_cap = cap_terminal_growth(
+            terminal_growth if terminal_growth is not None else params['terminal_growth_rate'],
+            wacc.get('risk_free_rate'))
         return {
             'base_fcf': base,
             'historical_fcf': series,
             'discount_rate': discount_rate if discount_rate is not None else wacc['wacc'],
-            'terminal_growth': terminal_growth if terminal_growth is not None else params['terminal_growth_rate'],
+            'terminal_growth': growth_cap['terminal_growth'],
+            'terminal_growth_note': growth_cap['note'],
             'forecast_years': int(forecast_years or params['forecast_years']),
             'growth_rate': (growth_rate if growth_rate is not None
                             else self._estimate_company_growth(financial_data, series)),
@@ -979,6 +1036,8 @@ class BaseValuation:
             'wacc_components': inputs['wacc_components'], 'safety_margin': inputs['safety_margin'],
             'conservative_value': value * (1 - inputs['safety_margin']) if value else None,
         }
+        if inputs.get('terminal_growth_note'):
+            result['note'] = inputs['terminal_growth_note']
         result.update(extra)
         return result
 
@@ -1154,10 +1213,13 @@ class BaseValuation:
             return self._method_error(label, e, ticker)
 
     def _return_on_equity(self, financial_data: Optional[Dict[str, Any]], years: int = 3) -> Optional[float]:
-        """Average ROE (net income / average equity) over the latest ``years`` periods."""
+        """
+        Average ROE on common equity (net income to common / average common equity) over the latest
+        ``years`` periods: preferred dividends and preferred stock belong to preferred holders.
+        """
         income, balance, _ = self._statements(financial_data)
-        net_income = get_series(income, 'net_income', ascending=True)
-        equity = get_series(balance, 'total_equity', ascending=True)
+        net_income = get_series(income, 'net_income_common', ascending=True)
+        equity = get_series(balance, 'common_equity', ascending=True)
         if net_income.empty or equity.empty:
             return None
         average_equity = ((equity + equity.shift(1)) / 2).fillna(equity)
@@ -1216,7 +1278,7 @@ class BaseValuation:
             params = self._get_dcf_parameters(sector)
             income, _, _ = self._statements(financial_data)
             shares = self._shares_outstanding(financial_data)
-            net_income = get_latest(income, 'net_income')
+            net_income = get_latest(income, 'net_income_common')
             eps = net_income / shares if net_income is not None and shares else None
 
             dps = self._dividends_per_share(financial_data)

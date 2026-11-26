@@ -30,6 +30,7 @@ from StockAnalysisSystem.src.valuation.sector_specific.common import (
     not_applicable,
     number_param,
     percent_param,
+    series_by_period,
     standard_multiples,
     subsector_multiple_defaults,
 )
@@ -133,13 +134,41 @@ class RealEstateValuation(SectorValuationMixin, BaseValuation):
                 if ctx.price and nav_per_share and nav_per_share > 0 else None}
 
     @staticmethod
-    def _ffo(ctx: ValuationContext) -> Dict[str, Optional[float]]:
-        net_income = ctx.latest("income_statement", "net_income")
+    def _ffo(ctx: ValuationContext) -> Dict[str, Any]:
+        """
+        Nareit FFO (2018 restatement) = net income to common - gains on sale of property
+        + impairments + depreciation and amortisation, all from the latest net-income period.
+
+        Gains: income-statement row (positive = gain), else the cash-flow reconciliation row (sign
+        flipped); impairments: cash-flow "Asset Impairment Charge", else the income-statement row.
+        Missing rows count as 0 and are listed in ``ffo_note``. Yahoo has no real-estate-only D&A,
+        so total D&A is used (slightly overstates FFO for REITs with non-property assets).
+        """
+        income, cash_flow = ctx.financial_data.get("income_statement"), ctx.financial_data.get("cash_flow")
+        net_income_series = series_by_period(income, "net_income_common")
         da = latest_metric(ctx, "da")
-        if net_income is None or da is None:
+        if net_income_series.empty or da is None:
             return {"ffo": None, "affo": None}
-        ffo = net_income + da
-        return {"ffo": ffo, "affo": ffo - da * _MAINTENANCE_SHARE_OF_DA}
+        period = net_income_series.index[-1]
+        net_income = float(net_income_series.iloc[-1])
+
+        def at_period(frame: Any, item: str) -> Optional[float]:
+            series = series_by_period(frame, item)
+            return float(series[period]) if period in series.index else None
+
+        gains = at_period(income, "gain_on_sale_of_assets")
+        if gains is None:
+            cash_flow_gain = at_period(cash_flow, "gain_loss_on_sale_of_ppe")
+            gains = -cash_flow_gain if cash_flow_gain is not None else None
+        impairments = at_period(cash_flow, "asset_impairment_charge")
+        if impairments is None:
+            impairments = at_period(income, "impairment")
+        missing = [name for name, value in (("gains on sale", gains), ("impairments", impairments)) if value is None]
+        ffo = net_income - (gains or 0.0) + abs(impairments or 0.0) + da
+        return {"ffo": ffo, "affo": ffo - da * _MAINTENANCE_SHARE_OF_DA, "net_income_common": net_income,
+                "gains_on_sale": gains, "impairments": impairments,
+                "ffo_note": ("FFO = net income + D&A without " + " or ".join(missing) + " (not reported).")
+                if missing else None}
 
     def _ffo_multiple(self, ctx: ValuationContext) -> Dict[str, Any]:
         values = self._ffo(ctx)
@@ -153,6 +182,8 @@ class RealEstateValuation(SectorValuationMixin, BaseValuation):
         value_affo = affo_ps * multiple * 1.15 if affo_ps and affo_ps > 0 else None
         candidates = [v for v in (value_ffo, value_affo) if v]
         return {"value_per_share": sum(candidates) / len(candidates) if candidates else None,
+                **({"note": values["ffo_note"]} if values.get("ffo_note") else {}),
+                "gains_on_sale": values.get("gains_on_sale"), "impairments": values.get("impairments"),
                 "ffo": ffo, "affo": affo, "ffo_per_share": ffo_ps, "affo_per_share": affo_ps,
                 "ffo_multiple": multiple, "affo_multiple": multiple * 1.15,
                 "value_on_ffo": value_ffo, "value_on_affo": value_affo,

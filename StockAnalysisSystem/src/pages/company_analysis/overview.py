@@ -97,6 +97,39 @@ def render_company_overview(ticker: str, financial_data: Dict[str, Any], company
     _render_sector_performance(ticker, prices, sector_prices, sector)
     _render_technical_indicators(prices)
     _render_sec_edgar(ticker)
+    _render_insider_transactions(ticker)
+
+
+def _render_insider_transactions(ticker: str) -> None:
+    """Form 4 insider trades from Finnhub (optional key)."""
+    from StockAnalysisSystem.src.utils import insider
+
+    st.subheader("Insider transactions")
+    if not insider.is_configured():
+        st.info(f"Add `{insider.FINNHUB_ENV}` (free at finnhub.io) to `.env` to list insider buys and sells "
+                "reported on SEC Form 4.", icon=":material/info:")
+        return
+    trades = insider.get_insider_transactions(ticker)
+    if trades.empty:
+        st.caption(f"No insider transactions reported for {ticker} in the last 12 months (or Finnhub is unavailable).")
+        return
+    summary = insider.summarize(trades)
+    cols = st.columns(3)
+    cols[0].metric("Open-market buys (90 days)", f"{summary['buys']}",
+                   help=f"{summary['insiders_buying']} insider(s), {fmt_money(summary['buy_value'])}")
+    cols[1].metric("Open-market sells (90 days)", f"{summary['sells']}",
+                   help=f"{summary['insiders_selling']} insider(s), {fmt_money(summary['sell_value'])}")
+    cols[2].metric("Net buy value (90 days)", fmt_money(summary["net_value"]))
+    st.caption("Only open-market purchases (code P) and sales (S) count above. Grants, option exercises and tax "
+               "withholding are routine; many sales are pre-planned (10b5-1), so a single sale says little.")
+    table = trades.head(25).copy()
+    table["date"] = table["date"].dt.strftime("%Y-%m-%d")
+    st.dataframe(table.drop(columns=["code"]), hide_index=True, width="stretch", key=f"{KEY}insider_table",
+                 column_config={"name": "Insider", "type": "Transaction",
+                                "shares": st.column_config.NumberColumn("Shares", format="%+,.0f"),
+                                "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                                "value": st.column_config.NumberColumn("Value", format="$%,.0f"),
+                                "holding_after": st.column_config.NumberColumn("Shares held after", format="%,.0f")})
 
 
 def _render_sec_edgar(ticker: str) -> None:
@@ -426,9 +459,16 @@ def _render_sector_performance(ticker: str, prices: pd.DataFrame, sector_prices:
     excess = stock_ret - etf_ret
     cols[2].metric("Excess return", f"{excess * 100:+.1f} pp", delta=f"{excess * 100:+.1f} pp",
                    help="Stock return minus sector ETF return over the period (percentage points).")
-    cols[3].metric("Correlation", fmt_number(correlation), help="Correlation of daily returns.")
+    cols[3].metric("Correlation", fmt_number(correlation),
+                   help="Correlation of daily returns with the sector ETF: 1 = move together, 0 = unrelated.")
     cols[4].metric("Beta vs sector", fmt_number(beta),
-                   help="Sensitivity of the stock's daily returns to the sector ETF's daily returns.")
+                   help="Slope of the stock's daily returns on the sector ETF's: 1 = moves one for one with the "
+                        "sector. Not the market beta used in the cost of capital (that is measured against "
+                        "the S&P 500 and Blume-adjusted).")
+    if correlation is not None and correlation < 0.5:
+        st.caption(f"Low correlation ({correlation:.2f}) means the sector ETF explains little of {ticker}'s daily "
+                   "moves, so the beta against it is small too. This is common when one company is a large "
+                   "weight in its own ETF or the ETF mixes unlike businesses; it says nothing about market risk.")
 
 
 # ---------------------------------------------------------------------------
