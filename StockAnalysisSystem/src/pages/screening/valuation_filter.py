@@ -12,7 +12,11 @@ from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.utils.visualization import FinancialVisualizer
 from StockAnalysisSystem.src.models.ratio_analysis import FinancialRatioAnalyzer
 from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
-from StockAnalysisSystem.src.pages.screening.stock_screener import get_stock_universe, get_stocks_by_sector, get_stocks_by_sector_and_subsector
+from StockAnalysisSystem.src.pages.screening.stock_screener import (
+    DEFAULT_WORKERS, get_stock_universe, get_stocks_by_sector, get_stocks_by_sector_and_subsector,
+    parallel_map, progress_reporter,
+)
+from StockAnalysisSystem.src.utils.rates import risk_free_rate
 
 # Setup logging
 logging.basicConfig(
@@ -260,6 +264,7 @@ def run_valuation_filter_page():
                     ev_ebitda_discount=ev_ebitda_discount / 100 if selected_approach in ["Relative",
                                                                                          "Combined"] else 0.15,
                     include_outliers=include_outliers,
+                    progress_callback=progress_reporter(st.progress(0.0, text="Starting..."), "Valuing"),
                 )
                 hidden_outliers = valuation_results.hidden_outliers
 
@@ -751,8 +756,8 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             overrides["revenue_growth"] = base + growth_rate_adj
         return overrides
 
-    # Process each stock in the universe
-    for stock in universe:
+    def analyse(stock):
+        """('row', dict), ('outlier', symbol) or None for one stock."""
         symbol = stock["symbol"]
 
         try:
@@ -760,12 +765,12 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             company_info = data_loader.get_company_info(symbol)
 
             if not company_info:
-                continue
+                return None
 
             # Market cap filter
             market_cap = company_info.get('market_cap')
             if market_cap is None or not (min_market_cap <= market_cap <= max_market_cap):
-                continue
+                return None
 
             # Get latest price data
             end_date = datetime.now().strftime('%Y-%m-%d')
@@ -774,7 +779,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
             price_data = data_loader.get_historical_prices(symbol, start_date_1y, end_date)
 
             if price_data.empty:
-                continue
+                return None
 
             # Get current price
             current_price = price_data['Close'].iloc[-1]
@@ -786,7 +791,7 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
 
             # Check if we have enough data for valuation
             if income_stmt.empty or balance_sheet.empty:
-                continue
+                return None
 
             # Combine into financial data dict
             financial_data = {
@@ -914,10 +919,10 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
 
             # Apply margin of safety; implausible results only on request
             if upside is not None and upside > margin_of_safety and sanity["flag"] and not include_outliers:
-                valuation_results.hidden_outliers.append(symbol)
+                return ("outlier", symbol)
             elif upside is not None and upside > margin_of_safety:
                 # Stock is potentially undervalued, add to results
-                valuation_results.append({
+                return ("row", {
                     "symbol": symbol,
                     "name": company_info.get('name', stock.get('name', symbol)),
                     "sector": company_info.get('sector', stock.get('sector', 'Unknown')),
@@ -945,9 +950,24 @@ def perform_valuation_analysis(universe, data_loader, ratio_analyzer, valuation_
                     "debt_equity": ratios.get('leverage', {}).get('debt_to_equity'),
                     "dividend_yield": company_info.get('dividend_yield')
                 })
+            return None
 
         except Exception as e:
             logger.error(f"Error processing stock {symbol}: {str(e)}")
+            return None
+
+    risk_free_rate(data_loader)  # warm the shared rate once before the workers start
+    outcomes = parallel_map(analyse, list(universe), workers=params.get("workers") or DEFAULT_WORKERS,
+                            progress_callback=params.get("progress_callback"),
+                            label=lambda stock: stock.get("symbol", "?"))
+    for outcome in outcomes:
+        if not outcome:
+            continue
+        kind, value = outcome
+        if kind == "outlier":
+            valuation_results.hidden_outliers.append(value)
+        else:
+            valuation_results.append(value)
 
     return valuation_results
 

@@ -26,6 +26,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -537,7 +540,8 @@ def screen_stocks(universe: Iterable[Any], data_loader: Optional[DataLoader] = N
                   ratio_analyzer: Optional[FinancialRatioAnalyzer] = None, *,
                   criteria: Optional[Mapping[str, Sequence[Any]]] = None, include_missing: bool = False,
                   progress_callback: Optional[Callable[[int, int, str], None]] = None,
-                  failures: Optional[List[str]] = None, **filters: Any) -> List[Dict[str, Any]]:
+                  failures: Optional[List[str]] = None, workers: int = 0,
+                  **filters: Any) -> List[Dict[str, Any]]:
     """
     Screen ``universe`` (records with ``symbol`` or plain tickers) on metric ranges.
 
@@ -548,6 +552,7 @@ def screen_stocks(universe: Iterable[Any], data_loader: Optional[DataLoader] = N
         include_missing: Keep stocks whose value for a filtered metric is unknown.
         progress_callback: ``callback(done, total, symbol)`` after each ticker.
         failures: List receiving tickers whose data could not be loaded.
+        workers: Download threads (0 = :data:`DEFAULT_WORKERS`, 1 = sequential).
         **filters: Legacy ``min_<metric>`` / ``max_<metric>`` bounds.
 
     Returns:
@@ -556,10 +561,14 @@ def screen_stocks(universe: Iterable[Any], data_loader: Optional[DataLoader] = N
     """
     rules = build_criteria(criteria, **filters)
     records = [u if isinstance(u, Mapping) else {"symbol": str(u)} for u in universe]
+    symbols = [str(record.get("symbol", "")).strip().upper() for record in records]
+    if symbols:  # one risk-free lookup before the pool, so workers share the cached rate
+        risk_free_rate(data_loader)
+    snapshots = parallel_map(
+        lambda s: get_stock_snapshot(s, data_loader, ratio_analyzer=ratio_analyzer) if s else None,
+        symbols, workers=workers or DEFAULT_WORKERS, progress_callback=progress_callback)
     results: List[Dict[str, Any]] = []
-    for done, record in enumerate(records, start=1):
-        symbol = str(record.get("symbol", "")).strip().upper()
-        snapshot = get_stock_snapshot(symbol, data_loader, ratio_analyzer=ratio_analyzer) if symbol else None
+    for symbol, record, snapshot in zip(symbols, records, snapshots):
         if snapshot is None:
             if failures is not None and symbol:
                 failures.append(symbol)
@@ -567,8 +576,84 @@ def screen_stocks(universe: Iterable[Any], data_loader: Optional[DataLoader] = N
             row = snapshot_row(snapshot, record)
             if passes_criteria(row, rules, include_missing):
                 results.append(row)
-        if progress_callback:
-            progress_callback(done, len(records), symbol)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Parallel fetch (review R11 / U11)
+# ---------------------------------------------------------------------------
+#: Worker threads for per-ticker downloads; Yahoo tolerates a handful of parallel requests.
+DEFAULT_WORKERS = 6
+#: Shared rate limit: at least this many seconds between two task starts across all workers.
+MIN_START_INTERVAL = 0.05
+
+
+class RateLimiter:
+    """Thread-safe spacing of task starts (``wait()`` blocks until the next slot)."""
+
+    def __init__(self, min_interval: float = MIN_START_INTERVAL):
+        self.min_interval = max(float(min_interval), 0.0)
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next)
+            self._next = start + self.min_interval
+        if start > now:
+            time.sleep(start - now)
+
+
+def _attach_streamlit_context() -> Callable[[], None]:
+    """Thread initializer that lets worker threads use ``st.cache_data`` without context warnings."""
+    try:
+        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+        ctx = get_script_run_ctx()
+    except Exception:  # streamlit internals moved: workers still run, only without the context
+        return lambda: None
+    if ctx is None:
+        return lambda: None
+    return lambda: add_script_run_ctx(threading.current_thread(), ctx)
+
+
+def parallel_map(func: Callable[[Any], Any], items: Sequence[Any], workers: int = DEFAULT_WORKERS,
+                 progress_callback: Optional[Callable[[int, int, str], None]] = None,
+                 label: Callable[[Any], str] = str, limiter: Optional[RateLimiter] = None) -> List[Any]:
+    """
+    ``[func(item) for item in items]`` on a thread pool, results in input order.
+
+    An exception in ``func`` gives ``None`` for that item (logged), never aborts the batch.
+    ``progress_callback(done, total, label(item))`` runs in the calling thread, so it may touch Streamlit.
+    """
+    items = list(items)
+    total = len(items)
+    limiter = limiter or RateLimiter()
+
+    def run(item):
+        limiter.wait()
+        return func(item)
+
+    results: List[Any] = [None] * total
+    if workers <= 1 or total <= 1:
+        for i, item in enumerate(items):
+            try:
+                results[i] = run(item)
+            except Exception:
+                logger.exception("Task failed for %s", label(item))
+            if progress_callback:
+                progress_callback(i + 1, total, label(item))
+        return results
+    with ThreadPoolExecutor(max_workers=min(workers, total), initializer=_attach_streamlit_context()) as pool:
+        futures = {pool.submit(run, item): i for i, item in enumerate(items)}
+        for done, future in enumerate(as_completed(futures), start=1):
+            i = futures[future]
+            try:
+                results[i] = future.result()
+            except Exception:
+                logger.exception("Task failed for %s", label(items[i]))
+            if progress_callback:
+                progress_callback(done, total, label(items[i]))
     return results
 
 

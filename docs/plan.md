@@ -109,7 +109,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: skill:frontend-design
   check: `$T StockAnalysisSystem/tests/test_pages_interaction.py StockAnalysisSystem/tests/test_app.py && $PY -m ruff check StockAnalysisSystem`
   done: Peer/Sector pages show a hint and a main-area run button; Enter on a unique match selects it; "Sector notes (static)" label; "P/x" and "Change since" labels replaced; beta/correlation explained.
-- [ ] T15 Speed: thread-pool fetch for screener/valuation filter, progress for Peer Comparison (R11)
+- [x] T15 Speed: thread-pool fetch for screener/valuation filter, progress for Peer Comparison (R11)
   layer: backend · tier: B · owner: backend-dev · model: sonnet
   owns: StockAnalysisSystem/src/pages/screening/stock_screener.py, StockAnalysisSystem/src/pages/screening/valuation_filter.py, StockAnalysisSystem/tests/test_parallel_fetch.py
   depends: T14

@@ -66,6 +66,7 @@ Framework (from adoption on):
 - [x] review/T09 reviewer: 1 P1 + 6 P2, security-reviewer: 0 (pip-audit clean, .env never committed) -> docs/REVIEW.md; R-01 fixed (confidence counts only methods that ran) — 71 passed (recommendation + sector_models), ruff clean; R-02..R-07 (P2) open for T18
 - [x] gate/T10 Phase 2 gate (new session, worktree review-fixes-finish) — full suite "464 passed in 154.18s", ruff "All checks passed!"; live AAPL fair 184.47 -48.1 % Sell High (wacc 9.49 %, rf 4.91 %), JPM 278.54 -12.1 % Reduce Medium, XOM 86.30 -45.4 % Above model value Low
 - [x] build/T14 UX: Peer/Sector main-area hint + run button (callback keeps results), Enter on exact ticker / single match analyses at once (unique_match), "Sector notes (static)" tab + caption, "Change over chart range" (date in help), asset tab "Price is N.NNx this", beta/correlation help + low-correlation caption — 39 passed (pages_interaction + app), ruff clean
+- [x] build/T15 parallel_map (6 workers, shared RateLimiter 50 ms between starts, results in input order, failures -> None, progress in caller thread, Streamlit ctx attached) for screen_stocks + perform_valuation_analysis (progress bar); rf warmed once before the pool — 23 passed (parallel_fetch + valuation_filter; parallel == sequential on fixtures), ruff clean; live cold: 24 tickers 30.3 s -> 5.7 s, full universe 132 tickers 33.4 s (was 3 min 20 s), 0 failures
 
 ## Next
 - [ ] gate/T10 - run `step-brief --task T10` first; then T14 (UX U6-U9), T15, T16, T17, T18 (incl. REVIEW.md R-02..R-07), T19-T21
