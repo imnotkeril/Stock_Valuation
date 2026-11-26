@@ -76,3 +76,39 @@ Trap-worthy for known-traps.md: "Default weight tables that span every subsector
 | R-05 | P2 | Valid, open: peer_comparison helpers defined after the `__main__` guard (T18). |
 | R-06 | P2 | Valid, open: bank special case also hits payment networks / asset managers (V, MA, BLK) (T18). |
 | R-07 | P2 | Valid, open: "not from the discount rate" wording; banks use cost of equity (T18). |
+
+# Round 2 (P2 diff T11-T16, 2026-11-26)
+
+### Reviewer (correctness) round 2 - P2 changes T11-T16 (58aa9f4..dd6e02f)
+
+| ID | Sev | File:line | Finding | Evidence | Suggested fix |
+|---|---|---|---|---|---|
+| R-08 | P1 | StockAnalysisSystem/src/pages/screening/valuation_filter.py:842 (with :743) | The Valuation Filter's relative leg never runs. `sector_benchmarks` comes from `ratio_analyzer.get_sector_benchmarks(...)`, which returns `{category: {...}}` (keys `valuation`, `profitability`, ...) for one sector. Looking it up with `sector_benchmarks.get(stock_sector, {})` therefore always gives `{}`. The result: approach "Relative" never returns a row, and "Combined" always falls back to the sector model only (the 60/40 blend never happens). The bug dates from 1ccff22, but T15's parity test hides it: `tests/test_parallel_fetch.py:83` skips the non-empty assert for Relative ("offline fixtures carry no sector multiples"), so it compares `[] == []`. | Probe `scratchpad/probe_relative.py`: keys are `['valuation','profitability','liquidity']` and `lookup('Technology')` is `None` for both sector="All" and "Technology". `perform_valuation_analysis(..., "Relative", "Technology", margin_of_safety=-10, include_outliers=True)` gives 0 rows. `calculate_relative_valuation` with `get_sector_benchmarks("Technology")["valuation"]` returns a result. | Use `sector_multiples = ratio_analyzer.get_sector_benchmarks(stock_sector).get("valuation", {})`, precomputed per sector before the pool (or reuse `relative_benchmarks()` from the Relative tab). In the test, require rows for Relative and Combined and check that Combined values blend both legs. |
+| R-09 | P2 | StockAnalysisSystem/src/pages/screening/valuation_filter.py:1127-1175 | Once R-08 is fixed, the filter's relative leg ignores T12's `irrelevant_multiples`. It would value Technology names on P/B, and banks on P/S and EV/EBITDA, which the Relative tab now marks "Used: No". The filter and the tab would give different relative fair values for the same company. | `calculate_relative_valuation` uses all four multiples with no sector check. The tab filters with `key not in excluded` (valuation.py `_render_relative`). | Drop the components whose key is in `irrelevant_multiples(stock_sector)` (map labels to keys) before averaging. |
+| R-10 | P2 | StockAnalysisSystem/src/pages/screening/stock_screener.py:647 | `parallel_map` cannot be interrupted. If the main thread raises while it consumes results (Streamlit raises RerunException/StopException from `bar.progress` in `progress_callback` when the user changes a widget or presses Stop), `ThreadPoolExecutor.__exit__` calls `shutdown(wait=True)` and runs every queued download first. With 132 universe tickers the app is stuck for tens of seconds before the rerun starts. The old sequential loop stopped at once. | Probe `scratchpad/probe_abort.py`: callback raises on the first result, and the output is `aborted after 1.65s, tasks run: 30/30`. | Wrap the consume loop: `except BaseException: pool.shutdown(wait=False, cancel_futures=True); raise`. You can also check a stop flag in `run()`. |
+| R-11 | P2 | StockAnalysisSystem/src/industry/benchmarks.py:430-459 | `live_valuation_medians` takes any cached info file whatever its age, and `as_of` is the newest file's mtime. One freshly analysed company makes the caption read "data as of <today>" even when the other n-1 multiples are weeks old. The cache keeps info for 7 days and stale files indefinitely. | Code: `newest = stamp if ... stamp > newest`. There is no `_is_fresh` check. The caption is in valuation.py `relative_benchmarks`. | Report the oldest date or a range ("as of A to B"), or skip files older than a bound, e.g. `INFO_CACHE_DAYS` x 4. |
+| R-12 | P2 | StockAnalysisSystem/src/main.py:357-368, 381, 453 | The one-step pick also fires on blur, not only on Enter. `text_input.on_change` runs when the box loses focus. Say a user types an exact ticker that is also a prefix of other results ("C", "T", "MA", "V") and then clicks the "Matches" selectbox to pick, for example, CRM. The blur rerun analyses C at once. Afterwards the sidebar can show a different company than the one analysed. The callback docstring admits the blur case, but the help text promises "Press Enter". | `unique_match` returns the exact symbol even with many results: `search_universe('C')` gives `['C','CRM','CSCO',...]`. Streamlit commits text_input on blur. | Auto-run only when the result list has exactly one entry, or when the analysed ticker is also written into `ca_search_choice` so the sidebar and the analysis agree. Change the help text to match. |
+| R-13 | P2 | StockAnalysisSystem/src/models/precedent_transactions.py:39 | The illustrative sample gives Financials EV/Revenue 3.0 and EV/EBITDA 10.0. For JPM-type companies the Precedents tab then shows a per-share value from deal EV/EBITDA (`implied_values`). In the same commit range (T12), the Relative tab declares EV/EBITDA and EV/Revenue "not meaningful for banks and insurers". | `sample_deals("Financials")` produces five rows with `ev_ebitda` 7.5-13. `_render_precedents` has no sector guard. | For Financials, show an info note instead of the sample, or omit the EV-based sample rows. A deal P/B or P/TBV column would be needed for a meaningful bank sample. |
+
+Checked, nothing found:
+- `perform_valuation_analysis` refactor: all 4 `continue` paths became `return None`, the except path returns None, outlier and row order is preserved (`parallel_map` keeps input order).
+- Shared `DataLoader` cache files are per symbol. The FRED file is warmed before the pool.
+- The `ValuationFactory._instances` lazy init race is benign, and model `get_valuation` does not mutate instance state.
+- `yfinance` 1.8 `download` no longer uses the shared `_DFS`.
+- `st.cache_data` from workers is fine with the attached context.
+- DCF fade math: year 1 = g, final year = terminal g, hand-checked by test_dcf_fade.
+- SBC checkbox state is reset on company change via the `val_` prefix.
+- Peer/sector main-area buttons set the same `*_active` flags as the sidebar buttons.
+
+Tests run: `pytest test_parallel_fetch test_benchmarks test_dcf_fade test_golden_values test_precedent_transactions test_pages_interaction test_recommendation` gives 76 passed in 95.57s.
+
+## Round 2 dispositions
+
+| Id | Severity | Disposition |
+|---|---|---|
+| R-08 | P1 | Valid, fixed 6c04793: relative leg uses `get_sector_benchmarks(stock_sector)["valuation"]`; T15 parity test now requires Relative rows. |
+| R-09 | P2 | Valid, fixed: `calculate_relative_valuation(..., sector=)` drops `irrelevant_multiples`. |
+| R-10 | P2 | Valid, fixed: `parallel_map` cancels queued futures on any BaseException from the progress callback. |
+| R-11 | P2 | Valid, fixed: cache entries older than 30 days skipped; `as_of` = oldest file used. |
+| R-12 | P2 | Valid, fixed: auto-run only on a single search result; exact symbol preselected in Matches. |
+| R-13 | P2 | Valid, fixed: no EV-multiple sample for Financials, note instead. |
