@@ -145,7 +145,7 @@ Router build-row skill `skill:sql-queries` is n/a (no SQL/DuckDB layer; file cac
   uses: stack:python
   check: `$T StockAnalysisSystem/tests/test_liquidation.py && $PY -m ruff check StockAnalysisSystem && $LIVE`
   done: hand-computed golden test; section on the Valuation tab; not in the weighted fair value (stated).
-- [ ] T23 Risk-adjusted ratios on the Risk tab: Sortino, Treynor, Calmar, Information ratio, Jensen's alpha (AC22.2)
+- [x] T23 Risk-adjusted ratios on the Risk tab: Sortino, Treynor, Calmar, Information ratio, Jensen's alpha (AC22.2)
   layer: backend · tier: B · owner: quant-research · model: sonnet
   owns: StockAnalysisSystem/src/models/performance_ratios.py, StockAnalysisSystem/src/pages/company_analysis/risk.py, StockAnalysisSystem/tests/test_performance_ratios.py
   depends: T22

@@ -4,7 +4,8 @@ Company risk tab.
 Sections: financial health score, bankruptcy / distress models (Altman Z,
 Springate, Zmijewski — chosen and interpreted by sector), red flags,
 liquidity and solvency versus the sector, and market risk from the price
-history (volatility, drawdown, Value at Risk, Sharpe ratio), plus a simple
+history (volatility, drawdown, Value at Risk, Sharpe ratio; Sortino, Treynor,
+Calmar, Information ratio and Jensen's alpha vs the S&P 500), plus a simple
 revenue stress test.
 """
 
@@ -20,6 +21,7 @@ import streamlit as st
 from StockAnalysisSystem.src.utils.rates import risk_free_rate as current_risk_free_rate
 from StockAnalysisSystem.src.models.bankruptcy_models import BankruptcyAnalyzer
 from StockAnalysisSystem.src.models.financial_statements import FinancialStatementAnalyzer
+from StockAnalysisSystem.src.models.performance_ratios import performance_ratios
 from StockAnalysisSystem.src.pages.company_analysis.charts import (
     drawdown_chart,
     gauge_chart,
@@ -393,6 +395,61 @@ def market_risk_metrics(close: pd.Series, risk_free_rate: Optional[float] = None
     }
 
 
+#: Market benchmark for beta, Treynor, Jensen's alpha and the Information ratio (S&P 500 ETF).
+MARKET_BENCHMARK = "SPY"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _benchmark_close(start: str, end: str) -> pd.Series:
+    """S&P 500 (SPY) closes for the stock's date range; empty when unavailable (offline, provider error)."""
+    from StockAnalysisSystem.src.utils.data_loader import DataLoader
+
+    try:
+        return close_series(DataLoader().get_historical_prices(MARKET_BENCHMARK, start, end))
+    except Exception:  # noqa: BLE001 - a missing benchmark only turns its ratios into N/A
+        logger.info("Benchmark %s unavailable", MARKET_BENCHMARK, exc_info=True)
+        return pd.Series(dtype=float)
+
+
+def _ratio(value: Optional[float], pct: bool = False) -> str:
+    if value is None:
+        return "N/A"
+    return fmt_pct(value) if pct else f"{value:.2f}"
+
+
+def _render_performance_ratios(close: pd.Series, rf: float) -> None:
+    """Sortino, Treynor, Calmar, Information ratio and Jensen's alpha (models/performance_ratios.py)."""
+    bench = pd.Series(dtype=float)
+    if isinstance(close.index, pd.DatetimeIndex) and len(close):
+        bench = _benchmark_close(close.index.min().date().isoformat(), close.index.max().date().isoformat())
+    ratios = performance_ratios(close, bench, rf)
+    if not ratios:
+        return
+    cols = st.columns(5)
+    cols[0].metric("Sortino ratio", _ratio(ratios["sortino"]),
+                   help="Excess return over rf per unit of downside deviation (only days below rf count as risk).")
+    cols[1].metric("Treynor ratio", _ratio(ratios["treynor"], pct=True),
+                   help="Excess return over rf per unit of beta (systematic risk). N/A without a benchmark or "
+                        "when beta <= 0.")
+    cols[2].metric("Calmar ratio", _ratio(ratios["calmar"]),
+                   help=f"CAGR / |max drawdown| over the {ratios['calmar_window']}. N/A without a drawdown.")
+    cols[3].metric("Information ratio", _ratio(ratios["information_ratio"]),
+                   help=f"Annualised return above {MARKET_BENCHMARK} / tracking error (std of the return "
+                        "difference). N/A without a benchmark.")
+    cols[4].metric("Jensen's alpha", _ratio(ratios["jensens_alpha"], pct=True),
+                   help="Annual return above what CAPM predicts: Rp - [rf + beta (Rm - rf)]. N/A without a "
+                        "benchmark.")
+    if ratios["beta"] is not None:
+        bench_text = (f"Benchmark: S&P 500 ({MARKET_BENCHMARK}), {ratios['benchmark_days']} common days, "
+                      f"regression beta {ratios['beta']:.2f}.")
+    else:
+        bench_text = f"S&P 500 ({MARKET_BENCHMARK}) history unavailable, so benchmark-based ratios are N/A."
+    st.caption("Sortino = (Rp - rf) / downside deviation; Treynor = (Rp - rf) / beta; Calmar = CAGR / |max "
+               f"drawdown| ({ratios['calmar_window']}); Information ratio = active return / tracking error; "
+               "Jensen's alpha = Rp - [rf + beta (Rm - rf)]. Daily returns, annualised with 252 days. "
+               + bench_text)
+
+
 def _render_market_risk(price_data: pd.DataFrame, financial_data: Dict[str, Any]) -> None:
     st.subheader("Market risk")
     close = close_series(price_data)
@@ -412,6 +469,7 @@ def _render_market_risk(price_data: pd.DataFrame, financial_data: Dict[str, Any]
     st.caption(f"Over the selected price history. Sharpe uses a {rf.label} risk-free rate. "
                f"VaR: on 95 % of days the loss was smaller than {fmt_pct(-metrics['var_95'], 2)}; "
                f"the average loss on the worst 5 % of days (CVaR) was {fmt_pct(-metrics['cvar_95'], 2)}.")
+    _render_performance_ratios(close, rf.rate)
 
     returns = close.pct_change().dropna()
     left, right = st.columns(2)
