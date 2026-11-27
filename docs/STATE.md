@@ -87,7 +87,10 @@ Framework (from adoption on):
 ## Next
 - [x] retest/review reviewer: 0 P1, 2 P2 + 3 P3; memo LRU refresh, Energy subsector terminal growth pinned and documented — full suite "543 passed in 209.15s", ruff clean
 - [x] retest/ship pushed, PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound, Auto-fix on; auto-merge denied by the session permission classifier
-- [ ] retest: CI green (3.11-3.13) -> merge PR #3 (needs owner go or permission), record merge here
+- [x] retest: PR #3 merged into master (8447523)
+- [x] ship: PR #2 merged into master (747b6a2), CI green 3.11-3.13
+- [x] repo-polish: audit 23 pass / 11 warn / 14 fail -> local 38 pass / 6 warn / 4 fail (rest = GitHub settings); README rewritten (banner, badges, mermaid, 14 captioned 1920x1080 shots), CONTRIBUTING, SECURITY, issue/PR templates, dependabot, CHANGELOG 1.0.0, .idea untracked; docs_check ok
+- [ ] repo-polish: PR -> CI green -> merge; GitHub description/topics/settings; branch cleanup; release v1.0.0
 
 ## Needed from owner
 - none

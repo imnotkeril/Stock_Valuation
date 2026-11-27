@@ -1,5 +1,5 @@
 # Handoff
-status: active
+status: consumed
 date: 2026-11-27
 from-chat-tokens: ~170k
 
