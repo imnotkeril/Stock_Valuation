@@ -18,7 +18,7 @@ requests>=2.31
 
 # Configuration & export
 python-dotenv>=1.0
-openpyxl>=3.1
+openpyxl>=3.1.5
 xlsxwriter>=3.1
 fpdf2>=2.7.8
 matplotlib>=3.7       # charts embedded in PDF reports
