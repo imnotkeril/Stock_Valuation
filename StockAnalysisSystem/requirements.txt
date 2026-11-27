@@ -2,7 +2,7 @@
 # (tested with Python 3.11–3.13, pandas 3.x, numpy 2.x, Streamlit 1.66)
 
 # Web UI & visualisation
-streamlit>=1.50
+streamlit>=1.67.0
 plotly>=5.20
 
 # Data processing & analysis
