@@ -82,7 +82,9 @@ Framework (from adoption on):
 - [x] release/T21 final gate — "533 passed in 185.98s", ruff "All checks passed!", docs_check ok; live AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low; .env.example documents STOCK_ANALYSIS_RISK_FREE_RATE; owner allowed push, PR and merge
 
 ## Next
-- [ ] ship: PR into master open, wait for CI green (3.11-3.13), merge (owner allowed), record merge here
+- [x] ship: PR #2 merged into master (747b6a2), CI green 3.11-3.13
+- [x] repo-polish: audit 23 pass / 11 warn / 14 fail -> local 38 pass / 6 warn / 4 fail (rest = GitHub settings); README rewritten (banner, badges, mermaid, 14 captioned 1920x1080 shots), CONTRIBUTING, SECURITY, issue/PR templates, dependabot, CHANGELOG 1.0.0, .idea untracked; docs_check ok
+- [ ] repo-polish: PR -> CI green -> merge; GitHub description/topics/settings; branch cleanup; release v1.0.0
 
 ## Needed from owner
 - none

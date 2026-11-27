@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to Stock Analysis System. Dates are commit dates.
+All notable changes to Stock Analysis System. Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/). Dates are commit dates.
 
-## [Unreleased] - review fixes and round 2 (branch `claude/review-fixes-finish-2bedc3`, 2026-11-26)
+## [1.0.0] - 2026-11-27
+
+First public release: a local Streamlit app for sector-specific valuation, screening and risk analysis of US large caps, for research and education only.
 
 ### Added
 - **Liquidation value** on Valuation > Asset-Based: orderly and forced value per share from asset-class recovery

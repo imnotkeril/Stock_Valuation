@@ -1,15 +1,55 @@
-# Stock Analysis System
+<p align="center"><img src="docs/screenshots/social-preview.png" alt="Stock Analysis System: weighted fair value, distress models and forecast for AAPL" width="900"></p>
 
-A Streamlit application for fundamental analysis and **sector-specific valuation** of US large-cap companies: financial statements, ratio benchmarking, weighted fair value from several methods, distress and liquidity models, risk and performance ratios, peer and sector comparison, screening, forecasting and exportable reports.
+<h1 align="center">Stock Analysis System</h1>
+<p align="center"><b>Sector-aware fundamental analysis and valuation of US large-cap stocks, in a local Streamlit app.</b><br>
+A dedicated valuation model per GICS sector blends DCF, APV, multiples and asset methods into one fair value, next to distress scores, risk-adjusted ratios, peers, a screener and price forecasts.</p>
 
-> **For research and education only.** Everything the application shows is a model estimate and is not investment advice. No output is a recommendation to buy or sell a security.
+<p align="center">
+  <a href="#screenshots"><b>Screenshots</b></a> &nbsp;·&nbsp;
+  <a href="#quickstart">Quickstart</a> &nbsp;·&nbsp;
+  <a href="docs/USER_GUIDE.md">User guide</a> &nbsp;·&nbsp;
+  <a href="docs/METHODOLOGY.md">Methodology</a> &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-**Docs:** [User guide](docs/USER_GUIDE.md) · [Methodology: how every number is made](docs/METHODOLOGY.md) · [Changelog](CHANGELOG.md) · [Specification](docs/SPEC.md) · [Architecture](docs/ARCHITECTURE.md)
+<p align="center">
+  <a href="https://github.com/imnotkeril/Stock_Valuation/actions/workflows/ci.yml"><img src="https://github.com/imnotkeril/Stock_Valuation/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/tests-533%20passing-brightgreen" alt="533 tests passing">
+  <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT license"></a>
+</p>
 
-![Home](docs/screenshots/01-home.jpg)
+<p align="center">
+  <img src="docs/screenshots/03-aapl-fair-value.jpg" alt="Fair value summary for Apple: weighted fair value $184.41 against a $355.58 price, Sell with High confidence" width="900">
+</p>
 
-## Features
+> **For research and education only. This is not investment advice.** Every value the app shows is a model estimate built from public data (Yahoo Finance, FRED, SEC EDGAR). No output is a recommendation to buy or sell a security, and the app never trades. There is no hosted demo: it runs locally in a minute (see [Quickstart](#quickstart)).
 
+## Highlights
+- **One fair value per company, built for its sector.** 8 sector models (banks get residual income and justified P/B, REITs get NAV and P/FFO, tech gets SBC-adjusted DCF) blended by documented weights, with a recommendation and a High / Medium / Low confidence.
+- **One cost of capital everywhere.** Risk-free rate from FRED `DGS10`, ERP 4.4 %, Blume beta, clamped WACC (ADR-007); the DCF tab fades growth to terminal and deducts stock-based compensation.
+- **Distress and risk in one tab.** Altman Z (variant by sector), Springate, Zmijewski probit, liquidity vs sector, stress tests, VaR / CVaR, Sharpe, Sortino, Treynor, Calmar, information ratio and Jensen's alpha vs the S&P 500.
+- **Universe-wide tools.** Screener and valuation filter over 132 US large caps (the full universe is valued in about 33 s with parallel fetching), peer and sector comparison, ensemble price forecasts.
+- **Every number explained.** [docs/METHODOLOGY.md](docs/METHODOLOGY.md) lists each formula, default, bound and known bias; golden hand-computed tests pin the models.
+
+## Architecture
+```mermaid
+flowchart LR
+  U[Browser] --> S[Streamlit pages<br/>company, comparison, screening,<br/>forecasting, reports]
+  S --> F[ValuationFactory<br/>8 sector models]
+  S --> M[Models<br/>ratios, distress, risk, forecasts]
+  F --> C[Cost of capital<br/>capital.py]
+  F --> L[DataLoader + disk cache]
+  M --> L
+  C --> L
+  L --> Y[Yahoo Finance]
+  L --> R[FRED DGS10 + macro]
+  L --> E[SEC EDGAR]
+  L --> K[Finnhub / Alpha Vantage / FMP<br/>optional keys]
+```
+Pages call the valuation factory and the analysis models; all market data goes through one `DataLoader` with a disk cache (`StockAnalysisSystem/src/data/cache`, git-ignored) that serves the last copy when a provider is down. No database, no accounts, no background jobs. Design decisions live in [`docs/adr/`](docs/adr/) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## What it does
 | Area | What you get |
 |---|---|
 | **Company analysis** | Price chart with moving averages and volume, key statistics, business profile, performance vs. the sector ETF, technical indicators |
@@ -23,17 +63,6 @@ A Streamlit application for fundamental analysis and **sector-specific valuation
 | **Screening** | Ratio-based stock screener with presets and saved templates, and a valuation filter for under- and over-valued stocks |
 | **Forecasting** | ARIMA, exponential smoothing, linear, machine learning, neural network (MLP) and ensemble price forecasts with confidence bands and backtests; fundamentals forecasts; FRED macro indicators |
 | **Reports** | Company, valuation, comparison and sector reports as Excel, CSV, JSON, **HTML** or PDF downloads (Excel and PDF need `openpyxl` and `fpdf2`, both in `requirements.txt`) |
-
-Every number has a documented method, with its defaults, bounds and known biases, in [docs/METHODOLOGY.md](docs/METHODOLOGY.md). The risk-free rate is the FRED 10-year Treasury yield (`DGS10`), and the equity risk premium is a constant 4.4 %.
-
-### Screenshots
-
-| | |
-|---|---|
-| ![Company overview](docs/screenshots/02-company-overview.jpg) | ![Valuation summary](docs/screenshots/03-valuation-summary.jpg) |
-| Company overview (AAPL): price, statistics, chart | Valuation summary (AAPL): weighted fair value by method, recommendation and confidence |
-| ![Risk health](docs/screenshots/04-risk-health.jpg) | ![Market risk](docs/screenshots/05-risk-market.jpg) |
-| Risk tab: financial health score (AAPL) | Risk tab: stress scenarios, market risk and the risk-adjusted ratios (AAPL) |
 
 ### Sector-specific valuation
 
@@ -52,61 +81,70 @@ Every number has a documented method, with its defaults, bounds and known biases
 
 All models return the same result schema (`BaseValuation.build_valuation_result`): per-method values, a weighted fair value, upside versus the current price, a recommendation and a confidence level. Method weights and subsector overrides are listed in [docs/METHODOLOGY.md §6](docs/METHODOLOGY.md#6-sector-models-and-blending-weights).
 
-## Quick start
+## Screenshots
+All shots are 1920x1080 from a local run on live data (prices through 2026-11-25).
 
-Requirements: Python 3.11+.
+| | |
+|---|---|
+| ![Home: Entry to every tool, quick-start tickers and a sector snapshot.](docs/screenshots/01-home.jpg) | ![Company overview (AAPL): Price, key statistics and a 1Y candlestick chart with 50/200-day averages.](docs/screenshots/02-aapl-overview.jpg) |
+| **Home.** Entry to every tool, quick-start tickers and a sector snapshot. | **Company overview (AAPL).** Price, key statistics and a 1Y candlestick chart with 50/200-day averages. |
+| ![Fair value summary (AAPL): Technology model: SBC-adjusted DCF and multiples weighted into $184.41, Sell, High confidence.](docs/screenshots/03-aapl-fair-value.jpg) | ![Interactive DCF (AAPL): Unlevered FCF, growth fade, SBC deducted, WACC from FRED; a separate cross-check of the sector DCF.](docs/screenshots/04-aapl-dcf.jpg) |
+| **Fair value summary (AAPL).** Technology model: SBC-adjusted DCF and multiples weighted into $184.41, Sell, High confidence. | **Interactive DCF (AAPL).** Unlevered FCF, growth fade, SBC deducted, WACC from FRED; a separate cross-check of the sector DCF. |
+| ![Ratios vs sector (AAPL): Profitability against the Technology benchmark, with four years of ratio history.](docs/screenshots/05-aapl-ratios.jpg) | ![Distress models (AAPL): Altman Z, Springate and Zmijewski gauges plus liquidity and solvency vs the sector.](docs/screenshots/06-aapl-distress.jpg) |
+| **Ratios vs sector (AAPL).** Profitability against the Technology benchmark, with four years of ratio history. | **Distress models (AAPL).** Altman Z, Springate and Zmijewski gauges plus liquidity and solvency vs the sector. |
+| ![Market risk (AAPL): Volatility, VaR, drawdown, Sharpe, Sortino, Treynor, Calmar and Jensen's alpha.](docs/screenshots/07-aapl-market-risk.jpg) | ![Bank valuation (JPM): Residual income, justified P/B and DDM instead of a DCF: $278.97, Reduce.](docs/screenshots/08-jpm-fair-value.jpg) |
+| **Market risk (AAPL).** Volatility, VaR, drawdown, Sharpe, Sortino, Treynor, Calmar and Jensen's alpha. | **Bank valuation (JPM).** Residual income, justified P/B and DDM instead of a DCF: $278.97, Reduce. |
+| ![Sector model controls (JPM): Pick the subsector, methods and assumptions; the value updates in place.](docs/screenshots/09-jpm-sector-model.jpg) | ![Stock screener: Value preset (P/E, P/B, dividend yield): 16 of 132 large caps match.](docs/screenshots/10-stock-screener.jpg) |
+| **Sector model controls (JPM).** Pick the subsector, methods and assumptions; the value updates in place. | **Stock screener.** Value preset (P/E, P/B, dividend yield): 16 of 132 large caps match. |
+| ![Valuation filter: Whole universe ranked by model upside, implausible results hidden.](docs/screenshots/11-valuation-filter.jpg) | ![Peer comparison: AAPL against five technology peers on 1-year price performance and metrics.](docs/screenshots/12-peer-comparison.jpg) |
+| **Valuation filter.** Whole universe ranked by model upside, implausible results hidden. | **Peer comparison.** AAPL against five technology peers on 1-year price performance and metrics. |
+| ![Sector analysis: Technology ETF (XLK) against the S&P 500 with its key companies.](docs/screenshots/13-sector-analysis.jpg) | ![Price forecast (AAPL): ARIMA, exponential smoothing and trend ensemble with a 95 % band and P(price up).](docs/screenshots/14-aapl-forecast.jpg) |
+| **Sector analysis.** Technology ETF (XLK) against the S&P 500 with its key companies. | **Price forecast (AAPL).** ARIMA, exponential smoothing and trend ensemble with a 95 % band and P(price up). |
+
+## Quickstart
+Requirements: Python 3.11+ (CI runs 3.11, 3.12 and 3.13).
 
 ```bash
 git clone https://github.com/imnotkeril/Stock_Valuation.git
 cd Stock_Valuation
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r StockAnalysisSystem/requirements.txt
 python StockAnalysisSystem/run.py
 ```
 
-On Windows use `.venv\Scripts\activate` and `python StockAnalysisSystem\run.py`.
-
-The app opens at http://localhost:8501 (health check: `/_stcore/health`). Choose **Company Analysis** in the sidebar, type a company name or ticker and press Enter, or pick a result and click **Analyze company**.
+Open http://localhost:8501 (health check: `/_stcore/health`). Pick a quick-start ticker on Home, or choose **Company Analysis** in the sidebar, type a name or ticker and press Enter.
 
 ### Docker
-
 ```bash
 docker build -f StockAnalysisSystem/Dockerfile -t stock-analysis .
 docker run -p 8501:8501 --env-file .env stock-analysis
 ```
 
 ## Configuration
-
-Copy `.env.example` to `.env` (repository root or `StockAnalysisSystem/`). Every setting is optional: Yahoo Finance works without a key.
+Copy `.env.example` to `.env` (repository root or `StockAnalysisSystem/`). Every setting is optional: Yahoo Finance works without a key, and a feature that needs a missing key explains what to add.
 
 | Variable | Purpose |
 |---|---|
-| `ALPHA_VANTAGE_API_KEY` | Fallback provider for prices, company overview and symbol search; per-ticker news sentiment with a premium key |
-| `FINNHUB_API_KEY` | Company news and peers (News tab); insider transactions on the Overview tab |
+| `ALPHA_VANTAGE_API_KEY` | Fallback for prices, company overview and symbol search; news sentiment with a premium key |
+| `FINNHUB_API_KEY` | Company news and peers (News tab); insider transactions (Overview tab) |
 | `FINANCIAL_MODELING_PREP_API_KEY` | Recent M&A announcements on Valuation > Precedents |
-| `SEC_EDGAR_USER_AGENT` | Your name and e-mail (required by SEC) to load filings and 10-year history from SEC EDGAR on the Overview tab |
+| `SEC_EDGAR_USER_AGENT` | Your name and e-mail (SEC requirement) for filings and 10-year XBRL history |
 | `STOCK_ANALYSIS_OFFLINE` | `1` = never call external APIs, serve cached data only |
+| `STOCK_ANALYSIS_RISK_FREE_RATE` | Fix the risk-free rate in percent instead of the live FRED 10-year yield |
 
-Without a key, the feature that needs it explains what to add and does not raise an error.
+Use **Data & settings > Clear cached data** in the sidebar to force a refresh. Optional package: `prophet` (Prophet forecasts).
 
-Downloaded data is cached in `StockAnalysisSystem/src/data/cache` (git-ignored). When a provider is unavailable, the last cached copy is served. Use **Data & settings → Clear cached data** in the sidebar to force a refresh.
-
-FRED macro indicators and the risk-free rate need no key. Optional package: `prophet` (Prophet forecasts).
-
-## Run, build and test
-
+## Testing
 | Task | Command |
 |---|---|
-| Run the app | `python StockAnalysisSystem/run.py` (Windows venv: `.venv\Scripts\python.exe StockAnalysisSystem\run.py`) |
-| Test (offline) | `pip install -r StockAnalysisSystem/requirements-dev.txt` then `python -m pytest -o addopts="" -p no:warnings` |
+| Install dev tools | `pip install -r StockAnalysisSystem/requirements-dev.txt` |
+| Tests (offline, 533) | `python -m pytest -o addopts="" -p no:warnings` |
 | Lint | `python -m ruff check StockAnalysisSystem` |
 | Docs check | `python StockAnalysisSystem/tools/docs_check.py` |
-| Docker build | `docker build -f StockAnalysisSystem/Dockerfile -t stock-analysis .` |
 
-The test suite never touches the network. It uses statements and prices recorded from Yahoo Finance for Apple and Microsoft, and internally consistent synthetic companies for every sector. The Streamlit pages are exercised end to end with `streamlit.testing.v1.AppTest`. Live checks against real data are recorded in [docs/QA.md](docs/QA.md).
+The suite never touches the network: it uses statements and prices recorded from Yahoo Finance for Apple and Microsoft, synthetic companies for every sector, golden hand-computed values for DCF, WACC, APV, residual income and DDM, and drives every Streamlit page with `streamlit.testing.v1.AppTest`. CI runs ruff and pytest on Python 3.11-3.13 for every push and pull request. Live checks against real data are recorded in [docs/QA.md](docs/QA.md).
 
-## Using the valuation models from Python
-
+## Using the models from Python
 ```python
 from StockAnalysisSystem.src.utils.data_loader import DataLoader
 from StockAnalysisSystem.src.valuation.sector_factor import ValuationFactory
@@ -119,7 +157,6 @@ for key, method in result["valuation_methods"].items():
 ```
 
 ## Project structure
-
 ```
 StockAnalysisSystem/
 ├── run.py                         # Launcher (python StockAnalysisSystem/run.py)
@@ -156,20 +193,21 @@ StockAnalysisSystem/
 └── tests/                         # Offline test suite, including golden hand-computed values
 ```
 
-Decisions are recorded in [`docs/adr/`](docs/adr/); the product review is in [`docs/review/`](docs/review/).
-
 ## Data sources and limitations
-
 - Market data and fundamentals come from Yahoo Finance via `yfinance` (unofficial API: availability and field coverage vary by company).
 - The risk-free rate is FRED `DGS10`; SEC filings come from SEC EDGAR; insider and news data come from Finnhub and Alpha Vantage when their keys are set.
 - Statement history is limited to what the provider returns (typically 4-5 annual periods; SEC EDGAR adds up to 10 years).
 - Peer and screening universes are a curated list of about 130 large-cap US companies (`src/industry/universe.py`).
 - Valuation outputs depend heavily on assumptions and on known simplifications; the open items are listed in [docs/METHODOLOGY.md §10](docs/METHODOLOGY.md#10-known-biases-and-open-items).
 
-## Disclaimer
+## Security
+The app is local and single-user: it binds to `localhost` (Docker binds `0.0.0.0` inside the container), has no accounts and never places orders. API keys are read from `.env` only and never committed. See [SECURITY.md](SECURITY.md) for reporting.
 
-For research and education only. Nothing in this application, its reports or its exports is investment advice, a recommendation to buy or sell any security, or a forecast of any price. Check every number against the company's filings before you rely on it.
+## Documentation
+[User guide](docs/USER_GUIDE.md) · [Methodology](docs/METHODOLOGY.md) · [Specification](docs/SPEC.md) · [Architecture](docs/ARCHITECTURE.md) · [Decisions](docs/adr/) · [QA report](docs/QA.md) · [Changelog](CHANGELOG.md)
+
+## Contributing
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
-
-MIT - see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

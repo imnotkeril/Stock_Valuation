@@ -40,3 +40,4 @@ StockAnalysisSystem/src/data/user/
 
 # Framework skill links (machine-specific junctions)
 .claude/skills/
+.idea/
