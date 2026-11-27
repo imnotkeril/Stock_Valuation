@@ -188,7 +188,8 @@ def _table_fields(result: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 # Controls
 # ---------------------------------------------------------------------------
-def _render_parameter(name: str, spec: Dict[str, Any], key: str, disabled: bool) -> Any:
+def _render_parameter(name: str, spec: Dict[str, Any], key: str, disabled: bool) -> Tuple[Any, Any]:
+    """Slider for one model parameter; returns (value, initial value shown before any change)."""
     kind = spec.get("kind", "number")
     low, high = to_float(spec.get("min"), 0.0), to_float(spec.get("max"), 1.0)
     default = to_float(spec.get("default"))
@@ -197,17 +198,19 @@ def _render_parameter(name: str, spec: Dict[str, Any], key: str, disabled: bool)
     label, help_text = spec.get("label", _label(name)), spec.get("help")
 
     if kind == "percent":
+        initial = round(default * 100, 4)
         value = st.slider(label, min_value=round(low * 100, 4), max_value=round(high * 100, 4),
-                          value=round(default * 100, 4), step=round((step or 0.0025) * 100, 4), format="%.2f%%",
+                          value=initial, step=round((step or 0.0025) * 100, 4), format="%.2f%%",
                           help=help_text, key=key, disabled=disabled)
-        return value / 100
+        return value / 100, initial / 100
     if kind == "int":
-        return int(st.slider(label, min_value=int(low), max_value=int(high), value=int(round(default)),
-                             step=int(step or 1), help=help_text, key=key, disabled=disabled))
+        initial = int(round(default))
+        return int(st.slider(label, min_value=int(low), max_value=int(high), value=initial,
+                             step=int(step or 1), help=help_text, key=key, disabled=disabled)), initial
     fmt = "$%.2f" if kind == "currency" else "%.2f"
     return float(st.slider(label, min_value=float(low), max_value=float(high), value=float(default),
                            step=float(step or (high - low) / 100 or 0.01), format=fmt, help=help_text, key=key,
-                           disabled=disabled))
+                           disabled=disabled)), float(default)
 
 
 @st.cache_resource(show_spinner=False)
@@ -238,7 +241,8 @@ def _run_valuation(factory: ValuationFactory, ticker: str, sector: str, subsecto
     signature = (ticker, sector, subsector, methods, overrides, _fingerprint(financial_data))
     if signature not in memo:
         with st.spinner("Running sector valuation..."):
-            memo.clear()
+            while len(memo) >= 4:  # keep the base run next to a few override runs
+                memo.pop(next(iter(memo)))
             memo[signature] = factory.get_company_valuation(
                 ticker, sector=sector, subsector=subsector, financial_data=financial_data,
                 methods=list(methods), **dict(overrides))
@@ -443,14 +447,24 @@ def render_sector_valuation(ticker: str, financial_data: Dict[str, Any], company
     overrides: Dict[str, Any] = {}
     parameters = model.get_parameters(subsector)
     if parameters:
+        # Sliders start at the values the model actually used (derived WACC, growth, ...), not at the
+        # static spec defaults, so turning the override on without moving a slider changes nothing.
+        try:
+            used = _run_valuation(factory, ticker, sector, subsector, financial_data, tuple(selected), (),
+                                  memo_key=f"{prefix}_memo").get("assumptions") or {}
+        except Exception:  # pragma: no cover - the factory should not raise
+            used = {}
+        parameters = {name: {**spec, "default": used[name]} if to_float(used.get(name)) is not None else spec
+                      for name, spec in parameters.items()}
         with st.expander("Valuation assumptions", expanded=False):
             customize = st.toggle("Override model assumptions", value=False, key=f"{prefix}_{subsector}_customize",
                                   help="When off, the model derives assumptions from the company's own data.")
             columns = st.columns(2)
             for index, (name, spec) in enumerate(parameters.items()):
                 with columns[index % 2]:
-                    value = _render_parameter(name, spec, f"{prefix}_{subsector}_param_{name}", not customize)
-                if customize:
+                    value, initial = _render_parameter(name, spec, f"{prefix}_{subsector}_param_{name}",
+                                                       not customize)
+                if customize and value != initial:  # untouched sliders keep the model's own value
                     overrides[name] = value
 
     try:

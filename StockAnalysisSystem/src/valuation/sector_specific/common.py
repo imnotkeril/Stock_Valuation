@@ -727,6 +727,9 @@ class SectorValuationMixin:
                 if bounded != value:
                     ctx.note(f"{spec.get('label', name)} limited to the allowed range ({bounded:g}).")
                 value = bounded
+            elif name in overrides and name in _SECTOR_TABLE_PARAMETERS:
+                # A subsector default is more specific than the generic sector table.
+                value, source = to_float(overrides[name]), "default"
             else:
                 source = "derived"
                 derive = derivations.get(name)
@@ -785,6 +788,11 @@ class SectorValuationMixin:
         return clean({**values, **ctx.assumptions, **rate_summary(ctx.cost_of_capital),
                       "parameter_sources": sources, "cost_of_capital": ctx.cost_of_capital,
                       "tax_rate": ctx.tax_rate})
+
+
+# Parameters whose derivation only reads the static sector table (config.SECTOR_DCF_PARAMETERS),
+# so a SUBSECTOR_PARAMETER_DEFAULTS value for them is the better default.
+_SECTOR_TABLE_PARAMETERS = frozenset({"terminal_growth", "forecast_years"})
 
 
 def common_derivations(ctx: ValuationContext) -> Dict[str, Callable[[], Any]]:

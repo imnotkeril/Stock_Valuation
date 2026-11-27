@@ -115,3 +115,20 @@ foreign listings AAPL.SAO, APC.DE; the pick now counts US listings only — foun
 Overview, Valuation summary, Risk health and Market risk (new ratios with definitions) render; screenshots in `docs/screenshots/`.
 
 Issues: one found (one-step pick with foreign listings), fixed. Known, backlog: VZ DCF tab far above price (WACC floor + telecom default growth).
+
+## Full-system re-test (2026-11-27, branch `claude/system-retest-722b8c` from master 747b6a2)
+
+| Check | Result |
+|---|---|
+| Offline suite | 533 passed in 194.13s |
+| `ruff check` | All checks passed |
+| Live providers | FRED DGS10 4.91 % (2026-11-24), CPIAUCSL to 2026-10; SEC EDGAR CIK + filings + XBRL history (O 2016-2025); Finnhub news AAPL 249 / NEE 164 / O 231, insider AAPL 122 / NEE 135 / O 67; FMP M&A 5 deals; Alpha Vantage GLOBAL_QUOTE ok; yfinance prices + 3 statements for AAPL, O, NEE |
+| Live valuation | AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low, O 50.07 Reduce Medium, NEE 37.46 -> 39.86 (after RT-01) |
+
+Bugs found and fixed (tests in `tests/test_retest_fixes.py`):
+- RT-01: subsector defaults for terminal growth / horizon were dead (the static sector table won), so utilities ran at 1 %
+  terminal growth while the model declares 2 %; and the Valuation assumptions sliders started at static spec defaults
+  (e.g. 9 % discount rate) instead of the values the model used, so turning "Override model assumptions" on without
+  moving a slider changed the fair value (synthetic industrial $240.69 -> $205.01). Now subsector defaults beat the
+  sector table for those two parameters (WACC still derived), sliders start at the used values and only moved sliders
+  are sent as overrides.
