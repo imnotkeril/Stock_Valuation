@@ -1,34 +1,39 @@
 # Handoff
 status: consumed
-date: 2026-11-26
-from-chat-tokens: ~360k
+date: 2026-11-27
+from-chat-tokens: ~170k
 
 ## Goal
-Ship the product-review fixes: PR https://github.com/imnotkeril/Stock_Valuation/pull/2 (`claude/review-fixes-finish-2bedc3` -> `master`)
-green on CI, then merge. Owner allowed push, PR and merge (relayed by the parent session: "мерж я тож разрешаю, я ваще все
-разрешаю тебе с этим проектом сча работать, пока я сплю"); merge commit or squash, never force-push master.
+Independent full-system re-test of master 747b6a2: every bug gets root cause + fix + regression test,
+then push branch `claude/system-retest-722b8c`, PR into master, CI green, merge (owner allowed push, PR and merge).
 
 ## State
-- Done: every plan task T01-T27 ticked (`docs/plan.md`), final gate T21: 533 passed, ruff clean, docs_check ok, live AAPL/JPM/XOM.
-- Pushed; PR #2 open and bound in the desktop app with Auto-fix on (CI failures / conflicts arrive as ci-monitor events).
-- Running: CI (GitHub Actions, Python 3.11 / 3.12 / 3.13: pip install, ruff, pytest).
+- Done: RT-01 (345dc9e), RT-02 + RT-03 (cbfbf0d), review follow-ups; full suite 543 passed, ruff clean; live
+  AppTest pass of every page for AAPL/JPM/XOM/O/NEE: 0 exceptions/errors/warnings (docs/QA.md "Full-system re-test").
+- PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound in the app, Auto-fix on, CI running.
+- Auto-merge was denied by the session permission classifier.
+
+## Decisions
+- WACC stays derived; only terminal_growth / forecast_years take subsector defaults over the sector table.
+- NEE (~$40 vs $85) and O DCF-tab growth (19 %) are methodology backlog for the owner, not code bugs.
 
 ## Next
-1. `mcp__ccd_pr__get_status` (or `gh pr checks 2`): when all checks pass, `gh pr merge 2 --merge` (no force, no admin bypass).
-2. If CI fails: read the log (`gh run view --log-failed`), fix, run the suite locally, commit, push.
-3. After merge: STATE line `- [x] ship: PR #2 merged into master (<merge sha>), CI green 3.11-3.13`, set this file to
-   `status: consumed`, commit on the branch only if still useful (master already has the work), and send a short Russian
-   report to the parent session `local_dd7a30fa-49d1-4161-aa51-b96c1e32339f`.
+1. `mcp__ccd_pr__get_status`: when CI is green on 3.11-3.13, merge PR #3 with `gh pr merge 3 --merge` if the
+   owner confirms (or permission allows); never force, never admin bypass.
+2. If CI fails: `gh run view --log-failed`, fix, run the suite, commit, push.
+3. After merge: STATE line with the merge sha, set this note to `status: consumed`, short Russian report to the
+   parent session `local_dd7a30fa-49d1-4161-aa51-b96c1e32339f`.
 
 ## Open questions
 - none
 
 ## Traps
-- `$PY` = `E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe`; `.env` in the worktree is git-ignored, never print it.
-- Full suite ~3 min, run it in the background; no pytest-xdist.
-- Backlog left for the owner (plan.md): RONIC terminal value, marginal tax for the debt shield, DCF-tab minority/preferred bridge,
-  VZ DCF tab (WACC floor + telecom growth), R14-R17, value adjustments, Materials/Utilities/Staples models.
+- `$PY` = `E:/Main/Dev/Python/Done/Stock Valuation/.venv/Scripts/python.exe`; pytest needs `-o addopts=""`.
+- `.env` in the worktree is a git-ignored copy with real keys: never print or commit it.
+- Do not touch README, repo root layout, `.github/` community files (repo-polish session owns them).
+- Untracked `co_AAPL.json` at repo root came from a QA script: do not commit it.
+- Live diagnostic: `$PY StockAnalysisSystem/tools/live_valuation_check.py AAPL JPM XOM O NEE`.
 
 ## Verify
-- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect 533 passed)
+- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect 543 passed)
 - `$PY -m ruff check StockAnalysisSystem`

@@ -44,6 +44,9 @@ First public release: a local Streamlit app for sector-specific valuation, scree
 - Risk tab shows the risk-free rate with its source and date.
 
 ### Fixed
+- **Full-system re-test (PR #3):** subsector terminal-growth defaults and override sliders start at the value the model
+  actually uses; utilities terminal growth agrees across tabs; the provider beta is labelled as such; Energy subsector
+  terminal growth pinned and documented.
 - **Leases are no longer debt** (leases are after rent in cash flows and EBITDA); debt comes from one balance-sheet period,
   so the WACC, every equity bridge and the multiples share one debt figure. (S-D1)
 - **Banks and insurers use common equity** and net income to common stockholders when reported (book value, ROE, P/B,

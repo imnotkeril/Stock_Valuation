@@ -193,7 +193,7 @@ SECTOR_DCF_PARAMETERS = {
     "Materials": {"forecast_years": 5, "terminal_growth_rate": 0.01, "default_discount_rate": 0.09},
     "Real Estate": {"forecast_years": 7, "terminal_growth_rate": 0.02, "default_discount_rate": 0.08},
     "Communication Services": {"forecast_years": 6, "terminal_growth_rate": 0.02, "default_discount_rate": 0.10},
-    "Utilities": {"forecast_years": 5, "terminal_growth_rate": 0.01, "default_discount_rate": 0.07}
+    "Utilities": {"forecast_years": 5, "terminal_growth_rate": 0.02, "default_discount_rate": 0.07}
 }
 
 # Streamlit UI settings

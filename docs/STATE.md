@@ -80,8 +80,14 @@ Framework (from adoption on):
 
 - [x] docs/T20 - 7 commands verified: `pytest -o addopts="" -p no:warnings` 533 passed; `ruff check StockAnalysisSystem` clean; `docs_check.py` ok (readme links 5 screenshots + METHODOLOGY; METHODOLOGY mentions WACC, liquidation, Sortino, Zmijewski; "not investment advice" in README, USER_GUIDE, METHODOLOGY; all relative links resolve); `run.py` health `/_stcore/health` 200; `docker build` ok + `docker run --env-file .env` health 200; `pip install -r requirements*.txt --dry-run` satisfied; README env names == `.env.example` (5 of 5). No HTTP API (0 routes), so `/llms.txt` n/a. METHODOLOGY.md, README, USER_GUIDE, CHANGELOG, SPEC F20-F22 Done
 - [x] release/T21 final gate — "533 passed in 185.98s", ruff "All checks passed!", docs_check ok; live AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low; .env.example documents STOCK_ANALYSIS_RISK_FREE_RATE; owner allowed push, PR and merge
+- [x] ship: PR #2 merged into master (747b6a2), CI green 3.11-3.13
+- [x] retest/RT-01 subsector terminal growth default + override sliders start at used values — 5 passed (test_retest_fixes), 91 related passed, ruff clean; live NEE 37.46 -> 39.86, AAPL 184.41 unchanged
+- [x] retest/RT-02 Utilities sector table terminal growth 2 % (DCF/APV tabs agree with utility model) + RT-03 'Beta (provider)' label — 7 passed (test_retest_fixes), live AAPL 184.41 / JPM 278.97 / XOM 87.00 / O 50.07 / NEE 39.86; qa-tester live pass 0 exceptions/errors/warnings
 
 ## Next
+- [x] retest/review reviewer: 0 P1, 2 P2 + 3 P3; memo LRU refresh, Energy subsector terminal growth pinned and documented — full suite "543 passed in 209.15s", ruff clean
+- [x] retest/ship pushed, PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound, Auto-fix on; auto-merge denied by the session permission classifier
+- [x] retest: PR #3 merged into master (8447523)
 - [x] ship: PR #2 merged into master (747b6a2), CI green 3.11-3.13
 - [x] repo-polish: audit 23 pass / 11 warn / 14 fail -> local 38 pass / 6 warn / 4 fail (rest = GitHub settings); README rewritten (banner, badges, mermaid, 14 captioned 1920x1080 shots), CONTRIBUTING, SECURITY, issue/PR templates, dependabot, CHANGELOG 1.0.0, .idea untracked; docs_check ok
 - [ ] repo-polish: PR -> CI green -> merge; GitHub description/topics/settings; branch cleanup; release v1.0.0

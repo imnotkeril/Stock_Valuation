@@ -14,7 +14,7 @@ A dedicated valuation model per GICS sector blends DCF, APV, multiples and asset
 
 <p align="center">
   <a href="https://github.com/imnotkeril/Stock_Valuation/actions/workflows/ci.yml"><img src="https://github.com/imnotkeril/Stock_Valuation/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/tests-533%20passing-brightgreen" alt="533 tests passing">
+  <img src="https://img.shields.io/badge/tests-543%20passing-brightgreen" alt="543 tests passing">
   <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT license"></a>
 </p>
@@ -138,7 +138,7 @@ Use **Data & settings > Clear cached data** in the sidebar to force a refresh. O
 | Task | Command |
 |---|---|
 | Install dev tools | `pip install -r StockAnalysisSystem/requirements-dev.txt` |
-| Tests (offline, 533) | `python -m pytest -o addopts="" -p no:warnings` |
+| Tests (offline, 543) | `python -m pytest -o addopts="" -p no:warnings` |
 | Lint | `python -m ruff check StockAnalysisSystem` |
 | Docs check | `python StockAnalysisSystem/tools/docs_check.py` |
 

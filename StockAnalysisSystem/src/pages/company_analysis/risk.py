@@ -461,7 +461,10 @@ def _render_market_risk(price_data: pd.DataFrame, financial_data: Dict[str, Any]
     beta = to_float(((financial_data or {}).get("market_data") or {}).get("beta"))
     cols = st.columns(5)
     cols[0].metric("Annualised volatility", fmt_pct(metrics["annual_volatility"]))
-    cols[1].metric("Beta", f"{beta:.2f}" if beta is not None else "N/A")
+    cols[1].metric("Beta (provider)", f"{beta:.2f}" if beta is not None else "N/A",
+                   help="Beta reported by the data provider (Yahoo: 5 years of monthly returns). Treynor and "
+                        "Jensen's alpha below use the regression beta over the selected price history instead; "
+                        "the valuation models use the Blume-adjusted beta.")
     cols[2].metric("Max drawdown", fmt_pct(metrics["max_drawdown"]))
     cols[3].metric("1-day VaR (95 %)", fmt_pct(metrics["var_95"], 2))
     cols[4].metric("Sharpe ratio", f"{metrics['sharpe_ratio']:.2f}" if metrics["sharpe_ratio"] is not None
