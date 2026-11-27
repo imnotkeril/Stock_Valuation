@@ -8,7 +8,7 @@ plotly>=5.20
 # Data processing & analysis
 pandas>=2.2
 numpy>=1.26
-scipy>=1.11
+scipy>=1.18.1
 scikit-learn>=1.4
 statsmodels>=0.14.1
 
