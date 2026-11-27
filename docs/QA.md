@@ -132,3 +132,23 @@ Bugs found and fixed (tests in `tests/test_retest_fixes.py`):
   moving a slider changed the fair value (synthetic industrial $240.69 -> $205.01). Now subsector defaults beat the
   sector table for those two parameters (WACC still derived), sliders start at the used values and only moved sliders
   are sent as overrides.
+- RT-02: the Utilities sector table had 1 % terminal growth, so after RT-01 the DCF and APV tabs (1 %) disagreed with
+  the utility sector model (2 %) for NEE. Utilities table set to 2 % (regulated rate base grows with inflation);
+  Energy stays at 1 %.
+- RT-03: Risk > Market risk showed an unlabelled "Beta" (provider, 5 years monthly; AAPL 1.09) right above ratios
+  that use the regression beta over the selected history (AAPL 0.57). Now "Beta (provider)" with help naming all
+  three betas (provider, regression, Blume-adjusted in the models).
+
+Live AppTest pass (qa-tester, real network), Company Analysis all 18 tabs for AAPL, JPM, XOM, O, NEE plus Valuation
+Filter, Screener (132 of 132), Peer, Sector, Forecasting, Reports (company + valuation for all 5): 0 exceptions,
+0 `st.error`, 0 `st.warning`. Rates agree between tabs (WACC, cost of equity, rf 4.91 %, terminal growth) after RT-02.
+
+Observations, not code bugs (backlog):
+- NEE $39.86 vs $85.41: rate base proxied by net PP&E, FCFF DCF negative (heavy capex); utility model is conservative.
+- O DCF tab $142 and APV $180 (2.4-3x price): default growth = 4-year FCF CAGR 19 %, funded by acquisitions and new
+  shares; a per-share growth default would be better (methodology change, owner decision).
+- JPM DCF-tab pre-tax cost of debt 12.9 % (interest on deposits / debt); DCF is flagged not meaningful for banks.
+- Liquidation $0.00 for AAPL, JPM, O, NEE (liabilities exceed recoveries; floor by design).
+- Stress-test caption uses beta 1 (r = rf + ERP) by design (T06).
+- Insider rows for grants and gifts have no price or value (provider data). Macro forecast in AppTest showed no
+  output; worked in the 2026-11-26 live check, not re-checked in the browser.

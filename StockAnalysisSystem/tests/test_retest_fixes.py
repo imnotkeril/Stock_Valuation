@@ -69,3 +69,35 @@ def test_moved_slider_still_overrides():
     discount.set_value(discount.max).run()
     assert not at.exception
     assert _fair_value_text(at) != before
+
+
+def test_utility_terminal_growth_agrees_between_dcf_tab_and_sector_model():
+    """RT-02: the DCF and APV tabs read the Utilities sector table (1 %) while the utility model uses 2 %."""
+    import pandas as pd
+
+    from StockAnalysisSystem.src.pages.company_analysis.valuation import _dcf_defaults
+
+    tab = _dcf_defaults("Utilities", pd.Series([1.0, 1.1, 1.2]))
+    assert tab["terminal_growth"] == pytest.approx(_value("utility")["assumptions"]["terminal_growth"])
+
+
+def _market_risk_script():
+    from StockAnalysisSystem.src.pages.company_analysis import risk
+    from StockAnalysisSystem.tests import synthetic
+
+    original = risk._benchmark_close
+    risk._benchmark_close = lambda start, end: __import__("pandas").Series(dtype=float)  # offline
+    try:
+        company = synthetic.make_company("industrial")
+        risk._render_market_risk(company["price_data"], company["financial_data"])
+    finally:
+        risk._benchmark_close = original
+
+
+def test_provider_beta_is_labelled_apart_from_regression_beta():
+    """RT-03: an unlabelled "Beta" (provider, 5y monthly) sat next to ratios that use the regression beta."""
+    at = AppTest.from_function(_market_risk_script, default_timeout=120)
+    at.run()
+    assert not at.exception
+    labels = [m.label for m in at.metric]
+    assert "Beta (provider)" in labels and "Beta" not in labels

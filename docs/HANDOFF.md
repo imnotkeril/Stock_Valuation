@@ -40,5 +40,5 @@ then push branch `claude/system-retest-722b8c`, PR into master, CI green, merge 
 - Live diagnostic: `$PY StockAnalysisSystem/tools/live_valuation_check.py AAPL JPM XOM O NEE`.
 
 ## Verify
-- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect 538 passed)
+- `$PY -m pytest -o addopts="" -p no:warnings -q` (expect 540 passed)
 - `$PY -m ruff check StockAnalysisSystem`
