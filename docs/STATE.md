@@ -87,3 +87,6 @@ Framework (from adoption on):
 ## Needed from owner
 - none
 - [x] retest/RT-01 subsector terminal growth default + override sliders start at used values — 5 passed (test_retest_fixes), 91 related passed, ruff clean; live NEE 37.46 -> 39.86, AAPL 184.41 unchanged
+
+## Next
+- [ ] retest: browser/AppTest pass of all pages for AAPL JPM XOM O NEE, fix bugs, reviewer, PR, merge (see docs/HANDOFF.md)
