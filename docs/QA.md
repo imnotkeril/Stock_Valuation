@@ -115,3 +115,45 @@ foreign listings AAPL.SAO, APC.DE; the pick now counts US listings only — foun
 Overview, Valuation summary, Risk health and Market risk (new ratios with definitions) render; screenshots in `docs/screenshots/`.
 
 Issues: one found (one-step pick with foreign listings), fixed. Known, backlog: VZ DCF tab far above price (WACC floor + telecom default growth).
+
+## Full-system re-test (2026-11-27, branch `claude/system-retest-722b8c` from master 747b6a2)
+
+| Check | Result |
+|---|---|
+| Offline suite | 533 passed in 194.13s |
+| `ruff check` | All checks passed |
+| Live providers | FRED DGS10 4.91 % (2026-11-24), CPIAUCSL to 2026-10; SEC EDGAR CIK + filings + XBRL history (O 2016-2025); Finnhub news AAPL 249 / NEE 164 / O 231, insider AAPL 122 / NEE 135 / O 67; FMP M&A 5 deals; Alpha Vantage GLOBAL_QUOTE ok; yfinance prices + 3 statements for AAPL, O, NEE |
+| Live valuation | AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low, O 50.07 Reduce Medium, NEE 37.46 -> 39.86 (after RT-01) |
+
+Bugs found and fixed (tests in `tests/test_retest_fixes.py`):
+- RT-01: subsector defaults for terminal growth / horizon were dead (the static sector table won), so utilities ran at 1 %
+  terminal growth while the model declares 2 %; and the Valuation assumptions sliders started at static spec defaults
+  (e.g. 9 % discount rate) instead of the values the model used, so turning "Override model assumptions" on without
+  moving a slider changed the fair value (synthetic industrial $240.69 -> $205.01). Now subsector defaults beat the
+  sector table for those two parameters (WACC still derived), sliders start at the used values and only moved sliders
+  are sent as overrides.
+- RT-02: the Utilities sector table had 1 % terminal growth, so after RT-01 the DCF and APV tabs (1 %) disagreed with
+  the utility sector model (2 %) for NEE. Utilities table set to 2 % (regulated rate base grows with inflation);
+  Energy stays at 1 %.
+- RT-03: Risk > Market risk showed an unlabelled "Beta" (provider, 5 years monthly; AAPL 1.09) right above ratios
+  that use the regression beta over the selected history (AAPL 0.57). Now "Beta (provider)" with help naming all
+  three betas (provider, regression, Blume-adjusted in the models).
+
+Live AppTest pass (qa-tester, real network), Company Analysis all 18 tabs for AAPL, JPM, XOM, O, NEE plus Valuation
+Filter, Screener (132 of 132), Peer, Sector, Forecasting, Reports (company + valuation for all 5): 0 exceptions,
+0 `st.error`, 0 `st.warning`. Rates agree between tabs (WACC, cost of equity, rf 4.91 %, terminal growth) after RT-02.
+
+Observations, not code bugs (backlog):
+- NEE $39.86 vs $85.41: rate base proxied by net PP&E, FCFF DCF negative (heavy capex); utility model is conservative.
+- O DCF tab $142 and APV $180 (2.4-3x price): default growth = 4-year FCF CAGR 19 %, funded by acquisitions and new
+  shares; a per-share growth default would be better (methodology change, owner decision).
+- JPM DCF-tab pre-tax cost of debt 12.9 % (interest on deposits / debt); DCF is flagged not meaningful for banks.
+- Liquidation $0.00 for AAPL, JPM, O, NEE (liabilities exceed recoveries; floor by design).
+- Stress-test caption uses beta 1 (r = rf + ERP) by design (T06).
+- Insider rows for grants and gifts have no price or value (provider data). Macro forecast in AppTest showed no
+  output; worked in the 2026-11-26 live check, not re-checked in the browser.
+- Review of RT-01..03 (reviewer, no P1): RT-01 also activates the declared Energy subsector defaults, midstream 1.5 %
+  and renewables 2 % terminal growth (were 1 % from the Energy table; synthetic midstream fair value +3.5 %, renewables
+  +8 % or -22 % with negative FCFF). Kept as the models' declared intent and pinned by a test; the generic DCF tab
+  still uses the sector table for these subsectors. Memo now refreshes on hit (base run evicted last). Derived values
+  outside a slider's range are shown clamped while the model keeps its own value (untouched sliders are not sent).

@@ -80,9 +80,14 @@ Framework (from adoption on):
 
 - [x] docs/T20 - 7 commands verified: `pytest -o addopts="" -p no:warnings` 533 passed; `ruff check StockAnalysisSystem` clean; `docs_check.py` ok (readme links 5 screenshots + METHODOLOGY; METHODOLOGY mentions WACC, liquidation, Sortino, Zmijewski; "not investment advice" in README, USER_GUIDE, METHODOLOGY; all relative links resolve); `run.py` health `/_stcore/health` 200; `docker build` ok + `docker run --env-file .env` health 200; `pip install -r requirements*.txt --dry-run` satisfied; README env names == `.env.example` (5 of 5). No HTTP API (0 routes), so `/llms.txt` n/a. METHODOLOGY.md, README, USER_GUIDE, CHANGELOG, SPEC F20-F22 Done
 - [x] release/T21 final gate — "533 passed in 185.98s", ruff "All checks passed!", docs_check ok; live AAPL 184.41 Sell High, JPM 278.97 Reduce Medium, XOM 87.00 Above model value Low; .env.example documents STOCK_ANALYSIS_RISK_FREE_RATE; owner allowed push, PR and merge
+- [x] ship: PR #2 merged into master (747b6a2), CI green 3.11-3.13
+- [x] retest/RT-01 subsector terminal growth default + override sliders start at used values — 5 passed (test_retest_fixes), 91 related passed, ruff clean; live NEE 37.46 -> 39.86, AAPL 184.41 unchanged
+- [x] retest/RT-02 Utilities sector table terminal growth 2 % (DCF/APV tabs agree with utility model) + RT-03 'Beta (provider)' label — 7 passed (test_retest_fixes), live AAPL 184.41 / JPM 278.97 / XOM 87.00 / O 50.07 / NEE 39.86; qa-tester live pass 0 exceptions/errors/warnings
 
 ## Next
-- [ ] ship: PR into master open, wait for CI green (3.11-3.13), merge (owner allowed), record merge here
+- [x] retest/review reviewer: 0 P1, 2 P2 + 3 P3; memo LRU refresh, Energy subsector terminal growth pinned and documented — full suite "543 passed in 209.15s", ruff clean
+- [x] retest/ship pushed, PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound, Auto-fix on; auto-merge denied by the session permission classifier
+- [ ] retest: CI green (3.11-3.13) -> merge PR #3 (needs owner go or permission), record merge here
 
 ## Needed from owner
 - none
