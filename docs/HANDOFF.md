@@ -8,26 +8,21 @@ Independent full-system re-test of master 747b6a2: every bug gets root cause + f
 then push branch `claude/system-retest-722b8c`, PR into master, CI green, merge (owner allowed push, PR and merge).
 
 ## State
-- Done: offline suite 533 passed, ruff clean; live providers all OK (FRED, SEC EDGAR, Finnhub news/insider,
-  FMP M&A, Alpha Vantage quote, yfinance); live valuation AAPL/JPM/XOM/O/NEE recorded in docs/QA.md.
-- Fixed RT-01 (commit 345dc9e): subsector terminal-growth default was dead; override sliders now start at the
-  values the model used and only moved sliders override. Tests: tests/test_retest_fixes.py (5).
-- Running: none in the new chat (a qa-tester AppTest live pass was started in the old chat; its scripts and
-  outputs, if any, are in the old session scratchpad `qa/` folder, not in the repo).
-- Not done: browser pass of every page for the 5 tickers, reviewer agent on the diff, push/PR/merge.
+- Done: RT-01 (345dc9e), RT-02 + RT-03 (cbfbf0d), review follow-ups; full suite 543 passed, ruff clean; live
+  AppTest pass of every page for AAPL/JPM/XOM/O/NEE: 0 exceptions/errors/warnings (docs/QA.md "Full-system re-test").
+- PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound in the app, Auto-fix on, CI running.
+- Auto-merge was denied by the session permission classifier.
 
 ## Decisions
-- WACC stays the derived discount rate even when a subsector default exists (ADR-007); only terminal_growth and
-  forecast_years take subsector defaults over the static sector table.
-- NEE fair value ~$40 vs price $85 is a model limitation (RAB on net PP&E, DDM), not a code bug; note only.
+- WACC stays derived; only terminal_growth / forecast_years take subsector defaults over the sector table.
+- NEE (~$40 vs $85) and O DCF-tab growth (19 %) are methodology backlog for the owner, not code bugs.
 
 ## Next
-1. Live AppTest pass (or browser, `.claude/launch.json` "stock-analysis", port 8502): Company Analysis all tabs for
-   AAPL, JPM, XOM, O, NEE; Valuation Filter, Screener, Peer/Sector Comparison, Forecasting, Reports. Collect
-   exceptions, st.error, N/A where data exists, rates differing between tabs.
-2. Each confirmed bug: test first, fix, `docs/QA.md` line under "Full-system re-test", STATE line, local commit.
-3. `reviewer` agent on `git diff master...HEAD`; full suite; push; `gh pr create` into master; bind with
-   ccd_pr `bind_pr`, monitor; when CI green `gh pr merge --merge`; Russian report to parent session.
+1. `mcp__ccd_pr__get_status`: when CI is green on 3.11-3.13, merge PR #3 with `gh pr merge 3 --merge` if the
+   owner confirms (or permission allows); never force, never admin bypass.
+2. If CI fails: `gh run view --log-failed`, fix, run the suite, commit, push.
+3. After merge: STATE line with the merge sha, set this note to `status: consumed`, short Russian report to the
+   parent session `local_dd7a30fa-49d1-4161-aa51-b96c1e32339f`.
 
 ## Open questions
 - none

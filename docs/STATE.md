@@ -86,7 +86,8 @@ Framework (from adoption on):
 
 ## Next
 - [x] retest/review reviewer: 0 P1, 2 P2 + 3 P3; memo LRU refresh, Energy subsector terminal growth pinned and documented — full suite "543 passed in 209.15s", ruff clean
-- [ ] retest: push, PR into master, CI green, merge
+- [x] retest/ship pushed, PR https://github.com/imnotkeril/Stock_Valuation/pull/3 open, bound, Auto-fix on; auto-merge denied by the session permission classifier
+- [ ] retest: CI green (3.11-3.13) -> merge PR #3 (needs owner go or permission), record merge here
 
 ## Needed from owner
 - none
