@@ -152,3 +152,8 @@ Observations, not code bugs (backlog):
 - Stress-test caption uses beta 1 (r = rf + ERP) by design (T06).
 - Insider rows for grants and gifts have no price or value (provider data). Macro forecast in AppTest showed no
   output; worked in the 2026-11-26 live check, not re-checked in the browser.
+- Review of RT-01..03 (reviewer, no P1): RT-01 also activates the declared Energy subsector defaults, midstream 1.5 %
+  and renewables 2 % terminal growth (were 1 % from the Energy table; synthetic midstream fair value +3.5 %, renewables
+  +8 % or -22 % with negative FCFF). Kept as the models' declared intent and pinned by a test; the generic DCF tab
+  still uses the sector table for these subsectors. Memo now refreshes on hit (base run evicted last). Derived values
+  outside a slider's range are shown clamped while the model keeps its own value (untouched sliders are not sent).

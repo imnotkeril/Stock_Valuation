@@ -101,3 +101,10 @@ def test_provider_beta_is_labelled_apart_from_regression_beta():
     assert not at.exception
     labels = [m.label for m in at.metric]
     assert "Beta (provider)" in labels and "Beta" not in labels
+
+
+@pytest.mark.parametrize("subsector, expected", [("midstream", 0.015), ("renewables", 0.02), ("utilities", 0.02)])
+def test_energy_subsector_terminal_growth_defaults_are_applied(subsector, expected):
+    """RT-01 also activates the declared midstream / renewables defaults (were 1 % from the Energy table)."""
+    result = _value("oil_gas", subsector=subsector)
+    assert result["assumptions"]["terminal_growth"] == pytest.approx(expected)

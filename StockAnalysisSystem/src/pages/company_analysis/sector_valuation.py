@@ -246,6 +246,7 @@ def _run_valuation(factory: ValuationFactory, ticker: str, sector: str, subsecto
             memo[signature] = factory.get_company_valuation(
                 ticker, sector=sector, subsector=subsector, financial_data=financial_data,
                 methods=list(methods), **dict(overrides))
+    memo[signature] = memo.pop(signature)  # most recently used last, so the base run is evicted last
     return memo[signature]
 
 

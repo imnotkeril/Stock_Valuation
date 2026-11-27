@@ -85,7 +85,8 @@ Framework (from adoption on):
 - [x] retest/RT-02 Utilities sector table terminal growth 2 % (DCF/APV tabs agree with utility model) + RT-03 'Beta (provider)' label — 7 passed (test_retest_fixes), live AAPL 184.41 / JPM 278.97 / XOM 87.00 / O 50.07 / NEE 39.86; qa-tester live pass 0 exceptions/errors/warnings
 
 ## Next
-- [ ] retest: reviewer on the diff, full suite, push, PR into master, CI green, merge
+- [x] retest/review reviewer: 0 P1, 2 P2 + 3 P3; memo LRU refresh, Energy subsector terminal growth pinned and documented — full suite "543 passed in 209.15s", ruff clean
+- [ ] retest: push, PR into master, CI green, merge
 
 ## Needed from owner
 - none
